@@ -1,0 +1,148 @@
+﻿@page "/audit-logs"
+@using AntDesign
+@attribute [ReuseTabsPage(Title = "日志审计", Closable = true, Order = 20)]
+
+<PageHeader Title="日志审计" SubTitle="系统操作日志查询与审计">
+    <PageHeaderExtra>
+        <Space>
+            <SpaceItem>
+                <Tag Color="@("blue")">演示页面</Tag>
+            </SpaceItem>
+            <SpaceItem>
+                <Button Type="@ButtonType.Primary" Icon="@("reload")" OnClick="@RefreshPage">刷新</Button>
+            </SpaceItem>
+        </Space>
+    </PageHeaderExtra>
+</PageHeader>
+
+<Card Title="日志审计功能演示" Style="margin-top: 24px;">
+    <Alert Type="@AlertType.Info" 
+           Message="标签切换测试页面" 
+           Description="此页面用于测试多标签页的打开、切换和关闭功能。您可以通过左侧菜单打开多个页面,然后测试标签的交互行为。"
+           ShowIcon="true"
+           Style="margin-bottom: 24px;" />
+
+    <Descriptions Title="页面信息" Bordered Column="2">
+        <DescriptionsItem Title="页面路由">@PageRoute</DescriptionsItem>
+        <DescriptionsItem Title="页面标题">日志审计</DescriptionsItem>
+        <DescriptionsItem Title="当前时间">@CurrentTime</DescriptionsItem>
+        <DescriptionsItem Title="访问次数">@VisitCount</DescriptionsItem>
+    </Descriptions>
+
+    <Divider />
+
+    <Title Level="4">测试指引</Title>
+    <Paragraph>
+        <ol>
+            <li><Text Strong>打开多个标签:</Text> 点击左侧菜单的"首页总览"、"接口样例"、"日志审计"等菜单项,观察顶部标签页的增加。</li>
+            <li><Text Strong>切换标签:</Text> 点击不同的标签,确认页面内容跟随切换。</li>
+            <li><Text Strong>关闭当前标签:</Text> 点击当前激活标签的关闭按钮(×),确认自动切换到前一个标签。</li>
+            <li><Text Strong>关闭其他标签:</Text> 在某个标签激活时,关闭其他标签,确认当前页面不受影响。</li>
+            <li><Text Strong>重新打开:</Text> 关闭标签后,再次点击菜单项,确认可以重新打开该标签。</li>
+        </ol>
+    </Paragraph>
+
+    <Divider />
+
+    <div style="margin-bottom: 16px;">
+        <Button Type="@ButtonType.Primary" OnClick="@AddLog">添加测试日志</Button>
+        <Button Style="margin-left: 8px;" OnClick="@ClearLogs">清空日志</Button>
+    </div>
+
+    <Card Size="CardSize.Small" Title="模拟日志列表">
+        <Table TItem="LogEntry" DataSource="@_logs" Size="@TableSize.Small" Bordered PageSize="10">
+            <PropertyColumn Title="序号" Property="c=>c.Id" Width="80px" />
+            <PropertyColumn Title="操作时间" Property="c=>c.Timestamp" />
+            <PropertyColumn Title="操作用户" Property="c=>c.User" />
+            <PropertyColumn Title="操作类型" Property="c=>c.Action">
+                <Tag Color="@GetActionColor(context.Action)">@context.Action</Tag>
+            </PropertyColumn>
+            <PropertyColumn Title="操作描述" Property="c=>c.Description" />
+        </Table>
+    </Card>
+</Card>
+
+@code {
+    /// <summary>页面路由地址。</summary>
+    private string PageRoute = "/audit-logs";
+
+    /// <summary>当前时间。</summary>
+    private string CurrentTime => DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+
+    /// <summary>访问次数。</summary>
+    private int VisitCount = 0;
+
+    /// <summary>模拟日志列表。</summary>
+    private List<LogEntry> _logs = new();
+
+    protected override void OnInitialized()
+    {
+        VisitCount++;
+        InitializeLogs();
+    }
+
+    /// <summary>初始化模拟日志数据。</summary>
+    private void InitializeLogs()
+    {
+        _logs = new List<LogEntry>
+        {
+            new LogEntry { Id = 1, Timestamp = DateTime.Now.AddHours(-2), User = "admin", Action = "登录", Description = "用户登录系统" },
+            new LogEntry { Id = 2, Timestamp = DateTime.Now.AddHours(-1), User = "admin", Action = "查询", Description = "查询归档任务列表" },
+            new LogEntry { Id = 3, Timestamp = DateTime.Now.AddMinutes(-30), User = "admin", Action = "创建", Description = "创建新的归档任务" },
+            new LogEntry { Id = 4, Timestamp = DateTime.Now.AddMinutes(-15), User = "operator", Action = "执行", Description = "执行归档任务 #1001" },
+            new LogEntry { Id = 5, Timestamp = DateTime.Now.AddMinutes(-5), User = "operator", Action = "更新", Description = "更新任务配置" }
+        };
+    }
+
+    /// <summary>刷新页面。</summary>
+    private void RefreshPage()
+    {
+        VisitCount++;
+        StateHasChanged();
+    }
+
+    /// <summary>添加测试日志。</summary>
+    private void AddLog()
+    {
+        var newId = _logs.Count + 1;
+        _logs.Insert(0, new LogEntry
+        {
+            Id = newId,
+            Timestamp = DateTime.Now,
+            User = "test-user",
+            Action = "测试",
+            Description = $"这是第 {newId} 条测试日志"
+        });
+        StateHasChanged();
+    }
+
+    /// <summary>清空日志列表。</summary>
+    private void ClearLogs()
+    {
+        _logs.Clear();
+        StateHasChanged();
+    }
+
+    /// <summary>根据操作类型获取标签颜色。</summary>
+    private string GetActionColor(string action) => action switch
+    {
+        "登录" => "blue",
+        "查询" => "green",
+        "创建" => "cyan",
+        "执行" => "orange",
+        "更新" => "purple",
+        "删除" => "red",
+        "测试" => "magenta",
+        _ => "default"
+    };
+
+    /// <summary>日志条目记录。</summary>
+    private class LogEntry
+    {
+        public int Id { get; set; }
+        public DateTime Timestamp { get; set; }
+        public string User { get; set; } = "";
+        public string Action { get; set; } = "";
+        public string Description { get; set; } = "";
+    }
+}

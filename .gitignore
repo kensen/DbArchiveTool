@@ -2,3 +2,4 @@
 /src/DbArchiveTool.Api/bin
 bin
 obj
+.vs
