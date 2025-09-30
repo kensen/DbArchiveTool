@@ -1,9 +1,11 @@
 ﻿@using AntDesign
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Routing
+@using DbArchiveTool.Web.Core
 @inherits LayoutComponentBase
 @implements IDisposable
 @inject NavigationManager NavigationManager
+@inject AdminSessionState SessionState
 
 <Layout Style="min-height: 100vh;">
     <Sider Collapsible Theme="SiderTheme.Dark">
@@ -62,7 +64,13 @@
         <Header Style="background: #fff; padding: 0 24px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-size: 16px; font-weight: 600;">多标签导航</span>
-                <span style="color: rgba(0,0,0,.45);">预览环境 · 运维</span>
+                <div style="display:flex; align-items:center; gap:12px; color: rgba(0,0,0,.65);">
+                    <Icon Type="user" />
+                    <span>@(SessionState.UserName ?? "未登录")</span>
+                    <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="HandleSignOut">
+                        退出
+                    </Button>
+                </div>
             </div>
         </Header>
 
@@ -95,13 +103,14 @@
 
     protected override void OnInitialized()
     {
-        Console.WriteLine($"[MainLayout #{_instanceId}] ===== 组件初始化 =====");
+    Console.WriteLine($"[MainLayout #{_instanceId}] ===== 组件初始化 =====");
 
-        // 订阅路由变化以同步导航状态。
-        NavigationManager.LocationChanged += HandleLocationChanged;
-        UpdateNavigationState(NavigationManager.Uri);
+    // 订阅路由变化以同步导航状态。
+    NavigationManager.LocationChanged += HandleLocationChanged;
+    SessionState.StateChanged += HandleSessionStateChanged;
+    UpdateNavigationState(NavigationManager.Uri);
 
-        Console.WriteLine($"[MainLayout #{_instanceId}] 初始化完成");
+    Console.WriteLine($"[MainLayout #{_instanceId}] 初始化完成");
     }
 
     protected override void OnParametersSet()
@@ -158,6 +167,7 @@
     public void Dispose()
     {
         NavigationManager.LocationChanged -= HandleLocationChanged;
+        SessionState.StateChanged -= HandleSessionStateChanged;
     }
 
     /// <summary>根据当前路由更新复用标签元数据。</summary>
@@ -182,5 +192,16 @@
         {
             Console.WriteLine($"[MainLayout #{_instanceId}] 无法更新标签元数据: {ex.Message}");
         }
+    }
+
+    private void HandleSessionStateChanged()
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleSignOut()
+    {
+        SessionState.SignOut();
+        NavigationManager.NavigateTo("/login", true);
     }
 }

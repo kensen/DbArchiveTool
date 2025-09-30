@@ -7,9 +7,17 @@ builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddAntDesign();
 builder.Services.AddScoped<ReuseTabsService>();
+builder.Services.AddScoped<DbArchiveTool.Web.Core.AdminSessionState>();
+builder.Services.AddScoped<DbArchiveTool.Web.Services.AdminUserApiClient>();
+var archiveApiBaseUrl = builder.Configuration["ArchiveApi:BaseUrl"];
+if (string.IsNullOrWhiteSpace(archiveApiBaseUrl))
+{
+    throw new InvalidOperationException("未在配置中找到 ArchiveApi:BaseUrl，请根据运行环境设置准确的 API 地址。");
+}
+
 builder.Services.AddHttpClient("ArchiveApi", client =>
 {
-    client.BaseAddress = new Uri(builder.Configuration["ArchiveApi:BaseUrl"] ?? "https://localhost:5001");
+    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
 });
 
 var app = builder.Build();

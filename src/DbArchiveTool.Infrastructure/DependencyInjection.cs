@@ -1,4 +1,5 @@
-﻿using DbArchiveTool.Domain.ArchiveTasks;
+﻿using DbArchiveTool.Domain.AdminUsers;
+using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using Microsoft.EntityFrameworkCore;
@@ -17,7 +18,8 @@ public static class DependencyInjection
         services.AddDbContext<ArchiveDbContext>(options =>
             options.UseSqlServer(connectionString));
 
-        services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
+    services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
+    services.AddScoped<IAdminUserRepository, AdminUserRepository>();
         services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
 

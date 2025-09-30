@@ -284,6 +284,18 @@ public class ArchivePartitionDetail : BaseEntity
 | PUT | `/api/v1/schedule-plans/{id}` | 更新计划 |
 | PATCH | `/api/v1/schedule-plans/{id}/toggle` | 启停切换 |
 
+### 4.8 管理员账户 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/admin-users/exists` | 首次启动时检查是否已注册管理员 |
+| POST | `/api/v1/admin-users/register` | 注册系统第一个管理员账户，返回管理员 `Id` |
+| POST | `/api/v1/admin-users/login` | 登录并返回管理员 `Id`，失败时返回 401 |
+
+> **说明**: 
+> - 管理员注册仅允许成功一次，如系统已存在管理员会返回 `400`，详情见 `ProblemDetails.detail`。  
+> - 登录失败返回 `401` 和错误描述，前端需提示“用户名或密码不正确”。  
+> - Blazor 首屏会调用 `exists` 接口决定跳转到登录页或注册页，注册成功后立即登录。  
+
 ---
 
 ## 5. 数据迁移 API

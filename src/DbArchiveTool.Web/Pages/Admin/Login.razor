@@ -1,0 +1,114 @@
+﻿@page "/login"
+@layout AuthLayout
+@using AntDesign
+@using DbArchiveTool.Application.AdminUsers
+@using DbArchiveTool.Web.Core
+@using DbArchiveTool.Web.Services
+
+<h3 class="auth-layout__title">管理员登录</h3>
+<p class="auth-layout__subtitle">请输入管理员账号和密码访问系统后台。</p>
+
+@if (!string.IsNullOrEmpty(_errorMessage))
+{
+    <Alert Type="AlertType.Error" ShowIcon="true" Message="@_errorMessage" Style="margin-bottom:16px;" />
+}
+
+<Form Model="_model" OnFinish="HandleSubmitAsync">
+    <FormItem Label="用户名" Name="UserName">
+        <Input Size="InputSize.Large" Placeholder="请输入用户名" @bind-Value="_model.UserName" />
+    </FormItem>
+    <FormItem Label="密码" Name="Password">
+        <InputPassword Size="InputSize.Large" Placeholder="请输入密码" @bind-Value="_model.Password" />
+    </FormItem>
+    <FormItem>
+        <Button Type="ButtonType.Primary" HtmlType="ButtonHtmlType.Submit" Size="ButtonSize.Large" Loading="_isSubmitting" Block>
+            登录
+        </Button>
+    </FormItem>
+    <FormItem>
+        <Button Type="ButtonType.Default" Size="ButtonSize.Large" Block OnClick="NavigateToRegister">
+            首次使用？注册管理员账号
+        </Button>
+    </FormItem>
+</Form>
+
+@code {
+    /// <summary>根级 App 组件实例。</summary>
+    [CascadingParameter] public App? RootApp { get; set; }
+
+    /// <summary>登录表单模型。</summary>
+    private readonly AdminLoginRequest _model = new();
+
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+    [Inject] private AdminUserApiClient ApiClient { get; set; } = default!;
+    [Inject] private AdminSessionState SessionState { get; set; } = default!;
+
+    private bool _isSubmitting;
+    private string? _errorMessage;
+
+    private async Task HandleSubmitAsync()
+    {
+        _errorMessage = null;
+        _isSubmitting = true;
+        try
+        {
+            if (!ValidateInputs())
+            {
+                return;
+            }
+
+            var result = await ApiClient.LoginAsync(new AdminLoginRequest
+            {
+                UserName = _model.UserName.Trim(),
+                Password = _model.Password
+            });
+
+            if (!result.IsSuccess || result.Value == Guid.Empty)
+            {
+                _errorMessage = result.Error ?? "登录失败，请检查输入";
+                return;
+            }
+
+            SessionState.SignIn(result.Value, _model.UserName.Trim());
+            Navigation.NavigateTo("/");
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private void NavigateToRegister()
+    {
+        Navigation.NavigateTo("/admin/register");
+    }
+
+    private bool ValidateInputs()
+    {
+        if (string.IsNullOrWhiteSpace(_model.UserName))
+        {
+            _errorMessage = "请输入管理员用户名";
+            return false;
+        }
+
+        if (_model.UserName.Trim().Length < 4)
+        {
+            _errorMessage = "用户名长度至少为 4 个字符";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_model.Password))
+        {
+            _errorMessage = "请输入密码";
+            return false;
+        }
+
+        if (_model.Password.Length < 6)
+        {
+            _errorMessage = "密码长度至少为 6 位";
+            return false;
+        }
+
+        return true;
+    }
+}

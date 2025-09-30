@@ -1,6 +1,73 @@
 @import url('open-iconic/font/css/open-iconic-bootstrap.min.css');
 
 html, body {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+
+body {
+     margin: 0;
+     font-family: var(--bs-body-font-family);
+     font-size: var(--bs-body-font-size);
+     font-weight: var(--bs-body-font-weight);
+     line-height: var(--bs-body-line-height);
+     color: var(--bs-body-color);
+     text-align: var(--bs-body-text-align);
+     background-color: var(--bs-body-bg);
+     -webkit-text-size-adjust: 100%;
+     -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+}
+
+.auth-layout {
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(135deg, #1890ff 0%, #40a9ff 50%, #e6f7ff 100%);
+    padding: 24px;
+}
+
+.auth-layout__content {
+    width: 100%;
+    max-width: 420px;
+}
+
+.auth-layout__card {
+    border-radius: 16px;
+    box-shadow: 0 20px 45px rgba(24, 144, 255, 0.25);
+    padding: 32px;
+}
+
+.auth-layout__header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.auth-layout__header h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+}
+
+.auth-layout__header p {
+    margin: 4px 0 0;
+    color: rgba(0, 0, 0, 0.45);
+}
+
+.auth-layout__title {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.auth-layout__subtitle {
+    margin: 0 0 24px;
+    color: rgba(0, 0, 0, 0.55);
+}
+@import url('open-iconic/font/css/open-iconic-bootstrap.min.css');
+
+html, body {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
 }
 

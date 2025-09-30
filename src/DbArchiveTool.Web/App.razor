@@ -2,10 +2,18 @@
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.Components.Web
+@using DbArchiveTool.Web.Core
+@using DbArchiveTool.Web.Services
+@using Microsoft.Extensions.Logging
+
+@inject NavigationManager Navigation
+@inject AdminSessionState SessionState
+@inject AdminUserApiClient AdminUserApiClient
+@inject ILogger<App> Logger
 
 <CascadingValue Value="this" IsFixed>
     <ConfigProvider>
-        <Router AppAssembly="@typeof(App).Assembly">
+    <Router AppAssembly="@typeof(App).Assembly" OnNavigateAsync="@HandleNavigateAsync">
             <Found Context="routeData">
                 @if (CascadingRouteData)
                 {
@@ -26,7 +34,7 @@
                     <p role="alert">Sorry, there's nothing at this address.</p>
                 </LayoutView>
             </NotFound>
-        </Router>
+    </Router>
 
         <AntContainer />
     </ConfigProvider>
@@ -35,6 +43,9 @@
 @code {
     /// <summary>是否向外层布局传递路由数据。</summary>
     public bool CascadingRouteData { get; private set; } = true;
+
+    private bool _adminStatusChecked;
+    private bool _hasAdmin = true;
 
     /// <summary>切换路由数据级联状态。</summary>
     /// <param name="enable">是否启用级联。</param>
@@ -47,5 +58,73 @@
 
         CascadingRouteData = enable;
         StateHasChanged();
+    }
+
+    private async Task HandleNavigateAsync(NavigationContext args)
+    {
+        if (!_adminStatusChecked)
+        {
+            await EnsureAdminStatusAsync(args);
+        }
+
+        if (!_hasAdmin)
+        {
+            if (!IsAdminRegisterPath(args.Path))
+            {
+                Navigation.NavigateTo("/admin/register", forceLoad: false);
+            }
+
+            return;
+        }
+
+        if (!SessionState.IsAuthenticated && !IsAuthPath(args.Path))
+        {
+            Navigation.NavigateTo("/login", forceLoad: false);
+        }
+    }
+
+    private async Task EnsureAdminStatusAsync(NavigationContext args)
+    {
+        var result = await AdminUserApiClient.HasAdminAsync(args.CancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            Logger.LogWarning("无法确定管理员状态: {Message}", result.Error);
+            _hasAdmin = true;
+        }
+        else
+        {
+            _hasAdmin = result.Value;
+        }
+
+        _adminStatusChecked = true;
+    }
+
+    private static bool IsAdminRegisterPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        return path.Trim('/').Equals("admin/register", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAuthPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var normalized = path.Trim('/');
+        return normalized.Equals("login", StringComparison.OrdinalIgnoreCase) || normalized.Equals("admin/register", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>标记系统已经完成管理员注册。</summary>
+    public void MarkAdminCreated()
+    {
+        _hasAdmin = true;
+        _adminStatusChecked = true;
     }
 }
