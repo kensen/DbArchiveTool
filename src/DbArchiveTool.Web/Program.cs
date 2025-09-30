@@ -1,9 +1,12 @@
+using AntDesign;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddAntDesign();
+builder.Services.AddScoped<ReuseTabsService>();
 builder.Services.AddHttpClient("ArchiveApi", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["ArchiveApi:BaseUrl"] ?? "https://localhost:5001");

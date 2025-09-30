@@ -1,19 +1,186 @@
-﻿@inherits LayoutComponentBase
+﻿@using AntDesign
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Routing
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager NavigationManager
 
-<PageTitle>DbArchiveTool.Web</PageTitle>
-
-<div class="page">
-    <div class="sidebar">
-        <NavMenu />
-    </div>
-
-    <main>
-        <div class="top-row px-4">
-            <a href="https://docs.microsoft.com/aspnet/" target="_blank">About</a>
+<Layout Style="min-height: 100vh;">
+    <Sider Collapsible Theme="SiderTheme.Dark">
+        <div class="logo">
+            <span style="color: #fff; font-weight: 600;">数据库归档工具</span>
         </div>
+        <Menu Theme="MenuTheme.Dark" Mode="MenuMode.Inline" SelectedKeys="@_selectedKeys">
+            <SubMenu Key="dashboard">
+                <TitleTemplate>
+                    <Icon Type="dashboard" />
+                    <span>Dashboard</span>
+                </TitleTemplate>
+                <ChildContent>
+                    <MenuItem Key="/" OnClick="@(() => NavigateTo("/"))">
+                        <Icon Type="home" />
+                        首页总览
+                    </MenuItem>
+                </ChildContent>
+            </SubMenu>
+            <SubMenu Key="list">
+                <TitleTemplate>
+                    <Icon Type="unordered-list" />
+                    <span>List</span>
+                </TitleTemplate>
+                <ChildContent>
+                    <MenuItem Key="/fetchdata" OnClick="@(() => NavigateTo("/fetchdata"))">
+                        <Icon Type="bars" />
+                        接口样例
+                    </MenuItem>
+                    <MenuItem Key="/audit-logs" OnClick="@(() => NavigateTo("/audit-logs"))">
+                        <Icon Type="file-search" />
+                        日志审计
+                    </MenuItem>
+                </ChildContent>
+            </SubMenu>
+            <SubMenu Key="form">
+                <TitleTemplate>
+                    <Icon Type="form" />
+                    <span>Form page</span>
+                </TitleTemplate>
+                <ChildContent>
+                    <MenuItem Key="/basicform" Disabled>
+                        <Icon Type="edit" />
+                        Basic Form
+                    </MenuItem>
+                </ChildContent>
+            </SubMenu>
+            <MenuItem Key="/tasks" Disabled>
+                <Icon Type="file-text" />
+                归档任务（规划中）
+            </MenuItem>
+        </Menu>
+    </Sider>
+    
+    <Layout>
+        <Header Style="background: #fff; padding: 0 24px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 16px; font-weight: 600;">多标签导航</span>
+                <span style="color: rgba(0,0,0,.45);">预览环境 · 运维</span>
+            </div>
+        </Header>
 
-        <article class="content px-4">
-            @Body
-        </article>
-    </main>
-</div>
+        <ReuseTabs Style="margin: 24px;" Body="@Body" ReuseTabsRouteData="@_reuseTabsRouteData" />
+        
+        <div style="text-align: center; padding:16px 0; color:rgba(0,0,0,.45);">
+            数据库归档工具 © @DateTime.Now.Year
+        </div>
+    </Layout>
+</Layout>
+
+@code {
+    /// <summary>菜单高亮项集合。</summary>
+    private string[] _selectedKeys = Array.Empty<string>();
+
+    /// <summary>当前路由的标签上下文。</summary>
+    private ReuseTabsRouteData? _reuseTabsRouteData;
+
+    /// <summary>当前实例的调试标识。</summary>
+    private readonly string _instanceId = Guid.NewGuid().ToString("N")[..8];
+
+    /// <summary>是否已完成首次渲染的标记。</summary>
+    private bool _mounted;
+
+    /// <summary>获取或设置当前页面的路由数据。</summary>
+    [CascadingParameter] public RouteData? CurrentRouteData { get; set; }
+
+    /// <summary>复用标签服务。</summary>
+    [Inject] public ReuseTabsService ReuseTabsService { get; set; } = default!;
+
+    protected override void OnInitialized()
+    {
+        Console.WriteLine($"[MainLayout #{_instanceId}] ===== 组件初始化 =====");
+
+        // 订阅路由变化以同步导航状态。
+        NavigationManager.LocationChanged += HandleLocationChanged;
+        UpdateNavigationState(NavigationManager.Uri);
+
+        Console.WriteLine($"[MainLayout #{_instanceId}] 初始化完成");
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (CurrentRouteData is null)
+        {
+            return;
+        }
+
+        _reuseTabsRouteData = new ReuseTabsRouteData(CurrentRouteData);
+
+        if (_mounted)
+        {
+            UpdateActiveTabMetadata();
+        }
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _mounted = true;
+            UpdateActiveTabMetadata();
+        }
+    }
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        UpdateNavigationState(args.Location);
+        StateHasChanged();
+    }
+
+    private void NavigateTo(string target)
+    {
+        _selectedKeys = new[] { target };
+        NavigationManager.NavigateTo(target);
+    }
+
+    private void UpdateNavigationState(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri))
+        {
+            _selectedKeys = new[] { "/" };
+            return;
+        }
+
+        var relativePath = NavigationManager.ToBaseRelativePath(uri);
+        var path = string.IsNullOrEmpty(relativePath) ? "/" : $"/{relativePath.Split('?')[0]}";
+
+        _selectedKeys = new[] { path };
+        UpdateActiveTabMetadata();
+    }
+
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= HandleLocationChanged;
+    }
+
+    /// <summary>根据当前路由更新复用标签元数据。</summary>
+    private void UpdateActiveTabMetadata()
+    {
+        if (_reuseTabsRouteData?.RouteData?.PageType is null)
+        {
+            return;
+        }
+
+        var currentPath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        var routeKey = string.IsNullOrEmpty(currentPath) ? "/" : $"/{currentPath.Split('?')[0]}";
+
+        try
+        {
+            ReuseTabsService.UpdatePage(routeKey, page =>
+            {
+                page.Closable = !string.Equals(routeKey, "/", StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.WriteLine($"[MainLayout #{_instanceId}] 无法更新标签元数据: {ex.Message}");
+        }
+    }
+}
