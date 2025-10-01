@@ -1,5 +1,39 @@
-/src/DbArchiveTool.Api/obj
-/src/DbArchiveTool.Api/bin
-bin
-obj
-.vs
+# Visual Studio artifacts
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build output directories
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Generated files
+*.nupkg
+*.snupkg
+*.vspscc
+*.log
+*.lock.json
+
+# User secrets
+secrets.json
+
+# Resharper and Rider
+_ReSharper*/
+*.DotSettings.user
+.idea/
+
+# Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+# Temporary files
+~$*
+Thumbs.db
+.DS_Store
+Thumbs.db
