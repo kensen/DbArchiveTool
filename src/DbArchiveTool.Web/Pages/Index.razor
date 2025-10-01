@@ -12,6 +12,24 @@
 			<Button Type="ButtonType.Default" Icon="reload" Loading="_loading" OnClick="ReloadAsync">刷新</Button>
 		</div>
 	</PageHeaderExtra>
+	<PageHeaderContent>
+		<div class="header-content">
+			<div class="header-summary">
+				<p>集中维护任务依赖的数据源连接信息，支持创建前测试连通性，确保归档链路稳定。</p>
+				<p>也可以在此快速查看连接方式与说明，后续会扩展到数据源的启停切换、分组标签等维度。</p>
+			</div>
+			<div class="header-stats">
+				<Statistic Title="数据源数量" Value="@_dataSources.Count" Suffix="个" />
+				<Statistic Title="启用状态" Value="@_dataSources.Count(x => x.IsEnabled)" Suffix="启用" />
+			</div>
+		</div>
+	</PageHeaderContent>
+	<PageHeaderFooter>
+		<div class="header-footer">
+			<Tag Color="@("blue")">提示</Tag>
+			<span>新增数据源前请确认目标 SQL Server 开启适当权限，并确保敏感凭据遵循安全存储策略。</span>
+		</div>
+	</PageHeaderFooter>
 </PageHeader>
 
 <Spin Spinning="_loading">
