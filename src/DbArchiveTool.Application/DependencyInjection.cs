@@ -1,5 +1,6 @@
 ﻿using DbArchiveTool.Application.AdminUsers;
 using DbArchiveTool.Application.ArchiveTasks;
+using DbArchiveTool.Application.DataSources;
 using DbArchiveTool.Domain.AdminUsers;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +14,7 @@ public static class DependencyInjection
         services.AddScoped<IArchiveTaskQueryService, ArchiveTaskQueryService>();
         services.AddScoped<IArchiveTaskCommandService, ArchiveTaskCommandService>();
         services.AddScoped<IAdminUserAppService, AdminUserAppService>();
+    services.AddScoped<IArchiveDataSourceAppService, ArchiveDataSourceAppService>();
         services.AddScoped<IPasswordHasher<AdminUser>, PasswordHasher<AdminUser>>();
 
         return services;

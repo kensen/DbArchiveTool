@@ -80,6 +80,103 @@ body {
 .auth-form .ant-input-affix-wrapper {
     width: 100%;
 }
+/* 首页归档数据源卡片布局 */
+.header-actions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.data-source-empty {
+    margin: 48px 0;
+    text-align: center;
+    color: rgba(0, 0, 0, 0.45);
+    font-size: 16px;
+}
+
+.data-source-grid {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.data-source-card {
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 18px 42px rgba(24, 144, 255, 0.08);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: relative;
+    overflow: hidden;
+}
+
+.data-source-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    border: 1px solid rgba(24, 144, 255, 0.1);
+    pointer-events: none;
+}
+
+.data-source-card__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 16px;
+    font-weight: 600;
+    color: #1f1f1f;
+}
+
+.data-source-card__status {
+    font-size: 13px;
+    color: #13c2c2;
+}
+
+.data-source-card__description {
+    color: rgba(0, 0, 0, 0.55);
+    line-height: 1.6;
+    min-height: 40px;
+}
+
+.data-source-card__meta {
+    display: grid;
+    gap: 6px;
+    color: rgba(0, 0, 0, 0.65);
+    font-size: 14px;
+}
+
+.data-source-card__footer {
+    margin-top: auto;
+    display: flex;
+    gap: 12px;
+}
+
+.form-hint-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.form-hint {
+    color: rgba(0, 0, 0, 0.45);
+    font-size: 13px;
+}
+
+.form-checkbox-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: rgba(0, 0, 0, 0.65);
+}
+
+.form-checkbox-inline input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+}
 @import url('open-iconic/font/css/open-iconic-bootstrap.min.css');
 
 html, body {

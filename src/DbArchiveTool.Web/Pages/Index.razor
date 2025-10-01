@@ -1,13 +1,333 @@
 ﻿@page "/"
 @using AntDesign
+@using System.Linq
+@using DbArchiveTool.Application.DataSources
+@using DbArchiveTool.Web.Services
 @attribute [ReuseTabsPage(Title = "首页总览", Closable = false, Order = 0)]
 
-<h1>欢迎使用新一代数据库归档工具</h1>
+<PageHeader Title="归档数据源" SubTitle="集中管理归档任务所需的源库与目标库连接">
+	<PageHeaderExtra>
+		<div class="header-actions">
+			<Button Type="ButtonType.Primary" Icon="plus" OnClick="ShowCreateModal">新增数据源</Button>
+			<Button Type="ButtonType.Default" Icon="reload" Loading="_loading" OnClick="ReloadAsync">刷新</Button>
+		</div>
+	</PageHeaderExtra>
+</PageHeader>
 
-<p>
-	前端将基于 Ant Design Blazor 构建任务看板、归档配置与执行监控等模块。此页面提供占位内容，后续会替换为实际仪表盘。
-</p>
+<Spin Spinning="_loading">
+	@if (!_loading && _dataSources.Count == 0)
+	{
+		<div class="data-source-empty">
+			<p>暂未配置任何归档数据源，请先新增。</p>
+		</div>
+	}
+	else if (_dataSources.Count > 0)
+	{
+		<div class="data-source-grid">
+			@foreach (var item in _dataSources)
+			{
+				<div class="data-source-card">
+					<div class="data-source-card__header">
+						<span class="data-source-card__title">@item.Name</span>
+						<span class="data-source-card__status">@(item.IsEnabled ? "已启用" : "已停用")</span>
+					</div>
+					<div class="data-source-card__description">@(!string.IsNullOrWhiteSpace(item.Description) ? item.Description : "暂无备注信息")</div>
+					<div class="data-source-card__meta">
+						<div>服务器：@item.ServerAddress:@item.ServerPort</div>
+						<div>数据库：@item.DatabaseName</div>
+						<div>身份验证：@(item.UseIntegratedSecurity ? "Windows 集成" : $"SQL 登录 ({item.UserName})")</div>
+					</div>
+					<div class="data-source-card__footer">
+						<Button Type="ButtonType.Link" Disabled="true">配置</Button>
+						<Button Type="ButtonType.Link" Disabled="true">更多</Button>
+					</div>
+				</div>
+			}
+		</div>
+	}
+</Spin>
 
-<div class="alert alert-info">
-	<strong>开发提示：</strong> 请参考 docs 目录中的架构与规范，在本项目中实现归档配置、任务调度、执行监控等核心功能。
-</div>
+<Modal Title="新增归档数据源" Visible="_isModalVisible" ConfirmLoading="_creating" OnOk="SubmitAsync" OnCancel="HandleCancel" OkText="@("保存")" CancelText="@("取消")" Width="520">
+	<Form TModel="ArchiveDataSourceFormModel" Model="_formModel" Layout="FormLayout.Vertical">
+		<FormItem Label="数据源名称">
+			<Input @bind-Value="_formModel.Name" Placeholder="请输入数据源显示名称" />
+		</FormItem>
+		<FormItem Label="备注描述">
+			<InputTextArea @bind-Value="_formModel.Description" Rows="2" Placeholder="用于在卡片上展示的简短说明" />
+		</FormItem>
+		<FormItem Label="服务器地址">
+			<Input @bind-Value="_formModel.ServerAddress" Placeholder="例如: 192.168.0.10 或 sql.example.com" />
+		</FormItem>
+		<FormItem Label="端口">
+			<input type="number" min="1" max="65535" class="ant-input" @bind="_formModel.ServerPort" />
+		</FormItem>
+		<FormItem Label="数据库名称">
+			<Input @bind-Value="_formModel.DatabaseName" Placeholder="请输入目标数据库" />
+		</FormItem>
+		<FormItem Label="身份验证">
+			<label class="form-checkbox-inline">
+				<input type="checkbox" @bind="_formModel.UseIntegratedSecurity" />
+				<span>使用 Windows 集成身份验证</span>
+			</label>
+		</FormItem>
+		<FormItem Label="登录名">
+			<Input @bind-Value="_formModel.UserName" Disabled="_formModel.UseIntegratedSecurity" Placeholder="SQL 登录名" />
+		</FormItem>
+		<FormItem Label="密码">
+			<InputPassword @bind-Value="_formModel.Password" Disabled="_formModel.UseIntegratedSecurity" Placeholder="SQL 登录密码" VisibilityToggle="true" />
+		</FormItem>
+		<FormItem>
+			<div class="form-hint-row">
+				<Button Type="ButtonType.Default" Icon="api" Loading="_testing" OnClick="HandleTestConnectionAsync">测试连接</Button>
+				<span class="form-hint">测试将使用当前填写的连接信息</span>
+			</div>
+		</FormItem>
+	</Form>
+</Modal>
+
+@code {
+	[Inject] private ArchiveDataSourceApiClient DataSourceApi { get; set; } = default!;
+	[Inject] private MessageService Message { get; set; } = default!;
+
+	private readonly List<ArchiveDataSourceDto> _dataSources = new();
+	private readonly ArchiveDataSourceFormModel _formModel = new();
+	private bool _loading;
+	private bool _isModalVisible;
+	private bool _creating;
+	private bool _testing;
+
+	protected override async Task OnInitializedAsync()
+	{
+		await LoadDataAsync();
+	}
+
+	private async Task LoadDataAsync()
+	{
+		_loading = true;
+		try
+		{
+			var result = await DataSourceApi.GetAsync();
+			_dataSources.Clear();
+			if (result.IsSuccess && result.Value is { Count: > 0 })
+			{
+				_dataSources.AddRange(result.Value.OrderBy(x => x.Name));
+			}
+			else if (!result.IsSuccess)
+			{
+				Message.Error(result.Error ?? "获取数据源失败");
+			}
+		}
+		finally
+		{
+			_loading = false;
+			StateHasChanged();
+		}
+	}
+
+	private Task ReloadAsync() => LoadDataAsync();
+
+	private void ShowCreateModal()
+	{
+		_formModel.Reset();
+		_isModalVisible = true;
+	}
+
+	private void HandleCancel()
+	{
+		_isModalVisible = false;
+	}
+
+	private async Task SubmitAsync()
+	{
+		if (_creating)
+		{
+			return;
+		}
+
+		if (!TryBuildCreateRequest(out var request, out var errorMessage))
+		{
+			Message.Warning(errorMessage ?? "请完善表单信息");
+			return;
+		}
+
+		_creating = true;
+		try
+		{
+			var result = await DataSourceApi.CreateAsync(request);
+			if (!result.IsSuccess)
+			{
+				Message.Error(result.Error ?? "新增数据源失败");
+				return;
+			}
+
+			Message.Success("数据源创建成功");
+			_isModalVisible = false;
+			await LoadDataAsync();
+		}
+		finally
+		{
+			_creating = false;
+		}
+	}
+
+	private async Task HandleTestConnectionAsync()
+	{
+		if (_testing)
+		{
+			return;
+		}
+
+		if (!TryBuildTestRequest(out var request, out var errorMessage))
+		{
+			Message.Warning(errorMessage ?? "测试连接前请完善表单");
+			return;
+		}
+
+		_testing = true;
+		try
+		{
+			var result = await DataSourceApi.TestConnectionAsync(request);
+			if (!result.IsSuccess)
+			{
+				Message.Error(result.Error ?? "测试连接失败");
+				return;
+			}
+
+			Message.Success("连接成功");
+		}
+		finally
+		{
+			_testing = false;
+		}
+	}
+
+	private bool TryBuildCreateRequest(out CreateArchiveDataSourceRequest request, out string? errorMessage)
+	{
+		request = default!;
+		errorMessage = null;
+
+		if (string.IsNullOrWhiteSpace(_formModel.Name))
+		{
+			errorMessage = "请输入数据源名称";
+			return false;
+		}
+
+		if (!TryBuildConnectionPayload(out var payload, out errorMessage))
+		{
+			return false;
+		}
+
+		request = new CreateArchiveDataSourceRequest
+		{
+			Name = _formModel.Name.Trim(),
+			Description = string.IsNullOrWhiteSpace(_formModel.Description) ? null : _formModel.Description.Trim(),
+			ServerAddress = payload.ServerAddress,
+			ServerPort = payload.ServerPort,
+			DatabaseName = payload.DatabaseName,
+			UseIntegratedSecurity = payload.UseIntegratedSecurity,
+			UserName = payload.UserName,
+			Password = payload.Password
+		};
+
+		return true;
+	}
+
+	private bool TryBuildTestRequest(out TestArchiveDataSourceRequest request, out string? errorMessage)
+	{
+		request = default!;
+		errorMessage = null;
+
+		if (!TryBuildConnectionPayload(out var payload, out errorMessage))
+		{
+			return false;
+		}
+
+		request = new TestArchiveDataSourceRequest
+		{
+			ServerAddress = payload.ServerAddress,
+			ServerPort = payload.ServerPort,
+			DatabaseName = payload.DatabaseName,
+			UseIntegratedSecurity = payload.UseIntegratedSecurity,
+			UserName = payload.UserName,
+			Password = payload.Password
+		};
+
+		return true;
+	}
+
+	private bool TryBuildConnectionPayload(out ConnectionPayload payload, out string? errorMessage)
+	{
+		payload = default!;
+		errorMessage = null;
+
+		if (string.IsNullOrWhiteSpace(_formModel.ServerAddress))
+		{
+			errorMessage = "请输入服务器地址";
+			return false;
+		}
+
+		if (!int.TryParse(_formModel.ServerPort, out var port) || port <= 0 || port > 65535)
+		{
+			errorMessage = "端口号必须在 1-65535 范围内";
+			return false;
+		}
+
+		if (string.IsNullOrWhiteSpace(_formModel.DatabaseName))
+		{
+			errorMessage = "请输入数据库名称";
+			return false;
+		}
+
+		if (!_formModel.UseIntegratedSecurity && string.IsNullOrWhiteSpace(_formModel.UserName))
+		{
+			errorMessage = "请输入 SQL 登录名";
+			return false;
+		}
+
+		payload = new ConnectionPayload
+		{
+			ServerAddress = _formModel.ServerAddress.Trim(),
+			ServerPort = port,
+			DatabaseName = _formModel.DatabaseName.Trim(),
+			UseIntegratedSecurity = _formModel.UseIntegratedSecurity,
+			UserName = _formModel.UseIntegratedSecurity ? null : _formModel.UserName?.Trim(),
+			Password = _formModel.UseIntegratedSecurity ? null : _formModel.Password
+		};
+
+		return true;
+	}
+
+	private sealed record ConnectionPayload
+	{
+		public string ServerAddress { get; init; } = string.Empty;
+		public int ServerPort { get; init; }
+		public string DatabaseName { get; init; } = string.Empty;
+		public bool UseIntegratedSecurity { get; init; }
+		public string? UserName { get; init; }
+		public string? Password { get; init; }
+	}
+
+	private sealed class ArchiveDataSourceFormModel
+	{
+		public string Name { get; set; } = string.Empty;
+		public string? Description { get; set; }
+		public string ServerAddress { get; set; } = string.Empty;
+		public string ServerPort { get; set; } = "1433";
+		public string DatabaseName { get; set; } = string.Empty;
+		public bool UseIntegratedSecurity { get; set; }
+		public string? UserName { get; set; }
+		public string? Password { get; set; }
+
+		public void Reset()
+		{
+			Name = string.Empty;
+			Description = null;
+			ServerAddress = string.Empty;
+			ServerPort = "1433";
+			DatabaseName = string.Empty;
+			UseIntegratedSecurity = false;
+			UserName = null;
+			Password = null;
+		}
+	}
+}

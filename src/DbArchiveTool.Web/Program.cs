@@ -9,6 +9,7 @@ builder.Services.AddAntDesign();
 builder.Services.AddScoped<ReuseTabsService>();
 builder.Services.AddScoped<DbArchiveTool.Web.Core.AdminSessionState>();
 builder.Services.AddScoped<DbArchiveTool.Web.Services.AdminUserApiClient>();
+builder.Services.AddScoped<DbArchiveTool.Web.Services.ArchiveDataSourceApiClient>();
 var archiveApiBaseUrl = builder.Configuration["ArchiveApi:BaseUrl"];
 if (string.IsNullOrWhiteSpace(archiveApiBaseUrl))
 {
