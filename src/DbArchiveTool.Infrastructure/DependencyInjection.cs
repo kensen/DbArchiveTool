@@ -1,4 +1,5 @@
-﻿using DbArchiveTool.Domain.AdminUsers;
+﻿using System;
+using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.SqlExecution;
@@ -16,10 +17,11 @@ public static class DependencyInjection
                                "Server=localhost;Database=DbArchiveTool;Trusted_Connection=True;TrustServerCertificate=True";
 
         services.AddDbContext<ArchiveDbContext>(options =>
-            options.UseSqlServer(connectionString));
+            options.UseSqlServer(connectionString, sqlOptions =>
+                sqlOptions.EnableRetryOnFailure(maxRetryCount: 5, maxRetryDelay: TimeSpan.FromSeconds(10), errorNumbersToAdd: null)));
 
-    services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
-    services.AddScoped<IAdminUserRepository, AdminUserRepository>();
+        services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
+        services.AddScoped<IAdminUserRepository, AdminUserRepository>();
         services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
 
