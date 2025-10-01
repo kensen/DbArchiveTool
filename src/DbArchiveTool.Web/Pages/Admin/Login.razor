@@ -13,19 +13,19 @@
     <Alert Type="AlertType.Error" ShowIcon="true" Message="@_errorMessage" Style="margin-bottom:16px;" />
 }
 
-<Form Model="_model" OnFinish="HandleSubmitAsync">
+<Form Model="_model" OnFinish="HandleSubmitAsync" Layout="@FormLayout.Horizontal" LabelCol="@_labelCol" WrapperCol="@_wrapperCol" Class="auth-form">
     <FormItem Label="用户名" Name="UserName">
-        <Input Size="InputSize.Large" Placeholder="请输入用户名" @bind-Value="_model.UserName" />
+        <Input Size="InputSize.Large" Placeholder="请输入用户名" @bind-Value="_model.UserName" Style="width: 100%;" />
     </FormItem>
     <FormItem Label="密码" Name="Password">
-        <InputPassword Size="InputSize.Large" Placeholder="请输入密码" @bind-Value="_model.Password" />
+        <InputPassword Size="InputSize.Large" Placeholder="请输入密码" @bind-Value="_model.Password" Style="width: 100%;" />
     </FormItem>
-    <FormItem>
+    <FormItem WrapperCol="@_buttonWrapperCol">
         <Button Type="ButtonType.Primary" HtmlType="ButtonHtmlType.Submit" Size="ButtonSize.Large" Loading="_isSubmitting" Block>
             登录
         </Button>
     </FormItem>
-    <FormItem>
+    <FormItem WrapperCol="@_buttonWrapperCol">
         <Button Type="ButtonType.Default" Size="ButtonSize.Large" Block OnClick="NavigateToRegister">
             首次使用？注册管理员账号
         </Button>
@@ -45,6 +45,10 @@
 
     private bool _isSubmitting;
     private string? _errorMessage;
+
+    private readonly ColLayoutParam _labelCol = new() { Span = 6 };
+    private readonly ColLayoutParam _wrapperCol = new() { Span = 18 };
+    private readonly ColLayoutParam _buttonWrapperCol = new() { Span = 18, Offset = 6 };
 
     private async Task HandleSubmitAsync()
     {

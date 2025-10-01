@@ -65,6 +65,21 @@ body {
     margin: 0 0 24px;
     color: rgba(0, 0, 0, 0.55);
 }
+
+.auth-form .ant-form-item-label {
+    min-width: 96px;
+    text-align: right;
+}
+
+.auth-form .ant-form-item-control-input-content {
+    max-width: 320px;
+}
+
+.auth-form .ant-input,
+.auth-form .ant-input-password,
+.auth-form .ant-input-affix-wrapper {
+    width: 100%;
+}
 @import url('open-iconic/font/css/open-iconic-bootstrap.min.css');
 
 html, body {
