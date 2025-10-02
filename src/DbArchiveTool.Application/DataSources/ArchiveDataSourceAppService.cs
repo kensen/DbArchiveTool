@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.DataSources;
+using DbArchiveTool.Shared.DataSources;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -14,11 +15,16 @@ namespace DbArchiveTool.Application.DataSources;
 internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
 {
     private readonly IDataSourceRepository _repository;
+    private readonly IArchiveConnectionTester _connectionTester;
     private readonly ILogger<ArchiveDataSourceAppService> _logger;
 
-    public ArchiveDataSourceAppService(IDataSourceRepository repository, ILogger<ArchiveDataSourceAppService> logger)
+    public ArchiveDataSourceAppService(
+        IDataSourceRepository repository,
+        IArchiveConnectionTester connectionTester,
+        ILogger<ArchiveDataSourceAppService> logger)
     {
         _repository = repository;
+        _connectionTester = connectionTester;
         _logger = logger;
     }
 
@@ -128,18 +134,14 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             request.UserName,
             request.Password);
 
-        try
+        var result = await _connectionTester.TestConnectionAsync(builder.ConnectionString, cancellationToken);
+        if (!result.IsSuccess)
         {
-            await using var connection = new SqlConnection(builder.ConnectionString);
-            await connection.OpenAsync(cancellationToken);
-            await connection.CloseAsync();
-            return Result<bool>.Success(true);
+            _logger.LogWarning("Dapper 测试连接失败: {Server}/{Database} - {Message}", request.ServerAddress, request.DatabaseName, result.Error);
+            return Result<bool>.Failure(result.Error ?? "连接失败");
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "测试数据源连接失败: {Server}/{Database}", request.ServerAddress, request.DatabaseName);
-            return Result<bool>.Failure($"连接失败: {ex.Message}");
-        }
+
+        return Result<bool>.Success(true);
     }
 
     private static ArchiveDataSourceDto MapToDto(ArchiveDataSource entity)

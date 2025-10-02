@@ -2,8 +2,10 @@
 using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
+using DbArchiveTool.Infrastructure.DataSources;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.SqlExecution;
+using DbArchiveTool.Shared.DataSources;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,8 +25,9 @@ public static class DependencyInjection
 
         services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
         services.AddScoped<IAdminUserRepository, AdminUserRepository>();
-    services.AddScoped<IDataSourceRepository, DataSourceRepository>();
-    services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
+        services.AddScoped<IDataSourceRepository, DataSourceRepository>();
+        services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
+        services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
 
         return services;
