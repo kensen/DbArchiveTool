@@ -208,6 +208,36 @@ body {
     width: 16px;
     height: 16px;
 }
+
+.data-source-form .ant-form-item {
+    margin-bottom: 12px;
+}
+
+.data-source-form .ant-input,
+.data-source-form .ant-input-password,
+.data-source-form .ant-input-affix-wrapper {
+    width: 100%;
+}
+
+.form-inline-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px 24px;
+    align-items: center;
+}
+
+.form-inline-grid .ant-form-item {
+    margin-bottom: 0;
+}
+
+.form-inline-grid__full {
+    grid-column: 1 / -1;
+}
+
+.data-source-card__footer button {
+    padding: 0;
+    height: auto;
+}
 @import url('open-iconic/font/css/open-iconic-bootstrap.min.css');
 
 html, body {

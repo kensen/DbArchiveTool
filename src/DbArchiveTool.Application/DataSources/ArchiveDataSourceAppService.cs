@@ -1,8 +1,12 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using System.Linq;
 
 namespace DbArchiveTool.Application.DataSources;
 
@@ -27,7 +31,14 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
 
     public async Task<Result<Guid>> CreateAsync(CreateArchiveDataSourceRequest request, CancellationToken cancellationToken = default)
     {
-        var validationError = ValidateCreateRequest(request);
+        var validationError = ValidatePayload(
+            request.Name,
+            request.ServerAddress,
+            request.ServerPort,
+            request.DatabaseName,
+            request.UseIntegratedSecurity,
+            request.UserName);
+
         if (validationError is not null)
         {
             return Result<Guid>.Failure(validationError);
@@ -36,7 +47,7 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
         var existing = await _repository.ListAsync(cancellationToken);
         if (existing.Any(x => string.Equals(x.Name, request.Name, StringComparison.OrdinalIgnoreCase)))
         {
-            return Result<Guid>.Failure("数据源名称已存在,请更换名称");
+            return Result<Guid>.Failure("数据源名称已存在,请避免重复");
         }
 
         var entity = new ArchiveDataSource(
@@ -55,9 +66,67 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
         return Result<Guid>.Success(entity.Id);
     }
 
+    public async Task<Result<bool>> UpdateAsync(UpdateArchiveDataSourceRequest request, CancellationToken cancellationToken = default)
+    {
+        if (request.Id == Guid.Empty)
+        {
+            return Result<bool>.Failure("缺少数据源标识");
+        }
+
+        var validationError = ValidatePayload(
+            request.Name,
+            request.ServerAddress,
+            request.ServerPort,
+            request.DatabaseName,
+            request.UseIntegratedSecurity,
+            request.UserName);
+
+        if (validationError is not null)
+        {
+            return Result<bool>.Failure(validationError);
+        }
+
+        var entity = await _repository.GetAsync(request.Id, cancellationToken);
+        if (entity is null)
+        {
+            return Result<bool>.Failure("数据源不存在或已删除");
+        }
+
+        var existing = await _repository.ListAsync(cancellationToken);
+        if (existing.Any(x => x.Id != request.Id && string.Equals(x.Name, request.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            return Result<bool>.Failure("数据源名称已存在,请更换");
+        }
+
+        var password = request.UseIntegratedSecurity
+            ? null
+            : (string.IsNullOrWhiteSpace(request.Password) ? entity.Password : request.Password);
+
+        entity.Update(
+            request.Name,
+            request.Description,
+            request.ServerAddress,
+            request.ServerPort,
+            request.DatabaseName,
+            request.UseIntegratedSecurity,
+            request.UserName,
+            password,
+            request.OperatorName ?? "SYSTEM");
+
+        await _repository.SaveChangesAsync(cancellationToken);
+
+        return Result<bool>.Success(true);
+    }
+
     public async Task<Result<bool>> TestConnectionAsync(TestArchiveDataSourceRequest request, CancellationToken cancellationToken = default)
     {
-        var builder = BuildSqlConnectionString(request.ServerAddress, request.ServerPort, request.DatabaseName, request.UseIntegratedSecurity, request.UserName, request.Password);
+        var builder = BuildSqlConnectionString(
+            request.ServerAddress,
+            request.ServerPort,
+            request.DatabaseName,
+            request.UseIntegratedSecurity,
+            request.UserName,
+            request.Password);
 
         try
         {
@@ -94,31 +163,37 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
         };
     }
 
-    private static string? ValidateCreateRequest(CreateArchiveDataSourceRequest request)
+    private static string? ValidatePayload(
+        string name,
+        string serverAddress,
+        int serverPort,
+        string databaseName,
+        bool useIntegratedSecurity,
+        string? userName)
     {
-        if (string.IsNullOrWhiteSpace(request.Name))
+        if (string.IsNullOrWhiteSpace(name))
         {
             return "数据源名称不能为空";
         }
 
-        if (string.IsNullOrWhiteSpace(request.ServerAddress))
+        if (string.IsNullOrWhiteSpace(serverAddress))
         {
             return "服务器地址不能为空";
         }
 
-        if (request.ServerPort <= 0 || request.ServerPort > 65535)
+        if (serverPort <= 0 || serverPort > 65535)
         {
             return "端口号必须在 1-65535 之间";
         }
 
-        if (string.IsNullOrWhiteSpace(request.DatabaseName))
+        if (string.IsNullOrWhiteSpace(databaseName))
         {
             return "数据库名称不能为空";
         }
 
-        if (!request.UseIntegratedSecurity && string.IsNullOrWhiteSpace(request.UserName))
+        if (!useIntegratedSecurity && string.IsNullOrWhiteSpace(userName))
         {
-            return "使用 SQL 身份验证时必须填写用户名";
+            return "使用 SQL 登录时请填写用户名";
         }
 
         return null;
