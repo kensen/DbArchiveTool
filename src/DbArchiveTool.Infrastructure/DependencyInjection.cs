@@ -1,8 +1,10 @@
-﻿using System;
+using System;
 using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
+using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.DataSources;
+using DbArchiveTool.Infrastructure.Partitions;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using DbArchiveTool.Shared.DataSources;
@@ -29,6 +31,7 @@ public static class DependencyInjection
         services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
         services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
+        services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
 
         return services;
     }
