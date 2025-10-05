@@ -1,102 +1,76 @@
 @page "/archive-data-sources/{DataSourceId:guid}/partitions"
-@using AntDesign
-@using AntDesign.TableModels
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Components.Forms
 @using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Web.Services
 @inject PartitionManagementApiClient PartitionApi
 
-<PageHeader Title="分区管理" SubTitle="查看当前表的分区概览与安全状态">
-    <Breadcrumb>
-        <BreadcrumbItem><a href="/">归档数据源</a></BreadcrumbItem>
-        <BreadcrumbItem>分区管理</BreadcrumbItem>
-    </Breadcrumb>
-</PageHeader>
+<PageTitle>分区管理</PageTitle>
 
-<Spin Spinning="_loading">
-    @if (_overview is null)
-    {
-        <Alert Message="尚未加载数据" Type="AlertType.Info" ShowIcon="true" />
-    }
-    else
-    {
-        <div class="partition-overview">
-            <Descriptions Title="表信息" Column="2">
-                <DescriptionsItem Label="表名">@_overview.TableName</DescriptionsItem>
-                <DescriptionsItem Label="Range 模式">@(_overview.IsRangeRight ? "Range Right" : "Range Left")</DescriptionsItem>
-            </Descriptions>
-         <Table TItem="PartitionBoundaryItemDto"
-             DataSource="_overview.Boundaries"
-             RowKey="@(item => item.Key)"
-             OnRowClick="HandleRowClick" />
-        </div>
-        <div class="partition-safety">
-            <Card Title="安全状态" Loading="_loadingSafety">
-                @if (_safety is null)
-                {
-                    <Alert Message="选择一个边界查看详情" Type="AlertType.Info" ShowIcon="true" />
-                }
-                else
-                {
-                    <Descriptions Column="2">
-                        <DescriptionsItem Label="边界">@_safety.BoundaryKey</DescriptionsItem>
-                        <DescriptionsItem Label="行数">@_safety.RowCount</DescriptionsItem>
-                        <DescriptionsItem Label="是否包含数据">@(_safety.HasData ? "是" : "否")</DescriptionsItem>
-                        <DescriptionsItem Label="建议 SWITCH">@(_safety.SuggestSwitch ? "是" : "否")</DescriptionsItem>
-                    </Descriptions>
-                }
-            </Card>
-        </div>
-    }
-</Spin>
+<section class="partition-actions">
+	<button class="btn btn-primary" @onclick="OpenSplitDrawer">拆分分区</button>
+</section>
 
-@code {
-    [Parameter] public Guid DataSourceId { get; set; }
-    [Parameter] public string Schema { get; set; } = "dbo";
-    [Parameter] public string Table { get; set; } = string.Empty;
+@if (!string.IsNullOrEmpty(alertMessage))
+{
+	<div class="alert @($"alert-{alertLevel}")">@alertMessage</div>
+}
 
-    private bool _loading;
-    private bool _loadingSafety;
-    private PartitionOverviewDto? _overview;
-    private PartitionBoundarySafetyDto? _safety;
+@if (showSplitDrawer)
+{
+	<div class="split-drawer">
+		<EditForm Model="@splitModel">
+			<DataAnnotationsValidator />
+			<ValidationSummary />
 
-    protected override async Task OnParametersSetAsync()
-    {
-        if (string.IsNullOrWhiteSpace(Table))
-        {
-            return;
-        }
+			<div class="form-group">
+				<label for="schema">架构名</label>
+				<InputText id="schema" class="form-control" @bind-Value="splitModel.SchemaName" />
+			</div>
 
-        _loading = true;
-        try
-        {
-            _overview = await PartitionApi.GetOverviewAsync(DataSourceId, Schema, Table);
-            _safety = null;
-        }
-        finally
-        {
-            _loading = false;
-        }
-    }
+			<div class="form-group">
+				<label for="table">表名</label>
+				<InputText id="table" class="form-control" @bind-Value="splitModel.TableName" />
+			</div>
 
-    private async Task LoadSafetyAsync(string boundaryKey)
-    {
-        _loadingSafety = true;
-        try
-        {
-            _safety = await PartitionApi.GetSafetyAsync(DataSourceId, boundaryKey, Schema, Table);
-        }
-        finally
-        {
-            _loadingSafety = false;
-        }
-    }
+			<div class="form-group">
+				<label for="boundary">新分区边界值</label>
+				<InputText id="boundary" class="form-control" @bind-Value="splitModel.BoundaryValue" />
+			</div>
 
-    private async Task HandleRowClick(RowData<PartitionBoundaryItemDto> rowData)
-    {
-        if (rowData?.Data is null)
-        {
-            return;
-        }
+			<div class="form-group">
+				<label for="requestedBy">申请人</label>
+				<InputText id="requestedBy" class="form-control" @bind-Value="splitModel.RequestedBy" />
+			</div>
 
-        await LoadSafetyAsync(rowData.Data.Key);
-    }
+			<div class="form-check">
+				<InputCheckbox id="backup" class="form-check-input" @bind-Value="splitModel.BackupConfirmed" />
+				<label class="form-check-label" for="backup">已确认最近备份</label>
+			</div>
+
+			<div class="action-buttons">
+				<button type="button" class="btn btn-secondary" disabled="@submittingSplit" @onclick="PreviewSplitAsync">预览脚本</button>
+				<button type="button" class="btn btn-success" disabled="@submittingSplit || preview is null" @onclick="SubmitSplitAsync">提交命令</button>
+				<button type="button" class="btn btn-link" @onclick="CloseSplitDrawer">关闭</button>
+			</div>
+		</EditForm>
+
+		@if (preview is not null)
+		{
+			<section class="preview-section">
+				<h4>脚本预览</h4>
+				<pre>@preview.Script</pre>
+
+				@if (preview.Warnings.Count > 0)
+				{
+					<ul class="warning-list">
+						@foreach (var warning in preview.Warnings)
+						{
+							<li>@warning</li>
+						}
+					</ul>
+				}
+			</section>
+		}
+	</div>
 }

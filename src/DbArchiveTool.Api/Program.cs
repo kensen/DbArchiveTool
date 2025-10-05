@@ -1,15 +1,31 @@
+using System.Reflection;
 using DbArchiveTool.Application;
 using DbArchiveTool.Infrastructure;
 using DbArchiveTool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Version = "v1",
+        Title = "DbArchiveTool API",
+        Description = "归档与分区管理接口",
+    });
+
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, "DbArchiveTool.Api.xml");
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath);
+    }
+});
 
 builder.Services.AddApplicationLayer();
 builder.Services.AddInfrastructureLayer(builder.Configuration);
@@ -21,7 +37,10 @@ await EnsureDatabaseAsync(app.Services, app.Logger);
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "DbArchiveTool API v1");
+    });
 }
 
 app.UseHttpsRedirection();

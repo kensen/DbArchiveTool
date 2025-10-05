@@ -1,6 +1,7 @@
-﻿using DbArchiveTool.Domain.AdminUsers;
+using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
+using DbArchiveTool.Domain.Partitions;
 using Microsoft.EntityFrameworkCore;
 
 namespace DbArchiveTool.Infrastructure.Persistence;
@@ -14,6 +15,7 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<ArchiveTask> ArchiveTasks => Set<ArchiveTask>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
+    public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -45,6 +47,20 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.DatabaseName).IsRequired().HasMaxLength(128);
             builder.Property(x => x.UserName).HasMaxLength(64);
             builder.Property(x => x.Password).HasMaxLength(256);
+        });
+
+        modelBuilder.Entity<PartitionCommand>(builder =>
+        {
+            builder.ToTable("PartitionCommand");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.SchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.Payload).IsRequired();
+            builder.Property(x => x.Script).IsRequired();
+            builder.Property(x => x.RequestedBy).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.RequestedAt).HasConversion(
+                v => v.UtcDateTime,
+                v => DateTime.SpecifyKind(v, DateTimeKind.Utc));
         });
     }
 }
