@@ -54,7 +54,7 @@ public class SqlServerPartitionMetadataRepositoryTests : IAsyncLifetime
     {
         var services = new ServiceCollection();
         services.AddSingleton<IDbConnectionFactory>(new TestConnectionFactory());
-        services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
+        _ = services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddLogging(builder => builder.AddProvider(NullLoggerProvider.Instance));
         return services.BuildServiceProvider();
     }

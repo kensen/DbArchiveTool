@@ -29,7 +29,7 @@ public static class DependencyInjection
         services.AddScoped<IAdminUserRepository, AdminUserRepository>();
         services.AddScoped<IDataSourceRepository, DataSourceRepository>();
         services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
-        services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
+        services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
 
