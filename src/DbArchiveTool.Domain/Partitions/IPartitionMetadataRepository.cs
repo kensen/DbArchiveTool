@@ -11,6 +11,12 @@ public interface IPartitionMetadataRepository
     /// <summary>列出指定表的所有分区边界。</summary>
     Task<IReadOnlyList<PartitionBoundary>> ListBoundariesAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default);
 
+    /// <summary>列出分区边界到文件组的映射关系。</summary>
+    Task<IReadOnlyList<PartitionFilegroupMapping>> ListFilegroupMappingsAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default);
+
+    /// <summary>获取指定表的安全规则。</summary>
+    Task<PartitionSafetyRule?> GetSafetyRuleAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default);
+
     /// <summary>获取指定边界当前的安全快照。</summary>
     Task<PartitionSafetySnapshot> GetSafetySnapshotAsync(Guid dataSourceId, string schemaName, string tableName, string boundaryKey, CancellationToken cancellationToken = default);
 }

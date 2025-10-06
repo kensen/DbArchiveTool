@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
@@ -9,7 +10,7 @@ using DbArchiveTool.Infrastructure.SqlExecution;
 namespace DbArchiveTool.Infrastructure.Partitions;
 
 /// <summary>
-/// 通过系统视图读取 SQL Server 分区表的元数据与安全信息。
+/// 通过系统视图读取 SQL Server 分区表的元数据、文件组映射与安全规则。
 /// </summary>
 internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataRepository
 {
@@ -47,7 +48,24 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         var partitionColumn = new PartitionColumn(result.ColumnName, valueKind);
         var filegroupStrategy = PartitionFilegroupStrategy.Default("PRIMARY");
         var isRangeRight = ((int)result.RangeType) == 1;
-        return new PartitionConfiguration(dataSourceId, schemaName, tableName, result.PartitionFunctionName, result.PartitionSchemeName, partitionColumn, filegroupStrategy, isRangeRight);
+
+        var boundaries = await ListBoundariesAsync(dataSourceId, schemaName, tableName, cancellationToken);
+        var mappings = await ListFilegroupMappingsAsync(dataSourceId, schemaName, tableName, cancellationToken);
+        var safetyRule = await GetSafetyRuleAsync(dataSourceId, schemaName, tableName, cancellationToken);
+
+        return new PartitionConfiguration(
+            dataSourceId,
+            schemaName,
+            tableName,
+            result.PartitionFunctionName,
+            result.PartitionSchemeName,
+            partitionColumn,
+            filegroupStrategy,
+            isRangeRight,
+            null,
+            boundaries,
+            mappings,
+            safetyRule);
     }
 
     /// <inheritdoc />
@@ -92,6 +110,50 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<PartitionFilegroupMapping>> ListFilegroupMappingsAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+        const string sql = @"SELECT
+                        ROW_NUMBER() OVER (ORDER BY ds2.data_space_id) AS SortKey,
+                        ds2.name AS FilegroupName
+                    FROM sys.indexes i
+                    INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+                    INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
+                    INNER JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id
+                    INNER JOIN sys.data_spaces ds2 ON dds.destination_id = ds2.data_space_id
+                    WHERE i.object_id = OBJECT_ID(@FullName) AND i.index_id = 1;";
+
+        var rows = await connection.QueryAsync(sql, new { FullName = $"[{schemaName}].[{tableName}]" });
+        var mappings = new List<PartitionFilegroupMapping>();
+        foreach (var row in rows)
+        {
+            var boundaryKey = $"{row.SortKey:D4}";
+            var filegroupName = (string)row.FilegroupName;
+            mappings.Add(PartitionFilegroupMapping.Create(boundaryKey, filegroupName));
+        }
+
+        return mappings;
+    }
+
+    /// <inheritdoc />
+    public async Task<PartitionSafetyRule?> GetSafetyRuleAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+        const string sql = @"SELECT TOP 1 RequiresEmptyPartition, ExecutionWindowHint
+                    FROM PartitionSafetyRules
+                    WHERE SchemaName = @SchemaName AND TableName = @TableName";
+
+        var rule = await connection.QuerySingleOrDefaultAsync(sql, new { SchemaName = schemaName, TableName = tableName });
+        if (rule is null)
+        {
+            return null;
+        }
+
+        var allowedLockModes = new List<string> { "S" };
+        return new PartitionSafetyRule(rule.RequiresEmptyPartition, allowedLockModes, rule.ExecutionWindowHint ?? string.Empty);
+    }
+
+    /// <inheritdoc />
     public async Task<PartitionSafetySnapshot> GetSafetySnapshotAsync(Guid dataSourceId, string schemaName, string tableName, string boundaryKey, CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
@@ -118,9 +180,6 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         return new PartitionSafetySnapshot(boundaryKey, 0, false, false, "未找到分区信息，可能已被合并或表未分区。");
     }
 
-    /// <summary>
-    /// 将 SQL Server 类型映射为领域层的分区值类型。
-    /// </summary>
     private static PartitionValueKind MapToValueKind(string sqlType)
     {
         return sqlType.ToLowerInvariant() switch

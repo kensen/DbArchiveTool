@@ -15,7 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace DbArchiveTool.Infrastructure;
 
 /// <summary>
-/// 基础设施层依赖注入扩展，注册数据库上下文、仓储与脚本生成器。
+/// 基础设施层依赖注入扩展，注册数据库上下文、仓储与脚本服务。
 /// </summary>
 public static class DependencyInjection
 {
@@ -37,6 +37,7 @@ public static class DependencyInjection
         services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
         services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
+        services.AddScoped<ISqlTemplateProvider, FileSqlTemplateProvider>();
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();

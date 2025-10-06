@@ -31,4 +31,12 @@ internal sealed class PartitionCommandRepository : IPartitionCommandRepository
         context.PartitionCommands.Update(command);
         await context.SaveChangesAsync(cancellationToken);
     }
+
+    public async Task<IReadOnlyList<PartitionCommand>> ListPendingAsync(CancellationToken cancellationToken = default)
+    {
+        return await context.PartitionCommands
+            .Where(x => x.Status == PartitionCommandStatus.Approved || x.Status == PartitionCommandStatus.Queued)
+            .OrderBy(x => x.RequestedAt)
+            .ToListAsync(cancellationToken);
+    }
 }

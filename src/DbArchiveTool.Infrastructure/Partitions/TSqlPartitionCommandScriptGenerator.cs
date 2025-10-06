@@ -1,14 +1,19 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Results;
-using System.Text;
 
 namespace DbArchiveTool.Infrastructure.Partitions;
 
 /// <summary>
-/// 默认的 T-SQL 脚本生成器，实现分区拆分脚本拼装，并给出关键提醒。
+/// T-SQL 脚本生成器，实现拆分、合并及 SWITCH 等分区操作脚本的拼装。
 /// </summary>
 internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScriptGenerator
 {
+    /// <inheritdoc />
     public Result<string> GenerateSplitScript(PartitionConfiguration configuration, IReadOnlyList<PartitionValue> newBoundaries)
     {
         if (newBoundaries.Count == 0)
@@ -23,12 +28,16 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
 
         var builder = new StringBuilder();
         builder.AppendLine("-- 请确保已执行备份并确认无长事务占用目标表");
+
         foreach (var boundary in newBoundaries)
         {
             var literal = boundary.ToLiteral();
+            var filegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
+
             builder.AppendLine("BEGIN TRY");
             builder.AppendLine("    BEGIN TRANSACTION");
-            builder.AppendLine($"    ALTER PARTITION FUNCTION {configuration.PartitionFunctionName}() SPLIT RANGE ({literal});");
+            builder.AppendLine($"    ALTER PARTITION SCHEME [{configuration.PartitionSchemeName}] NEXT USED [{filegroup}];");
+            builder.AppendLine($"    ALTER PARTITION FUNCTION [{configuration.PartitionFunctionName}]() SPLIT RANGE ({literal});");
             builder.AppendLine("    COMMIT TRANSACTION");
             builder.AppendLine("END TRY");
             builder.AppendLine("BEGIN CATCH");
@@ -40,6 +49,86 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         }
 
         builder.AppendLine("-- 建议执行完毕后重新检查分区边界与统计信息");
+        return Result<string>.Success(builder.ToString());
+    }
+
+    /// <inheritdoc />
+    public Result<string> GenerateMergeScript(PartitionConfiguration configuration, string boundaryKey)
+    {
+        if (string.IsNullOrWhiteSpace(boundaryKey))
+        {
+            return Result<string>.Failure("分区边界标识不能为空。");
+        }
+
+        var boundary = configuration.Boundaries.FirstOrDefault(x => x.SortKey.Equals(boundaryKey, StringComparison.Ordinal));
+        if (boundary is null)
+        {
+            return Result<string>.Failure("未找到指定的分区边界。");
+        }
+
+        var literal = boundary.Value.ToLiteral();
+        var builder = new StringBuilder();
+        builder.AppendLine("-- 请确认目标分区无需要保留的数据");
+        builder.AppendLine("BEGIN TRY");
+        builder.AppendLine("    BEGIN TRANSACTION");
+        builder.AppendLine($"    ALTER PARTITION FUNCTION [{configuration.PartitionFunctionName}]() MERGE RANGE ({literal});");
+        builder.AppendLine("    COMMIT TRANSACTION");
+        builder.AppendLine("END TRY");
+        builder.AppendLine("BEGIN CATCH");
+        builder.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
+        builder.AppendLine("    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();");
+        builder.AppendLine("    RAISERROR ('分区合并失败: %s', 16, 1, @ErrorMessage);");
+        builder.AppendLine("END CATCH");
+        builder.AppendLine("-- 合并完成后建议重建统计信息");
+
+        return Result<string>.Success(builder.ToString());
+    }
+
+    /// <inheritdoc />
+    public Result<string> GenerateSwitchOutScript(PartitionConfiguration configuration, SwitchPayload payload)
+    {
+        if (payload is null)
+        {
+            return Result<string>.Failure("SWITCH 参数不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.SourcePartitionKey))
+        {
+            return Result<string>.Failure("源分区标识不能为空。");
+        }
+
+        if (!int.TryParse(payload.SourcePartitionKey, NumberStyles.Integer, CultureInfo.InvariantCulture, out var partitionNumber))
+        {
+            return Result<string>.Failure("源分区标识格式不正确。");
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.TargetTable))
+        {
+            return Result<string>.Failure("目标表名称不能为空。");
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine("SET XACT_ABORT ON;");
+        builder.AppendLine("SET NOCOUNT ON;");
+        builder.AppendLine("BEGIN TRY");
+        builder.AppendLine("    BEGIN TRANSACTION;");
+
+        if (payload.CreateStagingTable && !string.IsNullOrWhiteSpace(payload.StagingTableName))
+        {
+            builder.AppendLine($"    -- 根据需要创建临时表 {payload.StagingTableName}");
+            builder.AppendLine("    -- TODO: 在模板目录中补全临时表结构定义");
+        }
+
+        builder.AppendLine($"    ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] SWITCH PARTITION {partitionNumber}");
+        builder.AppendLine($"    TO {payload.TargetTable};");
+        builder.AppendLine("    COMMIT TRANSACTION;");
+        builder.AppendLine("END TRY");
+        builder.AppendLine("BEGIN CATCH");
+        builder.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
+        builder.AppendLine("    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();");
+        builder.AppendLine("    RAISERROR ('分区 SWITCH 操作失败: %s', 16, 1, @ErrorMessage);");
+        builder.AppendLine("END CATCH");
+
         return Result<string>.Success(builder.ToString());
     }
 

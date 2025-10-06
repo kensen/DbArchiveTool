@@ -1,10 +1,12 @@
 using System.Data;
 using Dapper;
-using DbArchiveTool.Domain.DataSources;
 using Microsoft.Extensions.Logging;
 
 namespace DbArchiveTool.Infrastructure.SqlExecution;
 
+/// <summary>
+/// 基于 Dapper 的 SQL 执行器，负责执行命令与查询并记录日志。
+/// </summary>
 internal sealed class SqlExecutor : ISqlExecutor
 {
     private readonly IDbConnectionFactory connectionFactory;
