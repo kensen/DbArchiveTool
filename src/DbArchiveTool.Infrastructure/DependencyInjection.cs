@@ -6,6 +6,7 @@ using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.DataSources;
 using DbArchiveTool.Infrastructure.Partitions;
 using DbArchiveTool.Infrastructure.Persistence;
+using DbArchiveTool.Infrastructure.Queries;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using DbArchiveTool.Shared.DataSources;
 using Microsoft.EntityFrameworkCore;
@@ -41,6 +42,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
+        services.AddScoped<SqlPartitionQueryService>();
 
         return services;
     }

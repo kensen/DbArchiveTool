@@ -35,6 +35,22 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
         return Result<IReadOnlyList<ArchiveDataSourceDto>>.Success(dtos);
     }
 
+    public async Task<Result<ArchiveDataSourceDto>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        if (id == Guid.Empty)
+        {
+            return Result<ArchiveDataSourceDto>.Failure("数据源ID无效");
+        }
+
+        var entity = await _repository.GetAsync(id, cancellationToken);
+        if (entity is null)
+        {
+            return Result<ArchiveDataSourceDto>.Failure("未找到指定的数据源");
+        }
+
+        return Result<ArchiveDataSourceDto>.Success(MapToDto(entity));
+    }
+
     public async Task<Result<Guid>> CreateAsync(CreateArchiveDataSourceRequest request, CancellationToken cancellationToken = default)
     {
         var validationError = ValidatePayload(

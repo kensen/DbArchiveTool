@@ -33,6 +33,21 @@ public sealed class ArchiveDataSourcesController : ControllerBase
         return Ok(result.Value);
     }
 
+    /// <summary>根据ID获取单个数据源。</summary>
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(ArchiveDataSourceDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetByIdAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _appService.GetByIdAsync(id, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return NotFound(new { error = result.Error });
+        }
+
+        return Ok(result.Value);
+    }
+
     /// <summary>创建归档数据源。</summary>
     [HttpPost]
     [ProducesResponseType(typeof(Guid), StatusCodes.Status201Created)]

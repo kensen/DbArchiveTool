@@ -8,6 +8,9 @@ public interface IArchiveDataSourceAppService
     /// <summary>获取当前启用的数据源列表。</summary>
     Task<Result<IReadOnlyList<ArchiveDataSourceDto>>> GetAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>根据ID获取单个数据源。</summary>
+    Task<Result<ArchiveDataSourceDto>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
+
     /// <summary>创建归档数据源。</summary>
     Task<Result<Guid>> CreateAsync(CreateArchiveDataSourceRequest request, CancellationToken cancellationToken = default);
 

@@ -1,76 +1,345 @@
 @page "/archive-data-sources/{DataSourceId:guid}/partitions"
-@using System.ComponentModel.DataAnnotations
-@using Microsoft.AspNetCore.Components.Forms
+@attribute [ReuseTabsPage(Title = "分区管理", Closable = true)]
+@using AntDesign
 @using DbArchiveTool.Application.Partitions
 @using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components
 @inject PartitionManagementApiClient PartitionApi
+@inject PartitionInfoApiClient PartitionInfoApi
+@inject MessageService Message
+@inject NavigationManager Navigation
 
 <PageTitle>分区管理</PageTitle>
 
-<section class="partition-actions">
-	<button class="btn btn-primary" @onclick="OpenSplitDrawer">拆分分区</button>
-</section>
+<PageHeader Title="分区表管理" OnBack="NavigateBack">
+    <PageHeaderExtra>
+        <div class="header-actions">
+            <Button Type="@ButtonType.Default" Icon="database" OnClick="ShowSourceServerInfo">源服务器信息</Button>
+            <Button Type="@ButtonType.Default" Icon="setting" OnClick="ShowTargetServerConfig">目标服务器配置</Button>
+            <Button Type="@ButtonType.Primary" Icon="reload" Loading="_loading" OnClick="ReloadAsync">刷新</Button>
+        </div>
+    </PageHeaderExtra>
+    <PageHeaderContent>
+        <div class="server-info">
+            <Descriptions Size="@DescriptionsSize.Small" Column="3">
+                <DescriptionsItem Title="数据源">@_dataSourceName</DescriptionsItem>
+                <DescriptionsItem Title="服务器">@_serverAddress</DescriptionsItem>
+                <DescriptionsItem Title="数据库">@_databaseName</DescriptionsItem>
+            </Descriptions>
+        </div>
+    </PageHeaderContent>
+</PageHeader>
 
-@if (!string.IsNullOrEmpty(alertMessage))
-{
-	<div class="alert @($"alert-{alertLevel}")">@alertMessage</div>
-}
+<div class="partition-container">
+    <div class="partition-tables-section">
+        <div class="section-header">
+            <h3>分区表配置</h3>
+            <Space>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary" Icon="plus" Size="@ButtonSize.Small" OnClick="ShowAddPartitionConfig">添加分区配置</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default" Icon="edit" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null)" OnClick="ShowEditPartitionConfig">修改分区配置</Button>
+                </SpaceItem>
+            </Space>
+        </div>
 
-@if (showSplitDrawer)
-{
-	<div class="split-drawer">
-		<EditForm Model="@splitModel">
-			<DataAnnotationsValidator />
-			<ValidationSummary />
+        <Table TItem="PartitionTableInfo"
+               DataSource="_partitionTables"
+               Loading="_loading"
+               Size="@TableSize.Small"
+               Bordered
+               @bind-SelectedRows="_selectedTableRows"
+               OnRowClick="OnTableRowClick"
+               RowClassName="@(x => x.Data == _selectedTable ? "table-row-selected" : "")">
+            <Selection Key="@(context.TableName)" Type="@SelectionType.Radio" />
+            <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
+            <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
+            <PropertyColumn Property="c => c.PartitionFunction" Title="分区函数" />
+            <PropertyColumn Property="c => c.PartitionScheme" Title="分区方案" />
+            <PropertyColumn Property="c => c.PartitionColumn" Title="分区列" />
+            <PropertyColumn Property="c => c.DataType" Title="数据类型" />
+            <PropertyColumn Property="c => c.TotalPartitions" Title="分区数" Sortable />
+            <PropertyColumn Property="c => c.IsRangeRight" Title="分区类型">
+                <Template>
+                    <Tag Color="@(context.IsRangeRight ? "blue" : "green")">@(context.IsRangeRight ? "RIGHT" : "LEFT")</Tag>
+                </Template>
+            </PropertyColumn>
+            <ActionColumn Title="操作">
+                <Space Size="@("small")">
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => ViewTableDetails(context)">详情</Button>
+                    </SpaceItem>
+                </Space>
+            </ActionColumn>
+        </Table>
+    </div>
 
-			<div class="form-group">
-				<label for="schema">架构名</label>
-				<InputText id="schema" class="form-control" @bind-Value="splitModel.SchemaName" />
-			</div>
+    <div class="partition-details-section">
+        <div class="section-header">
+            <h3>分区边界值明细 @(_selectedTable != null ? $"- {_selectedTable.SchemaName}.{_selectedTable.TableName}" : "")</h3>
+            <Space>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary" Icon="plus" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null)" OnClick="ShowAddPartitionValue">添加分区值</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default" Icon="scissor" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null || _selectedPartitionRows.Count() == 0)" OnClick="ShowSplitPartition">拆分分区</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default" Icon="merge-cells" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null || _selectedPartitionRows.Count() == 0)" OnClick="ShowMergePartition">合并分区</Button>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Default" Icon="swap" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null || _selectedPartitionRows.Count() == 0)" OnClick="ShowSwitchPartition">切换分区</Button>
+                </SpaceItem>
+            </Space>
+        </div>
 
-			<div class="form-group">
-				<label for="table">表名</label>
-				<InputText id="table" class="form-control" @bind-Value="splitModel.TableName" />
-			</div>
+        @if (_selectedTable == null)
+        {
+            <Empty Description="@("请先选择一个分区表")" />
+        }
+        else
+        {
+            <Table TItem="PartitionDetailInfo"
+                   DataSource="_partitionDetails"
+                   Loading="_loadingDetails"
+                   Size="@TableSize.Small"
+                   Bordered
+                   @bind-SelectedRows="_selectedPartitionRows">
+                <Selection Key="@(context.PartitionNumber.ToString())" />
+                <PropertyColumn Property="c => c.PartitionNumber" Title="分区号" Sortable DefaultSortOrder="@SortDirection.Ascending" />
+                <PropertyColumn Property="c => c.BoundaryValue" Title="边界值" />
+                <PropertyColumn Property="c => c.RangeType" Title="范围类型">
+                    <Template>
+                        <Tag Color="@(context.RangeType == "RIGHT" ? "blue" : "green")">@context.RangeType</Tag>
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="c => c.FilegroupName" Title="文件组" />
+                <PropertyColumn Property="c => c.RowCount" Title="行数" Sortable />
+                <PropertyColumn Property="c => c.TotalSpaceMB" Title="空间(MB)" Sortable />
+                <PropertyColumn Property="c => c.DataCompression" Title="压缩">
+                    <Template>
+                        <Tag Color="@(context.DataCompression == "NONE" ? "default" : "cyan")">@context.DataCompression</Tag>
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="c => c.CreatedDate" Title="创建时间" Format="yyyy-MM-dd HH:mm" />
+            </Table>
+        }
+    </div>
+</div>
 
-			<div class="form-group">
-				<label for="boundary">新分区边界值</label>
-				<InputText id="boundary" class="form-control" @bind-Value="splitModel.BoundaryValue" />
-			</div>
+<Modal Title="源服务器信息" @bind-Visible="_sourceServerModalVisible" Footer="null" Width="600">
+    <Descriptions Bordered Column="1" Size="@DescriptionsSize.Small">
+        <DescriptionsItem Title="服务器地址">@_serverAddress</DescriptionsItem>
+        <DescriptionsItem Title="端口">@_serverPort</DescriptionsItem>
+        <DescriptionsItem Title="数据库">@_databaseName</DescriptionsItem>
+        <DescriptionsItem Title="认证方式">@(_useIntegratedSecurity ? "Windows 集成" : $"SQL 登录 ({_userName})")</DescriptionsItem>
+        <DescriptionsItem Title="连接状态">
+            <Tag Color="@(_isConnected ? "success" : "error")">@(_isConnected ? "已连接" : "未连接")</Tag>
+        </DescriptionsItem>
+    </Descriptions>
+</Modal>
 
-			<div class="form-group">
-				<label for="requestedBy">申请人</label>
-				<InputText id="requestedBy" class="form-control" @bind-Value="splitModel.RequestedBy" />
-			</div>
+<Modal Title="目标服务器配置" @bind-Visible="_targetServerModalVisible" Width="720" OnOk="SaveTargetServerConfig" OnCancel="() => _targetServerModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="目标服务器配置功能开发中" ShowIcon="true" />
+</Modal>
 
-			<div class="form-check">
-				<InputCheckbox id="backup" class="form-check-input" @bind-Value="splitModel.BackupConfirmed" />
-				<label class="form-check-label" for="backup">已确认最近备份</label>
-			</div>
+<Modal Title="@_partitionConfigModalTitle" @bind-Visible="_partitionConfigModalVisible" Width="800" OnOk="SavePartitionConfig" OnCancel="() => _partitionConfigModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="分区配置功能开发中" ShowIcon="true" />
+</Modal>
 
-			<div class="action-buttons">
-				<button type="button" class="btn btn-secondary" disabled="@submittingSplit" @onclick="PreviewSplitAsync">预览脚本</button>
-				<button type="button" class="btn btn-success" disabled="@submittingSplit || preview is null" @onclick="SubmitSplitAsync">提交命令</button>
-				<button type="button" class="btn btn-link" @onclick="CloseSplitDrawer">关闭</button>
-			</div>
-		</EditForm>
+<Modal Title="添加分区边界值" @bind-Visible="_addPartitionValueModalVisible" Width="600" OnOk="SavePartitionValue" OnCancel="() => _addPartitionValueModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="添加分区值功能开发中" ShowIcon="true" />
+</Modal>
 
-		@if (preview is not null)
-		{
-			<section class="preview-section">
-				<h4>脚本预览</h4>
-				<pre>@preview.Script</pre>
+<Modal Title="拆分分区" @bind-Visible="_splitModalVisible" Width="720" OnOk="ExecuteSplit" OnCancel="() => _splitModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="拆分分区功能开发中" ShowIcon="true" />
+</Modal>
 
-				@if (preview.RiskWarnings.Count > 0)
-				{
-					<ul class="warning-list">
-						@foreach (var warning in preview.RiskWarnings)
-						{
-							<li>@warning</li>
-						}
-					</ul>
-				}
-			</section>
-		}
-	</div>
+<Modal Title="合并分区" @bind-Visible="_mergeModalVisible" Width="720" OnOk="ExecuteMerge" OnCancel="() => _mergeModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="合并分区功能开发中" ShowIcon="true" />
+</Modal>
+
+<Modal Title="切换分区" @bind-Visible="_switchModalVisible" Width="720" OnOk="ExecuteSwitch" OnCancel="() => _switchModalVisible = false">
+    <Alert Type="@AlertType.Info" Message="切换分区功能开发中" ShowIcon="true" />
+</Modal>
+
+<style>
+    .partition-container { display: flex; flex-direction: column; gap: 16px; padding: 16px; height: calc(100vh - 200px); }
+    .partition-tables-section { flex: 0 0 auto; max-height: 40%; overflow: auto; background: white; padding: 16px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .partition-details-section { flex: 1 1 auto; overflow: auto; background: white; padding: 16px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; }
+    .section-header h3 { margin: 0; font-size: 16px; font-weight: 600; color: #262626; }
+    .header-actions { display: flex; gap: 8px; }
+    .server-info { margin-top: 12px; }
+    .table-row-selected { background-color: #e6f7ff !important; }
+    ::deep .ant-table-tbody > tr:hover > td { cursor: pointer; }
+</style>
+
+@code {
+    [Parameter] public Guid DataSourceId { get; set; }
+    private string _dataSourceName = "加载中...";
+    private string _serverAddress = "";
+    private int _serverPort = 1433;
+    private string _databaseName = "";
+    private bool _useIntegratedSecurity = true;
+    private string _userName = "";
+    private bool _isConnected = false;
+    private bool _loading = false;
+    private List<PartitionTableInfo> _partitionTables = new();
+    private IEnumerable<PartitionTableInfo> _selectedTableRows = Array.Empty<PartitionTableInfo>();
+    private PartitionTableInfo? _selectedTable = null;
+    private bool _loadingDetails = false;
+    private List<PartitionDetailInfo> _partitionDetails = new();
+    private IEnumerable<PartitionDetailInfo> _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+    private bool _sourceServerModalVisible = false;
+    private bool _targetServerModalVisible = false;
+    private bool _partitionConfigModalVisible = false;
+    private string _partitionConfigModalTitle = "添加分区配置";
+    private bool _addPartitionValueModalVisible = false;
+    private bool _splitModalVisible = false;
+    private bool _mergeModalVisible = false;
+    private bool _switchModalVisible = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSourceInfoAsync();
+        await LoadPartitionTablesAsync();
+    }
+
+    private async Task LoadDataSourceInfoAsync()
+    {
+        try
+        {
+            // 从API加载数据源信息
+            var response = await PartitionInfoApi.GetDataSourceAsync(DataSourceId);
+            if (response != null)
+            {
+                _dataSourceName = response.Name ?? "未命名数据源";
+                _serverAddress = response.ServerAddress ?? "";
+                _serverPort = response.ServerPort;
+                _databaseName = response.DatabaseName ?? "";
+                _useIntegratedSecurity = response.UseIntegratedSecurity;
+                _userName = response.UserName ?? "";
+                _isConnected = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载数据源信息失败: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPartitionTablesAsync()
+    {
+        _loading = true;
+        try
+        {
+            // 从API加载真实分区表数据
+            var tables = await PartitionInfoApi.GetPartitionTablesAsync(DataSourceId);
+            _partitionTables = tables.Select(t => new PartitionTableInfo
+            {
+                SchemaName = t.SchemaName,
+                TableName = t.TableName,
+                PartitionFunction = t.PartitionFunction,
+                PartitionScheme = t.PartitionScheme,
+                PartitionColumn = t.PartitionColumn,
+                DataType = t.DataType,
+                TotalPartitions = t.TotalPartitions,
+                IsRangeRight = t.IsRangeRight
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载分区表失败: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadPartitionDetailsAsync(PartitionTableInfo table)
+    {
+        _loadingDetails = true;
+        try
+        {
+            // 从API加载真实分区明细数据
+            var details = await PartitionInfoApi.GetPartitionDetailsAsync(DataSourceId, table.SchemaName, table.TableName);
+            _partitionDetails = details.Select(d => new PartitionDetailInfo
+            {
+                PartitionNumber = d.PartitionNumber,
+                BoundaryValue = d.BoundaryValue,
+                RangeType = d.RangeType,
+                FilegroupName = d.FilegroupName,
+                RowCount = d.RowCount,
+                TotalSpaceMB = d.TotalSpaceMB,
+                DataCompression = d.DataCompression,
+                CreatedDate = DateTime.Now // API未返回,使用当前时间占位
+            }).ToList();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载分区明细失败: {ex.Message}");
+        }
+        finally
+        {
+            _loadingDetails = false;
+        }
+    }
+
+    private void OnTableRowClick(RowData<PartitionTableInfo> row)
+    {
+        _selectedTable = row.Data;
+        _selectedTableRows = new[] { row.Data };
+        _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+        _ = LoadPartitionDetailsAsync(row.Data);
+    }
+
+    private async Task ReloadAsync()
+    {
+        await LoadPartitionTablesAsync();
+        if (_selectedTable != null) await LoadPartitionDetailsAsync(_selectedTable);
+    }
+
+    private void NavigateBack() => Navigation.NavigateTo("/");
+    private void ShowSourceServerInfo() => _sourceServerModalVisible = true;
+    private void ShowTargetServerConfig() => _targetServerModalVisible = true;
+    private void ShowAddPartitionConfig() { _partitionConfigModalTitle = "添加分区配置"; _partitionConfigModalVisible = true; }
+    private void ShowEditPartitionConfig() { _partitionConfigModalTitle = "修改分区配置"; _partitionConfigModalVisible = true; }
+    private void ShowAddPartitionValue() => _addPartitionValueModalVisible = true;
+    private void ShowSplitPartition() => _splitModalVisible = true;
+    private void ShowMergePartition() => _mergeModalVisible = true;
+    private void ShowSwitchPartition() => _switchModalVisible = true;
+    private void ViewTableDetails(PartitionTableInfo table) { }
+    private Task SaveTargetServerConfig() { _targetServerModalVisible = false; return Task.CompletedTask; }
+    private Task SavePartitionConfig() { _partitionConfigModalVisible = false; return Task.CompletedTask; }
+    private Task SavePartitionValue() { _addPartitionValueModalVisible = false; return Task.CompletedTask; }
+    private Task ExecuteSplit() { _splitModalVisible = false; return Task.CompletedTask; }
+    private Task ExecuteMerge() { _mergeModalVisible = false; return Task.CompletedTask; }
+    private Task ExecuteSwitch() { _switchModalVisible = false; return Task.CompletedTask; }
+
+    private class PartitionTableInfo
+    {
+        public string SchemaName { get; set; } = "";
+        public string TableName { get; set; } = "";
+        public string PartitionFunction { get; set; } = "";
+        public string PartitionScheme { get; set; } = "";
+        public string PartitionColumn { get; set; } = "";
+        public string DataType { get; set; } = "";
+        public int TotalPartitions { get; set; }
+        public bool IsRangeRight { get; set; }
+    }
+
+    private class PartitionDetailInfo
+    {
+        public int PartitionNumber { get; set; }
+        public string BoundaryValue { get; set; } = "";
+        public string RangeType { get; set; } = "";
+        public string FilegroupName { get; set; } = "";
+        public long RowCount { get; set; }
+        public decimal TotalSpaceMB { get; set; }
+        public string DataCompression { get; set; } = "NONE";
+        public DateTime CreatedDate { get; set; }
+    }
 }

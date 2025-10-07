@@ -27,6 +27,11 @@ builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionManagementApi
     client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
 });
 
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient>(client =>
+{
+    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
