@@ -3,7 +3,8 @@
 @using System.Linq
 @using DbArchiveTool.Application.DataSources
 @using DbArchiveTool.Web.Services
-@attribute [ReuseTabsPage(Title = "首页总览", Closable = false, Order = 0)]
+@using Microsoft.AspNetCore.Components
+@attribute [ReuseTabsPage(Title = "归档数据源", Closable = false, Order = 0)]
 
 <PageHeader Title="归档数据源" SubTitle="集中维护归档流程依赖的数据源接入信息">
     <PageHeaderExtra>
@@ -57,6 +58,7 @@
                     </div>
                     <div class="data-source-card__footer">
                         <Button Type="ButtonType.Link" OnClick="() => BeginEdit(item)">编辑</Button>
+                        <Button Type="ButtonType.Link" OnClick="@(() => NavigateToPartitions(item.Id))">分区管理</Button>
                         <Button Type="ButtonType.Link" Disabled="true">更多</Button>
                     </div>
                 </div>
@@ -118,6 +120,7 @@
 @code {
     [Inject] private ArchiveDataSourceApiClient DataSourceApi { get; set; } = default!;
     [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
 
     private readonly List<ArchiveDataSourceDto> _dataSources = new();
     private readonly ArchiveDataSourceFormModel _formModel = new();
@@ -184,6 +187,11 @@
         _editingId = dataSource.Id;
         _modalTitle = "编辑归档数据源";
         _isModalVisible = true;
+    }
+
+    private void NavigateToPartitions(Guid dataSourceId)
+    {
+        Navigation.NavigateTo($"/archive-data-sources/{dataSourceId}/partitions");
     }
 
     private void HandleCancel()

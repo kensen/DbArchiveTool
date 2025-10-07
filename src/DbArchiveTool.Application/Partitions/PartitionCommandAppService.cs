@@ -213,4 +213,49 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
 
         return warnings;
     }
+
+    public Task<Result<PartitionCommandPreviewDto>> PreviewMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<PartitionCommandPreviewDto>.Failure("Merge功能开发中"));
+    }
+
+    public Task<Result<Guid>> ExecuteMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<Guid>.Failure("Merge功能开发中"));
+    }
+
+    public Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<PartitionCommandPreviewDto>.Failure("Switch功能开发中"));
+    }
+
+    public Task<Result<Guid>> ExecuteSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<Guid>.Failure("Switch功能开发中"));
+    }
+
+    public async Task<Result<PartitionCommandStatusDto>> GetStatusAsync(Guid commandId, CancellationToken cancellationToken = default)
+    {
+        if (commandId == Guid.Empty)
+        {
+            return Result<PartitionCommandStatusDto>.Failure("命令标识不能为空。");
+        }
+
+        var command = await commandRepository.GetByIdAsync(commandId, cancellationToken);
+        if (command is null)
+        {
+            return Result<PartitionCommandStatusDto>.Failure("未找到指定的分区命令。");
+        }
+
+        var dto = new PartitionCommandStatusDto(
+            command.Id,
+            command.Status,
+            command.RequestedAt,
+            command.ExecutedAt,
+            command.CompletedAt,
+            command.FailureReason,
+            command.ExecutionLog);
+
+        return Result<PartitionCommandStatusDto>.Success(dto);
+    }
 }
