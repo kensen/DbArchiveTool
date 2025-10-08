@@ -55,6 +55,27 @@ public class PartitionInfoApiClient
         var response = await _httpClient.PutAsJsonAsync($"api/v1/archive-data-sources/{dataSourceId}/target-server", request);
         return response.IsSuccessStatusCode;
     }
+
+    /// <summary>
+    /// 测试数据库连接
+    /// </summary>
+    public async Task<bool> TestConnectionAsync(TestConnectionRequest request)
+    {
+        try
+        {
+            var response = await _httpClient.PostAsJsonAsync("api/v1/archive-data-sources/test-connection", request);
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<bool>();
+                return result;
+            }
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 /// <summary>
@@ -132,4 +153,23 @@ public class UpdateTargetServerConfigRequest
     public string? TargetUserName { get; set; }
     /// <summary>目标服务器密码</summary>
     public string? TargetPassword { get; set; }
+}
+
+/// <summary>
+/// 测试连接请求
+/// </summary>
+public class TestConnectionRequest
+{
+    /// <summary>服务器地址</summary>
+    public string ServerAddress { get; set; } = "";
+    /// <summary>服务器端口</summary>
+    public int ServerPort { get; set; } = 1433;
+    /// <summary>数据库名称</summary>
+    public string DatabaseName { get; set; } = "";
+    /// <summary>是否使用集成身份验证</summary>
+    public bool UseIntegratedSecurity { get; set; } = true;
+    /// <summary>用户名</summary>
+    public string? UserName { get; set; }
+    /// <summary>密码</summary>
+    public string? Password { get; set; }
 }
