@@ -38,7 +38,5 @@ Thumbs.db
 .DS_Store
 Thumbs.db
 /Docs/新数据库归档工具-核心功能需求清单.md
-Docs/密码加密导致分区管理故障修复.md
-Docs/密码加密功能测试报告.md
-Docs/密码加密功能实现总结.md
-Docs/代码重构-统一连接字符串构建逻辑.md
+Docs/Changes/
+
