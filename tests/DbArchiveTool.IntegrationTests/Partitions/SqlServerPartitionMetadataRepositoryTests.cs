@@ -98,14 +98,19 @@ VALUES (1, '2024-12-31'), (2, '2025-02-01'), (3, '2025-08-15');
     {
         public IDbConnection CreateConnection(string connectionString) => new SqlConnection(connectionString);
 
-        public string BuildConnectionString(ArchiveDataSource dataSource) => ConnectionString;
-
         public async Task<SqlConnection> CreateSqlConnectionAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
         {
             var connection = new SqlConnection(ConnectionString);
             await connection.OpenAsync(cancellationToken);
             return connection;
         }
+
+        public Task<SqlConnection> CreateTargetSqlConnectionAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
+            => CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+        public string BuildConnectionString(ArchiveDataSource dataSource) => ConnectionString;
+
+        public string BuildTargetConnectionString(ArchiveDataSource dataSource) => ConnectionString;
     }
 }
 

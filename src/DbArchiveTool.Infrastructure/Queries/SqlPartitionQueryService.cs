@@ -1,17 +1,18 @@
+using System;
 using System.Data;
+using System.Globalization;
 using Dapper;
-using DbArchiveTool.Infrastructure.Persistence;
 using Microsoft.Data.SqlClient;
 
 namespace DbArchiveTool.Infrastructure.Queries;
 
 /// <summary>
-/// SQL Server分区信息查询服务
+/// SQL Server 分区与元数据查询。
 /// </summary>
 public class SqlPartitionQueryService
 {
     /// <summary>
-    /// 查询数据库中所有分区表信息
+    /// 查询数据库中已有的分区表信息。
     /// </summary>
     public async Task<List<PartitionTableDto>> GetPartitionTablesAsync(string connectionString)
     {
@@ -38,17 +39,17 @@ GROUP BY
     s.name, t.name, pf.name, ps.name, c.name, ty.name, pf.boundary_value_on_right
 ORDER BY s.name, t.name";
 
-        using var connection = new SqlConnection(connectionString);
+        await using var connection = new SqlConnection(connectionString);
         var result = await connection.QueryAsync<PartitionTableDto>(sql);
         return result.ToList();
     }
 
     /// <summary>
-    /// 查询指定分区表的分区边界值明细
+    /// 查询指定表的分区边界详情。
     /// </summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(
-        string connectionString, 
-        string schemaName, 
+        string connectionString,
+        string schemaName,
         string tableName)
     {
         const string sql = @"
@@ -75,52 +76,225 @@ GROUP BY
     p.partition_number, prv.value, pf.boundary_value_on_right, fg.name, p.rows, p.data_compression_desc
 ORDER BY p.partition_number";
 
-        using var connection = new SqlConnection(connectionString);
+        await using var connection = new SqlConnection(connectionString);
         var result = await connection.QueryAsync<PartitionDetailDto>(sql, new { SchemaName = schemaName, TableName = tableName });
         return result.ToList();
+    }
+
+    /// <summary>
+    /// 查询指定表的列信息。
+    /// </summary>
+    public async Task<List<PartitionTableColumnDto>> GetTableColumnsAsync(
+        string connectionString,
+        string schemaName,
+        string tableName)
+    {
+        const string sql = @"
+SELECT 
+    c.name AS ColumnName,
+    t.name AS DataType,
+    c.is_nullable AS IsNullable,
+    c.max_length AS MaxLength,
+    c.precision AS [Precision],
+    c.scale AS Scale
+FROM sys.columns c
+INNER JOIN sys.types t ON c.user_type_id = t.user_type_id AND t.is_table_type = 0
+WHERE c.object_id = OBJECT_ID(@FullName)
+ORDER BY c.column_id;";
+
+        var fullName = BuildFullName(schemaName, tableName);
+
+        await using var connection = new SqlConnection(connectionString);
+        var columns = await connection.QueryAsync<PartitionTableColumnDto>(sql, new { FullName = fullName });
+        return columns.Select(column =>
+        {
+            column.DisplayType = BuildDisplayType(column.DataType, column.MaxLength, column.Precision, column.Scale);
+            return column;
+        }).ToList();
+    }
+
+    /// <summary>
+    /// 查询指定列的最小值、最大值等统计数据。
+    /// </summary>
+    public async Task<PartitionColumnStatisticsDto> GetColumnStatisticsAsync(
+        string connectionString,
+        string schemaName,
+        string tableName,
+        string columnName)
+    {
+        const string sql = @"
+DECLARE @stmt NVARCHAR(MAX) =
+N'SELECT 
+    MIN(CONVERT(NVARCHAR(4000), ' + QUOTENAME(@ColumnName) + N')) AS MinValue,
+    MAX(CONVERT(NVARCHAR(4000), ' + QUOTENAME(@ColumnName) + N')) AS MaxValue,
+    COUNT_BIG(*) AS TotalRows,
+    COUNT_BIG(DISTINCT ' + QUOTENAME(@ColumnName) + N') AS DistinctRows
+FROM ' + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N';';
+
+EXEC sp_executesql @stmt;";
+
+        await using var connection = new SqlConnection(connectionString);
+        var stats = await connection.QuerySingleAsync<ColumnStatsRow>(sql, new
+        {
+            SchemaName = schemaName,
+            TableName = tableName,
+            ColumnName = columnName
+        });
+
+        return new PartitionColumnStatisticsDto
+        {
+            MinValue = stats.MinValue,
+            MaxValue = stats.MaxValue,
+            TotalRows = stats.TotalRows,
+            DistinctRows = stats.DistinctRows
+        };
+    }
+
+    /// <summary>
+    /// 获取服务器上的用户数据库列表。
+    /// </summary>
+    public async Task<List<TargetDatabaseDto>> GetDatabasesAsync(string connectionString, string? currentDatabaseName = null)
+    {
+        const string sql = @"
+SELECT name AS Name, database_id AS DatabaseId
+FROM sys.databases
+WHERE database_id > 4 AND state = 0
+ORDER BY name;";
+
+        await using var connection = new SqlConnection(connectionString);
+        var rows = await connection.QueryAsync<TargetDatabaseDto>(sql);
+        return rows.Select(row =>
+        {
+            row.IsCurrent = !string.IsNullOrWhiteSpace(currentDatabaseName) &&
+                            string.Equals(row.Name, currentDatabaseName, StringComparison.OrdinalIgnoreCase);
+            return row;
+        }).ToList();
+    }
+
+    /// <summary>
+    /// 获取当前数据库默认数据文件目录。
+    /// </summary>
+    public async Task<string?> GetDefaultFilePathAsync(string connectionString)
+    {
+        const string sql = @"
+SELECT TOP 1
+    LEFT(physical_name, LEN(physical_name) - CHARINDEX('\', REVERSE(physical_name))) AS DirectoryPath
+FROM sys.database_files
+WHERE type_desc = 'ROWS'
+ORDER BY file_id;";
+
+        await using var connection = new SqlConnection(connectionString);
+        return await connection.ExecuteScalarAsync<string?>(sql);
+    }
+
+    private static string BuildFullName(string schemaName, string tableName)
+        => $"{QuoteIdentifier(schemaName)}.{QuoteIdentifier(tableName)}";
+
+    private static string QuoteIdentifier(string value)
+        => $"[{value.Replace("]", "]]", StringComparison.Ordinal)}]";
+
+    private static string BuildDisplayType(string dataType, int maxLength, int precision, int scale)
+    {
+        if (string.Equals(dataType, "decimal", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(dataType, "numeric", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{dataType}({precision},{scale})";
+        }
+
+        if (string.Equals(dataType, "datetime2", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(dataType, "time", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{dataType}({scale})";
+        }
+
+        if (maxLength == -1)
+        {
+            return $"{dataType}(max)";
+        }
+
+        if (maxLength <= 0)
+        {
+            return dataType;
+        }
+
+        var normalizedLength = dataType switch
+        {
+            "nchar" or "nvarchar" => maxLength / 2,
+            _ => maxLength
+        };
+
+        return $"{dataType}({normalizedLength.ToString(CultureInfo.InvariantCulture)})";
     }
 }
 
 /// <summary>
-/// 分区表信息DTO
+/// 分区表概览 DTO。
 /// </summary>
 public class PartitionTableDto
 {
-    /// <summary>架构名</summary>
-    public string SchemaName { get; set; } = "";
-    /// <summary>表名</summary>
-    public string TableName { get; set; } = "";
-    /// <summary>分区函数</summary>
-    public string PartitionFunction { get; set; } = "";
-    /// <summary>分区方案</summary>
-    public string PartitionScheme { get; set; } = "";
-    /// <summary>分区列</summary>
-    public string PartitionColumn { get; set; } = "";
-    /// <summary>数据类型</summary>
-    public string DataType { get; set; } = "";
-    /// <summary>是否RIGHT分区</summary>
+    public string SchemaName { get; set; } = string.Empty;
+    public string TableName { get; set; } = string.Empty;
+    public string PartitionFunction { get; set; } = string.Empty;
+    public string PartitionScheme { get; set; } = string.Empty;
+    public string PartitionColumn { get; set; } = string.Empty;
+    public string DataType { get; set; } = string.Empty;
     public bool IsRangeRight { get; set; }
-    /// <summary>分区总数</summary>
     public int TotalPartitions { get; set; }
 }
 
 /// <summary>
-/// 分区明细信息DTO
+/// 分区边界详情 DTO。
 /// </summary>
 public class PartitionDetailDto
 {
-    /// <summary>分区号</summary>
     public int PartitionNumber { get; set; }
-    /// <summary>边界值</summary>
-    public string BoundaryValue { get; set; } = "";
-    /// <summary>范围类型</summary>
-    public string RangeType { get; set; } = "";
-    /// <summary>文件组名称</summary>
-    public string FilegroupName { get; set; } = "";
-    /// <summary>行数</summary>
+    public string BoundaryValue { get; set; } = string.Empty;
+    public string RangeType { get; set; } = string.Empty;
+    public string FilegroupName { get; set; } = string.Empty;
     public long RowCount { get; set; }
-    /// <summary>占用空间(MB)</summary>
     public decimal TotalSpaceMB { get; set; }
-    /// <summary>数据压缩方式</summary>
     public string DataCompression { get; set; } = "NONE";
+}
+
+/// <summary>
+/// 表列下拉项 DTO。
+/// </summary>
+public class PartitionTableColumnDto
+{
+    public string ColumnName { get; set; } = string.Empty;
+    public string DataType { get; set; } = string.Empty;
+    public bool IsNullable { get; set; }
+    public int MaxLength { get; set; }
+    public int Precision { get; set; }
+    public int Scale { get; set; }
+    public string DisplayType { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 列统计信息 DTO。
+/// </summary>
+public class PartitionColumnStatisticsDto
+{
+    public string? MinValue { get; set; }
+    public string? MaxValue { get; set; }
+    public long? TotalRows { get; set; }
+    public long? DistinctRows { get; set; }
+}
+
+/// <summary>
+/// 目标数据库 DTO。
+/// </summary>
+public class TargetDatabaseDto
+{
+    public string Name { get; set; } = string.Empty;
+    public int DatabaseId { get; set; }
+    public bool IsCurrent { get; set; }
+}
+
+internal sealed class ColumnStatsRow
+{
+    public string? MinValue { get; set; }
+    public string? MaxValue { get; set; }
+    public long? TotalRows { get; set; }
+    public long? DistinctRows { get; set; }
 }
