@@ -1,4 +1,5 @@
 using System.Data;
+using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Domain.DataSources;
 using Microsoft.Data.SqlClient;
 
@@ -10,10 +11,14 @@ namespace DbArchiveTool.Infrastructure.SqlExecution;
 internal sealed class SqlConnectionFactory : IDbConnectionFactory
 {
     private readonly IDataSourceRepository dataSourceRepository;
+    private readonly IPasswordEncryptionService encryptionService;
 
-    public SqlConnectionFactory(IDataSourceRepository dataSourceRepository)
+    public SqlConnectionFactory(
+        IDataSourceRepository dataSourceRepository,
+        IPasswordEncryptionService encryptionService)
     {
         this.dataSourceRepository = dataSourceRepository;
+        this.encryptionService = encryptionService;
     }
 
     /// <inheritdoc />
@@ -40,7 +45,14 @@ internal sealed class SqlConnectionFactory : IDbConnectionFactory
         if (!dataSource.UseIntegratedSecurity)
         {
             builder.UserID = dataSource.UserName;
-            builder.Password = dataSource.Password;
+            
+            // 解密密码（如果已加密）
+            var password = dataSource.Password;
+            if (!string.IsNullOrWhiteSpace(password) && encryptionService.IsEncrypted(password))
+            {
+                password = encryptionService.Decrypt(password);
+            }
+            builder.Password = password;
         }
 
         var connection = new SqlConnection(builder.ConnectionString);

@@ -1,3 +1,4 @@
+using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Infrastructure.Queries;
 using Microsoft.AspNetCore.Mvc;
@@ -13,13 +14,16 @@ public class PartitionInfoController : ControllerBase
 {
     private readonly IDataSourceRepository _dataSourceRepository;
     private readonly SqlPartitionQueryService _queryService;
+    private readonly IPasswordEncryptionService _encryptionService;
 
     public PartitionInfoController(
         IDataSourceRepository dataSourceRepository,
-        SqlPartitionQueryService queryService)
+        SqlPartitionQueryService queryService,
+        IPasswordEncryptionService encryptionService)
     {
         _dataSourceRepository = dataSourceRepository;
         _queryService = queryService;
+        _encryptionService = encryptionService;
     }
 
     /// <summary>
@@ -86,7 +90,14 @@ public class PartitionInfoController : ControllerBase
         if (!dataSource.UseIntegratedSecurity)
         {
             builder.UserID = dataSource.UserName;
-            builder.Password = dataSource.Password;
+            
+            // 解密密码（如果已加密）
+            var password = dataSource.Password;
+            if (!string.IsNullOrWhiteSpace(password) && _encryptionService.IsEncrypted(password))
+            {
+                password = _encryptionService.Decrypt(password);
+            }
+            builder.Password = password;
         }
 
         return builder.ConnectionString;

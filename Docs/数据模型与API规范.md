@@ -132,7 +132,13 @@ public class ArchiveDataSource : AggregateRoot
 > **说明**:
 > - 当 `UseSourceAsTarget = true` 时,归档数据将存储在源服务器的指定数据库中,目标服务器字段可为空。
 > - 当 `UseSourceAsTarget = false` 时,必须完整配置目标服务器信息,归档数据将导出到独立的目标服务器。
-> - 密码字段在传输和存储时应加密处理,前端更新时空值表示保留原密码。
+> - **密码加密机制**:
+>   - 所有密码字段 (`Password`, `TargetPassword`) 在存储时使用 **ASP.NET Core Data Protection API** 加密
+>   - 加密后的密码以 `ENCRYPTED:` 前缀标识,确保向后兼容
+>   - 加密算法: AES-256-CBC (由 Data Protection API 自动管理)
+>   - Purpose: `DbArchiveTool.PasswordProtection` (确保密钥隔离)
+>   - 密码仅在需要建立数据库连接时解密,其他时候保持加密状态
+>   - 前端更新时空值表示保留原密码,不会触发重新加密
 
 ### 3.2 `ArchiveConfiguration`
 ```csharp

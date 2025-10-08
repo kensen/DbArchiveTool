@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Shared.DataSources;
 using DbArchiveTool.Shared.Results;
@@ -16,15 +17,18 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
 {
     private readonly IDataSourceRepository _repository;
     private readonly IArchiveConnectionTester _connectionTester;
+    private readonly IPasswordEncryptionService _encryptionService;
     private readonly ILogger<ArchiveDataSourceAppService> _logger;
 
     public ArchiveDataSourceAppService(
         IDataSourceRepository repository,
         IArchiveConnectionTester connectionTester,
+        IPasswordEncryptionService encryptionService,
         ILogger<ArchiveDataSourceAppService> logger)
     {
         _repository = repository;
         _connectionTester = connectionTester;
+        _encryptionService = encryptionService;
         _logger = logger;
     }
 
@@ -72,6 +76,15 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             return Result<Guid>.Failure("数据源名称已存在,请避免重复");
         }
 
+        // 加密密码
+        var encryptedPassword = string.IsNullOrWhiteSpace(request.Password)
+            ? null
+            : _encryptionService.Encrypt(request.Password);
+        
+        var encryptedTargetPassword = string.IsNullOrWhiteSpace(request.TargetPassword)
+            ? null
+            : _encryptionService.Encrypt(request.TargetPassword);
+
         var entity = new ArchiveDataSource(
             request.Name,
             request.Description,
@@ -80,7 +93,7 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             request.DatabaseName,
             request.UseIntegratedSecurity,
             request.UserName,
-            request.Password);
+            encryptedPassword);
 
         // 设置目标服务器配置
         entity.Update(
@@ -91,14 +104,14 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             request.DatabaseName,
             request.UseIntegratedSecurity,
             request.UserName,
-            request.Password,
+            encryptedPassword,
             request.UseSourceAsTarget,
             request.TargetServerAddress,
             request.TargetServerPort,
             request.TargetDatabaseName,
             request.TargetUseIntegratedSecurity,
             request.TargetUserName,
-            request.TargetPassword);
+            encryptedTargetPassword);
 
         await _repository.AddAsync(entity, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);
@@ -138,6 +151,7 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             return Result<bool>.Failure("数据源名称已存在,请更换");
         }
 
+        // 处理密码保留逻辑：如果为空则保留原密码
         var password = request.UseIntegratedSecurity
             ? null
             : (string.IsNullOrWhiteSpace(request.Password) ? entity.Password : request.Password);
@@ -145,6 +159,17 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
         var targetPassword = request.UseSourceAsTarget || request.TargetUseIntegratedSecurity
             ? null
             : (string.IsNullOrWhiteSpace(request.TargetPassword) ? entity.TargetPassword : request.TargetPassword);
+
+        // 加密新提供的密码（已加密的密码不再重复加密）
+        if (!string.IsNullOrWhiteSpace(password) && !_encryptionService.IsEncrypted(password))
+        {
+            password = _encryptionService.Encrypt(password);
+        }
+        
+        if (!string.IsNullOrWhiteSpace(targetPassword) && !_encryptionService.IsEncrypted(targetPassword))
+        {
+            targetPassword = _encryptionService.Encrypt(targetPassword);
+        }
 
         entity.Update(
             request.Name,
@@ -171,13 +196,20 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
 
     public async Task<Result<bool>> TestConnectionAsync(TestArchiveDataSourceRequest request, CancellationToken cancellationToken = default)
     {
+        // 解密密码（如果已加密）
+        var password = request.Password;
+        if (!string.IsNullOrWhiteSpace(password) && _encryptionService.IsEncrypted(password))
+        {
+            password = _encryptionService.Decrypt(password);
+        }
+
         var builder = BuildSqlConnectionString(
             request.ServerAddress,
             request.ServerPort,
             request.DatabaseName,
             request.UseIntegratedSecurity,
             request.UserName,
-            request.Password);
+            password);
 
         var result = await _connectionTester.TestConnectionAsync(builder.ConnectionString, cancellationToken);
         if (!result.IsSuccess)

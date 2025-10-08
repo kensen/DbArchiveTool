@@ -1,4 +1,5 @@
 using System;
+using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
@@ -7,8 +8,10 @@ using DbArchiveTool.Infrastructure.DataSources;
 using DbArchiveTool.Infrastructure.Partitions;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.Queries;
+using DbArchiveTool.Infrastructure.Security;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using DbArchiveTool.Shared.DataSources;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -43,6 +46,10 @@ public static class DependencyInjection
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<SqlPartitionQueryService>();
+
+        // 注册密码加密服务
+        services.AddDataProtection();
+        services.AddSingleton<IPasswordEncryptionService, PasswordEncryptionService>();
 
         return services;
     }
