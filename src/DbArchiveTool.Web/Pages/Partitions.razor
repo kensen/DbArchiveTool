@@ -141,7 +141,43 @@
 </Modal>
 
 <Modal Title="目标服务器配置" @bind-Visible="_targetServerModalVisible" Width="720" OnOk="SaveTargetServerConfig" OnCancel="() => _targetServerModalVisible = false">
-    <Alert Type="@AlertType.Info" Message="目标服务器配置功能开发中" ShowIcon="true" />
+    <Form Model="_targetServerModel" LabelColSpan="6" WrapperColSpan="18">
+        <FormItem Label="目标服务器">
+            <Switch CheckedChildren="使用源服务器" UnCheckedChildren="自定义配置" @bind-Checked="_targetServerModel.UseSourceAsTarget" />
+            <span style="margin-left: 12px; color: #8c8c8c; font-size: 13px;">
+                @(_targetServerModel.UseSourceAsTarget ? "归档数据将保存在源服务器" : "归档数据将保存在自定义目标服务器")
+            </span>
+        </FormItem>
+
+        @if (!_targetServerModel.UseSourceAsTarget)
+        {
+            <Divider>目标服务器信息</Divider>
+
+            <FormItem Label="服务器地址" Required>
+                <Input @bind-Value="_targetServerModel.ServerAddress" Placeholder="例如: localhost 或 192.168.1.100" />
+            </FormItem>
+
+            <FormItem Label="端口">
+                <AntDesign.InputNumber @bind-Value="_targetServerModel.Port" Min="1" Max="65535" DefaultValue="1433" Style="width: 100%;" />
+            </FormItem>
+
+            <FormItem Label="数据库名称" Required>
+                <Input @bind-Value="_targetServerModel.DatabaseName" Placeholder="目标数据库名称" />
+            </FormItem>
+
+            <FormItem Label="认证方式">
+                <Switch CheckedChildren="Windows" UnCheckedChildren="SQL 登录" @bind-Checked="_targetServerModel.UseIntegratedSecurity" />
+            </FormItem>
+
+            <FormItem Label="登录账号" Required="@(!_targetServerModel.UseIntegratedSecurity)">
+                <Input @bind-Value="_targetServerModel.UserName" Disabled="_targetServerModel.UseIntegratedSecurity" Placeholder="SQL 登录账号" />
+            </FormItem>
+
+            <FormItem Label="登录密码">
+                <InputPassword @bind-Value="_targetServerModel.Password" Disabled="_targetServerModel.UseIntegratedSecurity" Placeholder="留空表示不修改原密码" VisibilityToggle="true" />
+            </FormItem>
+        }
+    </Form>
 </Modal>
 
 <Modal Title="@_partitionConfigModalTitle" @bind-Visible="_partitionConfigModalVisible" Width="800" OnOk="SavePartitionConfig" OnCancel="() => _partitionConfigModalVisible = false">
@@ -194,6 +230,7 @@
     private IEnumerable<PartitionDetailInfo> _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
     private bool _sourceServerModalVisible = false;
     private bool _targetServerModalVisible = false;
+    private TargetServerConfigModel _targetServerModel = new();
     private bool _partitionConfigModalVisible = false;
     private string _partitionConfigModalTitle = "添加分区配置";
     private bool _addPartitionValueModalVisible = false;
@@ -304,7 +341,33 @@
 
     private void NavigateBack() => Navigation.NavigateTo("/");
     private void ShowSourceServerInfo() => _sourceServerModalVisible = true;
-    private void ShowTargetServerConfig() => _targetServerModalVisible = true;
+    
+    private async Task ShowTargetServerConfig()
+    {
+        // 从API加载当前目标服务器配置
+        try
+        {
+            var dataSource = await PartitionInfoApi.GetDataSourceAsync(DataSourceId);
+            if (dataSource != null)
+            {
+                _targetServerModel = new TargetServerConfigModel
+                {
+                    UseSourceAsTarget = dataSource.UseSourceAsTarget,
+                    ServerAddress = dataSource.TargetServerAddress ?? "",
+                    Port = dataSource.TargetServerPort,
+                    DatabaseName = dataSource.TargetDatabaseName ?? "",
+                    UseIntegratedSecurity = dataSource.TargetUseIntegratedSecurity,
+                    UserName = dataSource.TargetUserName ?? "",
+                    Password = "" // 安全起见不回显密码
+                };
+            }
+            _targetServerModalVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载目标服务器配置失败: {ex.Message}");
+        }
+    }
     private void ShowAddPartitionConfig() { _partitionConfigModalTitle = "添加分区配置"; _partitionConfigModalVisible = true; }
     private void ShowEditPartitionConfig() { _partitionConfigModalTitle = "修改分区配置"; _partitionConfigModalVisible = true; }
     private void ShowAddPartitionValue() => _addPartitionValueModalVisible = true;
@@ -312,7 +375,52 @@
     private void ShowMergePartition() => _mergeModalVisible = true;
     private void ShowSwitchPartition() => _switchModalVisible = true;
     private void ViewTableDetails(PartitionTableInfo table) { }
-    private Task SaveTargetServerConfig() { _targetServerModalVisible = false; return Task.CompletedTask; }
+    
+    private async Task SaveTargetServerConfig()
+    {
+        try
+        {
+            // 验证表单
+            if (!_targetServerModel.UseSourceAsTarget)
+            {
+                if (string.IsNullOrWhiteSpace(_targetServerModel.ServerAddress))
+                {
+                    Message.Warning("请输入目标服务器地址");
+                    return;
+                }
+                if (string.IsNullOrWhiteSpace(_targetServerModel.DatabaseName))
+                {
+                    Message.Warning("请输入目标数据库名称");
+                    return;
+                }
+                if (!_targetServerModel.UseIntegratedSecurity && string.IsNullOrWhiteSpace(_targetServerModel.UserName))
+                {
+                    Message.Warning("使用SQL Server身份验证时必须输入用户名");
+                    return;
+                }
+            }
+
+            // 调用API保存配置
+            var request = new UpdateTargetServerConfigRequest
+            {
+                UseSourceAsTarget = _targetServerModel.UseSourceAsTarget,
+                TargetServerAddress = _targetServerModel.ServerAddress,
+                TargetServerPort = _targetServerModel.Port,
+                TargetDatabaseName = _targetServerModel.DatabaseName,
+                TargetUseIntegratedSecurity = _targetServerModel.UseIntegratedSecurity,
+                TargetUserName = _targetServerModel.UserName,
+                TargetPassword = _targetServerModel.Password
+            };
+
+            await PartitionInfoApi.UpdateTargetServerConfigAsync(DataSourceId, request);
+            Message.Success("目标服务器配置已保存");
+            _targetServerModalVisible = false;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"保存目标服务器配置失败: {ex.Message}");
+        }
+    }
     private Task SavePartitionConfig() { _partitionConfigModalVisible = false; return Task.CompletedTask; }
     private Task SavePartitionValue() { _addPartitionValueModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteSplit() { _splitModalVisible = false; return Task.CompletedTask; }
@@ -341,5 +449,46 @@
         public decimal TotalSpaceMB { get; set; }
         public string DataCompression { get; set; } = "NONE";
         public DateTime CreatedDate { get; set; }
+    }
+
+    /// <summary>
+    /// 目标服务器配置表单模型
+    /// </summary>
+    private class TargetServerConfigModel
+    {
+        /// <summary>
+        /// 是否使用源服务器作为目标服务器
+        /// </summary>
+        public bool UseSourceAsTarget { get; set; } = true;
+
+        /// <summary>
+        /// 目标服务器地址
+        /// </summary>
+        public string ServerAddress { get; set; } = "";
+
+        /// <summary>
+        /// 目标服务器端口
+        /// </summary>
+        public int Port { get; set; } = 1433;
+
+        /// <summary>
+        /// 目标数据库名称
+        /// </summary>
+        public string DatabaseName { get; set; } = "";
+
+        /// <summary>
+        /// 是否使用集成认证
+        /// </summary>
+        public bool UseIntegratedSecurity { get; set; } = true;
+
+        /// <summary>
+        /// 用户名
+        /// </summary>
+        public string UserName { get; set; } = "";
+
+        /// <summary>
+        /// 密码
+        /// </summary>
+        public string Password { get; set; } = "";
     }
 }

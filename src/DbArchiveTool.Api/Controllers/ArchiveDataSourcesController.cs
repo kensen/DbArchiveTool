@@ -90,4 +90,69 @@ public sealed class ArchiveDataSourcesController : ControllerBase
 
         return Ok(result.Value);
     }
+
+    /// <summary>更新数据源目标服务器配置。</summary>
+    [HttpPut("{id:guid}/target-server")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> UpdateTargetServerAsync(Guid id, [FromBody] UpdateTargetServerConfigDto dto, CancellationToken cancellationToken)
+    {
+        // 先获取数据源以便保留其他字段
+        var getResult = await _appService.GetByIdAsync(id, cancellationToken);
+        if (!getResult.IsSuccess)
+        {
+            return NotFound(new { error = getResult.Error });
+        }
+
+        var dataSource = getResult.Value!; // 此处已经在上面验证了非空
+
+        // 构造完整的更新请求
+        var request = new UpdateArchiveDataSourceRequest
+        {
+            Id = id,
+            Name = dataSource.Name,
+            Description = dataSource.Description,
+            ServerAddress = dataSource.ServerAddress,
+            ServerPort = dataSource.ServerPort,
+            DatabaseName = dataSource.DatabaseName,
+            UseIntegratedSecurity = dataSource.UseIntegratedSecurity,
+            UserName = dataSource.UserName,
+            Password = null, // 保持原密码
+            UseSourceAsTarget = dto.UseSourceAsTarget,
+            TargetServerAddress = dto.TargetServerAddress,
+            TargetServerPort = dto.TargetServerPort,
+            TargetDatabaseName = dto.TargetDatabaseName,
+            TargetUseIntegratedSecurity = dto.TargetUseIntegratedSecurity,
+            TargetUserName = dto.TargetUserName,
+            TargetPassword = dto.TargetPassword,
+            OperatorName = "WebUser"
+        };
+
+        var result = await _appService.UpdateAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return Problem(title: "更新目标服务器配置失败", detail: result.Error, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return NoContent();
+    }
+}
+
+/// <summary>更新目标服务器配置DTO。</summary>
+public sealed record UpdateTargetServerConfigDto
+{
+    /// <summary>是否使用源服务器作为目标服务器。</summary>
+    public bool UseSourceAsTarget { get; init; } = true;
+    /// <summary>目标服务器地址。</summary>
+    public string? TargetServerAddress { get; init; }
+    /// <summary>目标服务器端口。</summary>
+    public int TargetServerPort { get; init; } = 1433;
+    /// <summary>目标数据库名称。</summary>
+    public string? TargetDatabaseName { get; init; }
+    /// <summary>目标服务器是否使用集成身份验证。</summary>
+    public bool TargetUseIntegratedSecurity { get; init; } = true;
+    /// <summary>目标服务器用户名。</summary>
+    public string? TargetUserName { get; init; }
+    /// <summary>目标服务器密码。</summary>
+    public string? TargetPassword { get; init; }
 }

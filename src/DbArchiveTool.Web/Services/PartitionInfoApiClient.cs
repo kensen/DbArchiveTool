@@ -46,6 +46,15 @@ public class PartitionInfoApiClient
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<DataSourceDto>();
     }
+
+    /// <summary>
+    /// 更新数据源目标服务器配置
+    /// </summary>
+    public async Task<bool> UpdateTargetServerConfigAsync(Guid dataSourceId, UpdateTargetServerConfigRequest request)
+    {
+        var response = await _httpClient.PutAsJsonAsync($"api/v1/archive-data-sources/{dataSourceId}/target-server", request);
+        return response.IsSuccessStatusCode;
+    }
 }
 
 /// <summary>
@@ -93,4 +102,34 @@ public class DataSourceDto
     public string? Password { get; set; }
     public bool IsEnabled { get; set; }
     public string? DisplayConnection { get; set; }
+
+    // 目标服务器配置
+    public bool UseSourceAsTarget { get; set; } = true;
+    public string? TargetServerAddress { get; set; }
+    public int TargetServerPort { get; set; } = 1433;
+    public string? TargetDatabaseName { get; set; }
+    public bool TargetUseIntegratedSecurity { get; set; }
+    public string? TargetUserName { get; set; }
+    public string? TargetPassword { get; set; }
+}
+
+/// <summary>
+/// 更新目标服务器配置请求
+/// </summary>
+public class UpdateTargetServerConfigRequest
+{
+    /// <summary>是否使用源服务器作为目标服务器</summary>
+    public bool UseSourceAsTarget { get; set; } = true;
+    /// <summary>目标服务器地址</summary>
+    public string? TargetServerAddress { get; set; }
+    /// <summary>目标服务器端口</summary>
+    public int TargetServerPort { get; set; } = 1433;
+    /// <summary>目标数据库名称</summary>
+    public string? TargetDatabaseName { get; set; }
+    /// <summary>目标服务器是否使用集成身份验证</summary>
+    public bool TargetUseIntegratedSecurity { get; set; } = true;
+    /// <summary>目标服务器用户名</summary>
+    public string? TargetUserName { get; set; }
+    /// <summary>目标服务器密码</summary>
+    public string? TargetPassword { get; set; }
 }

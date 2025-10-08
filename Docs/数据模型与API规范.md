@@ -79,36 +79,60 @@ stateDiagram-v2
 
 ## 3. 核心实体详细设计
 
-### 3.1 `DataSource`
+### 3.1 `ArchiveDataSource` (数据源)
 ```csharp
-public class DataSource : BaseEntity
+public class ArchiveDataSource : AggregateRoot
 {
-    public string Name { get; set; } = string.Empty;
-    public string? Description { get; set; }
-    public DatabaseType DatabaseType { get; set; }
-    public ConnectionConfig SourceConnection { get; set; } = default!;
-    public ConnectionConfig TargetConnection { get; set; } = default!;
-    public bool IsActive { get; set; } = true;
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    public DateTime? LastValidatedAt { get; set; }
+    public string Name { get; private set; } = string.Empty;
+    public string? Description { get; private set; }
+    
+    // 源服务器配置
+    public string ServerAddress { get; private set; } = string.Empty;
+    public int ServerPort { get; private set; } = 1433;
+    public string DatabaseName { get; private set; } = string.Empty;
+    public string? UserName { get; private set; }
+    public string? Password { get; private set; }
+    public bool UseIntegratedSecurity { get; private set; }
+    
+    // 目标服务器配置（用于归档数据存储）
+    public bool UseSourceAsTarget { get; private set; } = true;
+    public string? TargetServerAddress { get; private set; }
+    public int TargetServerPort { get; private set; } = 1433;
+    public string? TargetDatabaseName { get; private set; }
+    public bool TargetUseIntegratedSecurity { get; private set; }
+    public string? TargetUserName { get; private set; }
+    public string? TargetPassword { get; private set; }
 
-    // 兼容旧工具
-    public string? LegacySourceConfigId { get; set; }
-    public int? LegacyOperationStatus { get; set; }
-
-    // 导航属性
-    public List<ArchiveConfiguration> ArchiveConfigurations { get; set; } = new();
-    public List<ArchiveTask> ArchiveTasks { get; set; } = new();
+    public bool IsEnabled { get; private set; } = true;
 }
 ```
 
 #### 字段说明
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
-| `Name` | NVARCHAR(100) | 唯一 | 对应旧表 `SourceTableName` |
-| `SourceConnection` | JSON | 非空 | 包含服务器、数据库、认证信息 |
-| `TargetConnection` | JSON | 非空 | 可覆盖系统默认目标连接 |
-| `LegacySourceConfigId` | CHAR(12) | 可空 | 用于迁移后的映射 |
+| `Name` | NVARCHAR(100) | 唯一,非空 | 数据源显示名称 |
+| `Description` | NVARCHAR(500) | 可空 | 数据源备注描述 |
+| **源服务器字段** | | | |
+| `ServerAddress` | NVARCHAR(200) | 非空 | 源服务器地址或主机名 |
+| `ServerPort` | INT | 非空,默认1433 | 源服务器端口号 |
+| `DatabaseName` | NVARCHAR(100) | 非空 | 源数据库名称 |
+| `UserName` | NVARCHAR(100) | 可空 | SQL身份验证用户名 |
+| `Password` | NVARCHAR(200) | 可空 | SQL身份验证密码 |
+| `UseIntegratedSecurity` | BIT | 非空 | 是否使用Windows集成认证 |
+| **目标服务器字段** | | | |
+| `UseSourceAsTarget` | BIT | 非空,默认true | 是否使用源服务器作为目标服务器 |
+| `TargetServerAddress` | NVARCHAR(200) | 可空 | 目标服务器地址,UseSourceAsTarget=false时必填 |
+| `TargetServerPort` | INT | 非空,默认1433 | 目标服务器端口号 |
+| `TargetDatabaseName` | NVARCHAR(100) | 可空 | 目标数据库名称,UseSourceAsTarget=false时必填 |
+| `TargetUseIntegratedSecurity` | BIT | 非空 | 目标服务器是否使用集成认证 |
+| `TargetUserName` | NVARCHAR(100) | 可空 | 目标服务器SQL用户名 |
+| `TargetPassword` | NVARCHAR(200) | 可空 | 目标服务器SQL密码 |
+| `IsEnabled` | BIT | 非空 | 是否启用当前数据源 |
+
+> **说明**:
+> - 当 `UseSourceAsTarget = true` 时,归档数据将存储在源服务器的指定数据库中,目标服务器字段可为空。
+> - 当 `UseSourceAsTarget = false` 时,必须完整配置目标服务器信息,归档数据将导出到独立的目标服务器。
+> - 密码字段在传输和存储时应加密处理,前端更新时空值表示保留原密码。
 
 ### 3.2 `ArchiveConfiguration`
 ```csharp
@@ -229,35 +253,47 @@ public class ArchivePartitionDetail : BaseEntity
 ### 4.4 数据源管理 API
 | 方法 | 路径 | 说明 | 请求示例 |
 |------|------|------|----------|
-| GET | `/api/v1/datasources` | 列表查询 | `?keyword=&status=active&page=1&pageSize=20` |
-| GET | `/api/v1/datasources/{id}` | 获取详情 | - |
-| POST | `/api/v1/datasources` | 新增 | 见下 |
-| PUT | `/api/v1/datasources/{id}` | 更新 | - |
-| DELETE | `/api/v1/datasources/{id}` | 软删除 | - |
-| POST | `/api/v1/datasources/import-legacy` | 导入旧工具配置 | `{ "connectionString": "..." }` |
+| GET | `/api/v1/archive-data-sources` | 列表查询 | `?keyword=&isEnabled=true&page=1&pageSize=20` |
+| GET | `/api/v1/archive-data-sources/{id}` | 获取详情 | - |
+| POST | `/api/v1/archive-data-sources` | 新增数据源 | 见下 |
+| PUT | `/api/v1/archive-data-sources/{id}` | 更新数据源 | - |
+| PUT | `/api/v1/archive-data-sources/{id}/target-server` | **更新目标服务器配置** | 见下 |
+| DELETE | `/api/v1/archive-data-sources/{id}` | 删除数据源 | - |
 
 #### 新增数据源请求示例
 ```json
 {
-  "name": "BillingDB-Order",
-  "description": "计费系统订单表",
-  "databaseType": "SqlServer",
-  "sourceConnection": {
-    "server": "10.0.0.5",
-    "database": "Billing",
-    "username": "archiveuser",
-    "password": "***",
-    "port": 1433,
-    "useIntegratedSecurity": false
-  },
-  "targetConnection": {
-    "server": "archive-sql",
-    "database": "ArchiveDB",
-    "username": "archiveadmin",
-    "password": "***"
-  }
+  "name": "生产订单库",
+  "description": "生产环境订单数据源",
+  "serverAddress": "10.0.0.5",
+  "serverPort": 1433,
+  "databaseName": "OrderDB",
+  "useIntegratedSecurity": false,
+  "userName": "archiveuser",
+  "password": "SecureP@ss123",
+  "useSourceAsTarget": true
 }
 ```
+
+#### 更新目标服务器配置请求示例
+```json
+{
+  "useSourceAsTarget": false,
+  "targetServerAddress": "10.0.0.100",
+  "targetServerPort": 1433,
+  "targetDatabaseName": "ArchiveDB",
+  "targetUseIntegratedSecurity": false,
+  "targetUserName": "archive_admin",
+  "targetPassword": "ArchiveP@ss456"
+}
+```
+
+> **说明**:
+> - `/target-server` 端点专用于更新目标服务器配置,不影响源服务器信息
+> - 当 `useSourceAsTarget = true` 时,目标服务器字段可省略或为空
+> - 密码字段为空字符串或 null 时,保留原有密码不更新
+> - 更新后会验证目标服务器连接有效性(如果 `useSourceAsTarget = false`)
+
 
 ### 4.5 归档配置 API
 | 方法 | 路径 | 说明 |

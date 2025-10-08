@@ -47,6 +47,13 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.DatabaseName).IsRequired().HasMaxLength(128);
             builder.Property(x => x.UserName).HasMaxLength(64);
             builder.Property(x => x.Password).HasMaxLength(256);
+
+            // 目标服务器配置字段
+            builder.Property(x => x.UseSourceAsTarget).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.TargetServerAddress).HasMaxLength(128);
+            builder.Property(x => x.TargetDatabaseName).HasMaxLength(128);
+            builder.Property(x => x.TargetUserName).HasMaxLength(64);
+            builder.Property(x => x.TargetPassword).HasMaxLength(256);
         });
 
         modelBuilder.Entity<PartitionCommand>(builder =>

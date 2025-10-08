@@ -26,4 +26,25 @@ public sealed class CreateArchiveDataSourceRequest
 
     /// <summary>SQL 身份验证密码。</summary>
     public string? Password { get; set; }
+
+    /// <summary>是否使用源服务器作为目标服务器（归档数据存储位置），默认 true。</summary>
+    public bool UseSourceAsTarget { get; set; } = true;
+
+    /// <summary>目标服务器地址，当 UseSourceAsTarget = false 时必填。</summary>
+    public string? TargetServerAddress { get; set; }
+
+    /// <summary>目标服务器端口，当 UseSourceAsTarget = false 时有效。</summary>
+    public int TargetServerPort { get; set; } = 1433;
+
+    /// <summary>目标数据库名称，当 UseSourceAsTarget = false 时必填。</summary>
+    public string? TargetDatabaseName { get; set; }
+
+    /// <summary>目标服务器是否使用集成身份验证，当 UseSourceAsTarget = false 时有效。</summary>
+    public bool TargetUseIntegratedSecurity { get; set; } = true;
+
+    /// <summary>目标服务器 SQL 身份验证用户名，当 UseSourceAsTarget = false 且使用 SQL 身份验证时必填。</summary>
+    public string? TargetUserName { get; set; }
+
+    /// <summary>目标服务器 SQL 身份验证密码，与 TargetUserName 配合使用。</summary>
+    public string? TargetPassword { get; set; }
 }

@@ -82,6 +82,24 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             request.UserName,
             request.Password);
 
+        // 设置目标服务器配置
+        entity.Update(
+            request.Name,
+            request.Description,
+            request.ServerAddress,
+            request.ServerPort,
+            request.DatabaseName,
+            request.UseIntegratedSecurity,
+            request.UserName,
+            request.Password,
+            request.UseSourceAsTarget,
+            request.TargetServerAddress,
+            request.TargetServerPort,
+            request.TargetDatabaseName,
+            request.TargetUseIntegratedSecurity,
+            request.TargetUserName,
+            request.TargetPassword);
+
         await _repository.AddAsync(entity, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);
 
@@ -124,6 +142,10 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             ? null
             : (string.IsNullOrWhiteSpace(request.Password) ? entity.Password : request.Password);
 
+        var targetPassword = request.UseSourceAsTarget || request.TargetUseIntegratedSecurity
+            ? null
+            : (string.IsNullOrWhiteSpace(request.TargetPassword) ? entity.TargetPassword : request.TargetPassword);
+
         entity.Update(
             request.Name,
             request.Description,
@@ -133,6 +155,13 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             request.UseIntegratedSecurity,
             request.UserName,
             password,
+            request.UseSourceAsTarget,
+            request.TargetServerAddress,
+            request.TargetServerPort,
+            request.TargetDatabaseName,
+            request.TargetUseIntegratedSecurity,
+            request.TargetUserName,
+            targetPassword,
             request.OperatorName ?? "SYSTEM");
 
         await _repository.SaveChangesAsync(cancellationToken);
@@ -177,7 +206,13 @@ internal sealed class ArchiveDataSourceAppService : IArchiveDataSourceAppService
             UseIntegratedSecurity = entity.UseIntegratedSecurity,
             UserName = entity.UserName,
             IsEnabled = entity.IsEnabled,
-            DisplayConnection = displayConnection
+            DisplayConnection = displayConnection,
+            UseSourceAsTarget = entity.UseSourceAsTarget,
+            TargetServerAddress = entity.TargetServerAddress,
+            TargetServerPort = entity.TargetServerPort,
+            TargetDatabaseName = entity.TargetDatabaseName,
+            TargetUseIntegratedSecurity = entity.TargetUseIntegratedSecurity,
+            TargetUserName = entity.TargetUserName
         };
     }
 
