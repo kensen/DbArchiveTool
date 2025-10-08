@@ -1,4 +1,5 @@
 using System.Data;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.Partitions;
 using DbArchiveTool.Infrastructure.SqlExecution;
@@ -97,6 +98,8 @@ VALUES (1, '2024-12-31'), (2, '2025-02-01'), (3, '2025-08-15');
     {
         public IDbConnection CreateConnection(string connectionString) => new SqlConnection(connectionString);
 
+        public string BuildConnectionString(ArchiveDataSource dataSource) => ConnectionString;
+
         public async Task<SqlConnection> CreateSqlConnectionAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
         {
             var connection = new SqlConnection(ConnectionString);
@@ -105,3 +108,6 @@ VALUES (1, '2024-12-31'), (2, '2025-02-01'), (3, '2025-08-15');
         }
     }
 }
+
+
+

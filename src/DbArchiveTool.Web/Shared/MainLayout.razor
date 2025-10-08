@@ -1,4 +1,4 @@
-﻿@using AntDesign
+@using AntDesign
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Routing
 @using DbArchiveTool.Web.Core
@@ -6,6 +6,7 @@
 @implements IDisposable
 @inject NavigationManager NavigationManager
 @inject AdminSessionState SessionState
+@inject AdminAuthStorageService AuthStorage
 
 <Layout Style="min-height: 100vh;">
     <Sider Collapsible Theme="SiderTheme.Dark">
@@ -44,7 +45,7 @@
                 <div style="display:flex; align-items:center; gap:12px; color: rgba(0,0,0,.65);">
                     <Icon Type="user" />
                     <span>@(SessionState.UserName ?? "未登录")</span>
-                    <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="HandleSignOut">
+                    <Button Type="ButtonType.Link" Size="ButtonSize.Small" OnClick="HandleSignOutAsync">
                         退出
                     </Button>
                 </div>
@@ -176,9 +177,12 @@
         InvokeAsync(StateHasChanged);
     }
 
-    private void HandleSignOut()
+    private async Task HandleSignOutAsync()
     {
         SessionState.SignOut();
+        await AuthStorage.ClearAsync();
         NavigationManager.NavigateTo("/login", true);
     }
 }
+
+

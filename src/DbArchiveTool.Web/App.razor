@@ -1,14 +1,16 @@
-﻿@using AntDesign
+@using AntDesign
 @using Microsoft.AspNetCore.Components
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.Components.Web
 @using DbArchiveTool.Web.Core
 @using DbArchiveTool.Web.Services
 @using Microsoft.Extensions.Logging
+@using System
 
 @inject NavigationManager Navigation
 @inject AdminSessionState SessionState
 @inject AdminUserApiClient AdminUserApiClient
+@inject AdminAuthStorageService AuthStorage
 @inject ILogger<App> Logger
 
 <CascadingValue Value="this" IsFixed>
@@ -46,6 +48,7 @@
 
     private bool _adminStatusChecked;
     private bool _hasAdmin = true;
+    private bool _sessionInitialized;
 
     /// <summary>切换路由数据级联状态。</summary>
     /// <param name="enable">是否启用级联。</param>
@@ -62,6 +65,11 @@
 
     private async Task HandleNavigateAsync(NavigationContext args)
     {
+        if (!_sessionInitialized)
+        {
+            return;
+        }
+
         if (!_adminStatusChecked)
         {
             await EnsureAdminStatusAsync(args);
@@ -127,4 +135,32 @@
         _hasAdmin = true;
         _adminStatusChecked = true;
     }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        try
+        {
+            var ticket = await AuthStorage.ReadAsync();
+            if (ticket is not null && !SessionState.IsAuthenticated)
+            {
+                SessionState.SignIn(ticket.AdminId, ticket.UserName);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "�޷����Ի��������浽����Ա��¼ƾ֤");
+        }
+        finally
+        {
+            _sessionInitialized = true;
+            await InvokeAsync(StateHasChanged);
+            await InvokeAsync(() => Navigation.NavigateTo(Navigation.Uri, forceLoad: false));
+        }
+    }
 }
+

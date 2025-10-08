@@ -66,6 +66,40 @@ body {
     color: rgba(0, 0, 0, 0.55);
 }
 
+.auth-form--stacked {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.auth-form--stacked .ant-form-item {
+    margin-bottom: 0;
+}
+
+.auth-form__field .ant-input,
+.auth-form__field .ant-input-password,
+.auth-form__field .ant-input-affix-wrapper {
+    width: 100%;
+}
+
+.auth-form__remember {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    color: rgba(0, 0, 0, 0.65);
+}
+
+.auth-form__actions-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+}
+
+.auth-form__actions-body .ant-btn {
+    height: 44px;
+}
+
 .auth-form .ant-form-item-label {
     min-width: 96px;
     text-align: right;
@@ -315,3 +349,6 @@ a, .btn-link {
     justify-content: center;
     overflow: hidden;
 }
+
+
+
