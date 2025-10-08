@@ -1,6 +1,6 @@
-using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Infrastructure.Queries;
+using DbArchiveTool.Infrastructure.SqlExecution;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DbArchiveTool.Api.Controllers.V1;
@@ -14,16 +14,16 @@ public class PartitionInfoController : ControllerBase
 {
     private readonly IDataSourceRepository _dataSourceRepository;
     private readonly SqlPartitionQueryService _queryService;
-    private readonly IPasswordEncryptionService _encryptionService;
+    private readonly IDbConnectionFactory _connectionFactory;
 
     public PartitionInfoController(
         IDataSourceRepository dataSourceRepository,
         SqlPartitionQueryService queryService,
-        IPasswordEncryptionService encryptionService)
+        IDbConnectionFactory connectionFactory)
     {
         _dataSourceRepository = dataSourceRepository;
         _queryService = queryService;
-        _encryptionService = encryptionService;
+        _connectionFactory = connectionFactory;
     }
 
     /// <summary>
@@ -38,7 +38,7 @@ public class PartitionInfoController : ControllerBase
 
         try
         {
-            var connectionString = BuildConnectionString(dataSource);
+            var connectionString = _connectionFactory.BuildConnectionString(dataSource);
             var tables = await _queryService.GetPartitionTablesAsync(connectionString);
             return Ok(tables);
         }
@@ -63,7 +63,7 @@ public class PartitionInfoController : ControllerBase
 
         try
         {
-            var connectionString = BuildConnectionString(dataSource);
+            var connectionString = _connectionFactory.BuildConnectionString(dataSource);
             var details = await _queryService.GetPartitionDetailsAsync(connectionString, schemaName, tableName);
             return Ok(details);
         }
@@ -71,35 +71,5 @@ public class PartitionInfoController : ControllerBase
         {
             return StatusCode(500, new { message = $"查询分区明细失败: {ex.Message}" });
         }
-    }
-
-    /// <summary>
-    /// 构建连接字符串
-    /// </summary>
-    private string BuildConnectionString(ArchiveDataSource dataSource)
-    {
-        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
-        {
-            DataSource = $"{dataSource.ServerAddress},{dataSource.ServerPort}",
-            InitialCatalog = dataSource.DatabaseName,
-            IntegratedSecurity = dataSource.UseIntegratedSecurity,
-            TrustServerCertificate = true,
-            ConnectTimeout = 30
-        };
-
-        if (!dataSource.UseIntegratedSecurity)
-        {
-            builder.UserID = dataSource.UserName;
-            
-            // 解密密码（如果已加密）
-            var password = dataSource.Password;
-            if (!string.IsNullOrWhiteSpace(password) && _encryptionService.IsEncrypted(password))
-            {
-                password = _encryptionService.Decrypt(password);
-            }
-            builder.Password = password;
-        }
-
-        return builder.ConnectionString;
     }
 }

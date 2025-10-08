@@ -33,13 +33,26 @@ internal sealed class SqlConnectionFactory : IDbConnectionFactory
             throw new InvalidOperationException($"数据源 {dataSourceId} 不存在。");
         }
 
+        var connectionString = BuildConnectionString(dataSource);
+        var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        return connection;
+    }
+
+    /// <summary>
+    /// 根据数据源配置构建连接字符串（自动解密密码）
+    /// </summary>
+    /// <param name="dataSource">数据源配置</param>
+    /// <returns>连接字符串</returns>
+    public string BuildConnectionString(ArchiveDataSource dataSource)
+    {
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = dataSource.ServerPort == 1433 ? dataSource.ServerAddress : $"{dataSource.ServerAddress},{dataSource.ServerPort}",
             InitialCatalog = dataSource.DatabaseName,
             IntegratedSecurity = dataSource.UseIntegratedSecurity,
             TrustServerCertificate = true,
-            ConnectTimeout = 5
+            ConnectTimeout = 30
         };
 
         if (!dataSource.UseIntegratedSecurity)
@@ -55,8 +68,6 @@ internal sealed class SqlConnectionFactory : IDbConnectionFactory
             builder.Password = password;
         }
 
-        var connection = new SqlConnection(builder.ConnectionString);
-        await connection.OpenAsync(cancellationToken);
-        return connection;
+        return builder.ConnectionString;
     }
 }

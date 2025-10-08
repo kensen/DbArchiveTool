@@ -1,6 +1,7 @@
 using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Domain.DataSources;
 using Microsoft.Data.SqlClient;
 
 namespace DbArchiveTool.Infrastructure.SqlExecution;
@@ -15,4 +16,7 @@ public interface IDbConnectionFactory
 
     /// <summary>根据数据源标识创建已打开的 SQL Server 连接。</summary>
     Task<SqlConnection> CreateSqlConnectionAsync(Guid dataSourceId, CancellationToken cancellationToken = default);
+
+    /// <summary>根据数据源配置构建连接字符串（自动解密密码）。</summary>
+    string BuildConnectionString(ArchiveDataSource dataSource);
 }
