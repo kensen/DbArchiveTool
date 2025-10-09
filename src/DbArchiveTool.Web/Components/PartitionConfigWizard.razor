@@ -91,7 +91,7 @@
                                 <Input @bind-Value="_configWizard.Form.DataFileDirectory" Style="width:260px" />
                             </FormItem>
                             <FormItem Label="数据文件名" Required>
-                                <Input @bind-Value="_configWizard.Form.DataFileName" Style="width:240px" />
+                                <Input @bind-Value="_configWizard.Form.DataFileName" />
                             </FormItem>
                             <FormItem Label="初始大小(MB)" Required>
                                 <AntDesign.InputNumber TValue="int?" @bind-Value="_configWizard.Form.InitialFileSizeMb" Min="1" />
@@ -102,7 +102,7 @@
                         }
                     </Form>
 
-                    <Divider>目标信息</Divider>
+                    <Divider>归档保存目标信息</Divider>
                     <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
                         <FormItem Label="目标数据库" Required>
                             <Select TItem="string" TItemValue="string"
@@ -154,16 +154,37 @@
                             }
                             else if (IsDateKind)
                             {
-                                <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
-                                    <DatePicker @bind-Value="_configWizard.Generator.StartDate"
-                                                Placeholder="@("起始日期")"
-                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
-                                    <DatePicker @bind-Value="_configWizard.Generator.EndDate"
-                                                Placeholder="@("结束日期")"
-                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
-                                    <AntDesign.InputNumber TValue="int" @bind-Value="_configWizard.Generator.StepDays" Min="1" />
-                                    <span class="form-tip">步长(天)</span>
-                                    <Button OnClick="GenerateDateBoundaries">生成</Button>
+                                <Space Direction="@SpaceDirection.Vertical" Style="width:100%;">
+                                    <SpaceItem>
+                                        <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
+                                            <span style="width:60px;">起始:</span>
+                                            <DatePicker @bind-Value="_configWizard.Generator.StartDate"
+                                                        Placeholder="@("选择起始日期")"
+                                                        Picker="@DatePickerType.Month"
+                                                        Format="yyyy-MM"
+                                                        Style="width:180px" />
+                                        </Space>
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
+                                            <span style="width:60px;">结束:</span>
+                                            <DatePicker @bind-Value="_configWizard.Generator.EndDate"
+                                                        Placeholder="@("选择结束日期")"
+                                                        Picker="@DatePickerType.Month"
+                                                        Format="yyyy-MM"
+                                                        Style="width:180px" />
+                                        </Space>
+                                    </SpaceItem>
+                                    <SpaceItem>
+                                        <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
+                                            <span style="width:60px;">粒度:</span>
+                                            <RadioGroup @bind-Value="_configWizard.Generator.DateGranularity" ButtonStyle="@RadioButtonStyle.Solid">
+                                                <Radio RadioButton Value="@("month")">按月</Radio>
+                                                <Radio RadioButton Value="@("year")">按年</Radio>
+                                            </RadioGroup>
+                                            <Button Type="@ButtonType.Primary" OnClick="GenerateDateBoundaries">生成</Button>
+                                        </Space>
+                                    </SpaceItem>
                                 </Space>
                             }
                         </Card>
@@ -175,7 +196,7 @@
                            Style="margin-top:16px;">
                         <PropertyColumn Title="边界值" Property="c => c.DisplayValue" />
                         <ActionColumn Title="操作">
-                            <Template Context="context">
+                            <Template>
                                 <Button Type="@ButtonType.Link" Danger OnClick="() => RemoveBoundary(context.Id)">删除</Button>
                             </Template>
                         </ActionColumn>

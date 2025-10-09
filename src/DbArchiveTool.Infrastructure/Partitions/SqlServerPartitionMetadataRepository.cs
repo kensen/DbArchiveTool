@@ -30,7 +30,7 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
                            c.name AS ColumnName,
                            t.name AS ColumnType,
                            c.is_nullable AS IsNullable,
-                           pf.range_type AS RangeType
+                           pf.boundary_value_on_right AS RangeType
                     FROM sys.indexes i
                     INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
                     INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
@@ -88,7 +88,7 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
                             SELECT prv_inner.value
                             FROM sys.partition_range_values prv_inner
                             WHERE prv_inner.function_id = pf.function_id
-                              AND prv_inner.boundary_id = CASE pf.range_type WHEN 1 THEN p.partition_number - 1 ELSE p.partition_number END
+                              AND prv_inner.boundary_id = CASE WHEN pf.boundary_value_on_right = 1 THEN p.partition_number - 1 ELSE p.partition_number END
                         ) prv
                         WHERE p.object_id = OBJECT_ID(@FullName) AND i.index_id IN (0, 1)
                     )

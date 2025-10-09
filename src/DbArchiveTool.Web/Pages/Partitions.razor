@@ -197,7 +197,7 @@
 
 <PartitionConfigWizard Visible="_partitionConfigModalVisible"
                        VisibleChanged="HandlePartitionWizardVisibleChanged"
-                       Title="PartitionConfigModalTitle"
+                       Title="@PartitionConfigModalTitle"
                        DataSourceId="DataSourceId"
                        DatabaseName="_databaseName"
                        SelectedTable="_selectedTable"
@@ -261,7 +261,7 @@
     private string _targetConnectionTestResult = "";
     private bool _targetConnectionTestSuccess = false;
     private bool _partitionConfigModalVisible = false;
-    private string PartitionConfigModalTitle { get; set; } = "添加分区配置";
+    private string PartitionConfigModalTitle { get; set; } = "分区配置向导";
     private bool _addPartitionValueModalVisible = false;
     private bool _splitModalVisible = false;
     private bool _mergeModalVisible = false;
@@ -408,7 +408,7 @@
     }
     private Task ShowAddPartitionConfig()
     {
-        PartitionConfigModalTitle = "添加分区配置";
+        PartitionConfigModalTitle = "分区配置向导";
         _partitionConfigModalVisible = true;
         return Task.CompletedTask;
     }

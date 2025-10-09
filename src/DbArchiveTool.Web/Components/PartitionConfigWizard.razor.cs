@@ -484,12 +484,6 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             return;
         }
 
-        if (_configWizard.Generator.StepDays <= 0)
-        {
-            Message.Warning("步长必须大于 0。");
-            return;
-        }
-
         var start = _configWizard.Generator.StartDate.Value;
         var end = _configWizard.Generator.EndDate.Value;
 
@@ -499,15 +493,21 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             return;
         }
 
-        var current = start.AddDays(_configWizard.Generator.StepDays);
+        // 根据粒度生成边界值
+        var current = start;
+        var isYearly = string.Equals(_configWizard.Generator.DateGranularity, "year", StringComparison.OrdinalIgnoreCase);
+
         while (current <= end)
         {
+            // 按月或按年的第一天生成边界值
+            var boundaryDate = new DateTime(current.Year, current.Month, 1);
+            
             PartitionValue value = _configWizard.ColumnKind switch
             {
-                PartitionValueKind.Date => PartitionValue.FromDate(DateOnly.FromDateTime(current)),
-                PartitionValueKind.DateTime => PartitionValue.FromDateTime(current),
-                PartitionValueKind.DateTime2 => PartitionValue.FromDateTime2(current),
-                _ => PartitionValue.FromString(current.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
+                PartitionValueKind.Date => PartitionValue.FromDate(DateOnly.FromDateTime(boundaryDate)),
+                PartitionValueKind.DateTime => PartitionValue.FromDateTime(boundaryDate),
+                PartitionValueKind.DateTime2 => PartitionValue.FromDateTime2(boundaryDate),
+                _ => PartitionValue.FromString(boundaryDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))
             };
 
             var invariant = value.ToInvariantString();
@@ -516,7 +516,8 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 _configWizard.Boundaries.Add(new PartitionBoundaryItem(value));
             }
 
-            current = current.AddDays(_configWizard.Generator.StepDays);
+            // 按年或按月递增
+            current = isYearly ? current.AddYears(1) : current.AddMonths(1);
         }
     }
 
@@ -763,6 +764,7 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         public DateTime? StartDate { get; set; }
         public DateTime? EndDate { get; set; }
         public int StepDays { get; set; } = 1;
+        public string DateGranularity { get; set; } = "month";
     }
 
     private sealed class PartitionBoundaryItem

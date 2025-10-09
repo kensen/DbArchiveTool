@@ -1,6 +1,16 @@
 using AntDesign;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 配置全局 JSON 序列化选项（枚举使用 PascalCase 字符串）
+var jsonOptions = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    PropertyNameCaseInsensitive = true,
+    Converters = { new JsonStringEnumConverter() }
+};
 
 // Add services to the container.
 builder.Services.AddRazorPages();
@@ -18,25 +28,16 @@ if (string.IsNullOrWhiteSpace(archiveApiBaseUrl))
     throw new InvalidOperationException("未在配置中找到 ArchiveApi:BaseUrl，请根据运行环境设置准确的 API 地址。");
 }
 
-builder.Services.AddHttpClient("ArchiveApi", client =>
+// 配置 HttpClient 使用统一的 JSON 序列化选项
+Action<IServiceProvider, HttpClient> configureClient = (sp, client) =>
 {
     client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
-});
+};
 
-builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionManagementApiClient>(client =>
-{
-    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
-});
-
-builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient>(client =>
-{
-    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
-});
-
-builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfigurationApiClient>(client =>
-{
-    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
-});
+builder.Services.AddHttpClient("ArchiveApi", configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionManagementApiClient>(configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient>(configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfigurationApiClient>(configureClient);
 
 var app = builder.Build();
 
