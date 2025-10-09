@@ -34,7 +34,9 @@ public class PartitionInfoApiClient
     /// <summary>获取指定表的分区详情。</summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(Guid dataSourceId, string schemaName, string tableName)
     {
-        var response = await httpClient.GetAsync($"api/v1/data-sources/{dataSourceId}/partitions/tables/{schemaName}/{tableName}/details");
+        var url =
+            $"api/v1/data-sources/{dataSourceId}/partitions/tables/{Uri.EscapeDataString(schemaName)}/{Uri.EscapeDataString(tableName)}/details";
+        var response = await httpClient.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<List<PartitionDetailDto>>() ?? new List<PartitionDetailDto>();
     }

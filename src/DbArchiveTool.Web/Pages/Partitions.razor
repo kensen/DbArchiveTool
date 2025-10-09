@@ -553,6 +553,8 @@
     private async Task LoadPartitionDetailsAsync(PartitionTableInfo table)
     {
         _loadingDetails = true;
+        _partitionDetails = new List<PartitionDetailInfo>();
+        await InvokeAsync(StateHasChanged);
         try
         {
             // 从API加载真实分区明细数据
@@ -560,7 +562,7 @@
             _partitionDetails = details.Select(d => new PartitionDetailInfo
             {
                 PartitionNumber = d.PartitionNumber,
-                BoundaryValue = d.BoundaryValue,
+                BoundaryValue = FormatBoundaryValue(d.BoundaryValue, table.DataType),
                 RangeType = d.RangeType,
                 FilegroupName = d.FilegroupName,
                 RowCount = d.RowCount,
@@ -577,6 +579,8 @@
         {
             _loadingDetails = false;
         }
+
+        await InvokeAsync(StateHasChanged);
     }
 
     private void OnTableRowClick(RowData<PartitionTableInfo> row)
@@ -584,7 +588,12 @@
         _selectedTable = row.Data;
         _selectedTableRows = new[] { row.Data };
         _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
-        _ = LoadPartitionDetailsAsync(row.Data);
+
+        _ = InvokeAsync(async () =>
+        {
+            StateHasChanged();
+            await LoadPartitionDetailsAsync(row.Data);
+        });
     }
 
     private async Task ReloadAsync()
@@ -1599,6 +1608,32 @@
         public decimal TotalSpaceMB { get; set; }
         public string DataCompression { get; set; } = "NONE";
         public DateTime CreatedDate { get; set; }
+    }
+
+    private static string FormatBoundaryValue(string value, string? dataType)
+    {
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "N/A", StringComparison.OrdinalIgnoreCase))
+        {
+            return value;
+        }
+
+        if (string.IsNullOrWhiteSpace(dataType))
+        {
+            return value;
+        }
+
+        var normalizedType = dataType.ToLowerInvariant();
+        if (normalizedType is "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset")
+        {
+            var trimmed = value.Trim();
+            if (DateTime.TryParse(trimmed, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal, out var parsed) ||
+                DateTime.TryParse(trimmed, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out parsed))
+            {
+                return parsed.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            }
+        }
+
+        return value;
     }
 
     /// <summary>

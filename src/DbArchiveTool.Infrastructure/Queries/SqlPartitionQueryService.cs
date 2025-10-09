@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.Linq;
 using Dapper;
 using Microsoft.Data.SqlClient;
 
@@ -71,33 +73,110 @@ ORDER BY s.name, t.name";
         string schemaName,
         string tableName)
     {
-        const string sql = @"
+        const string detailSql = @"
 SELECT 
     p.partition_number AS PartitionNumber,
     ISNULL(CAST(prv.value AS NVARCHAR(100)), 'N/A') AS BoundaryValue,
     CASE WHEN pf.boundary_value_on_right = 1 THEN 'RIGHT' ELSE 'LEFT' END AS RangeType,
-    fg.name AS FilegroupName,
-    p.rows AS RowCount,
-    CAST(SUM(au.total_pages) * 8.0 / 1024 AS DECIMAL(18,2)) AS TotalSpaceMB,
-    p.data_compression_desc AS DataCompression
+    p.rows AS [RowCount],
+    CAST(COALESCE(SUM(au.total_pages), 0) * 8.0 / 1024 AS DECIMAL(18,2)) AS TotalSpaceMB,
+    ISNULL(p.data_compression_desc, 'NONE') AS DataCompression
 FROM sys.tables t
 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
 INNER JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id <= 1
 INNER JOIN sys.partitions p ON t.object_id = p.object_id AND i.index_id = p.index_id
-INNER JOIN sys.allocation_units au ON p.partition_id = au.container_id
+LEFT JOIN sys.allocation_units au ON p.partition_id = au.container_id
 INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
 INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
-INNER JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id AND p.partition_number = dds.destination_id
-INNER JOIN sys.filegroups fg ON dds.data_space_id = fg.data_space_id
 LEFT JOIN sys.partition_range_values prv ON pf.function_id = prv.function_id AND p.partition_number = prv.boundary_id
 WHERE s.name = @SchemaName AND t.name = @TableName
 GROUP BY 
-    p.partition_number, prv.value, pf.boundary_value_on_right, fg.name, p.rows, p.data_compression_desc
+    p.partition_number, prv.value, pf.boundary_value_on_right, p.rows, p.data_compression_desc
 ORDER BY p.partition_number";
 
+        const string detailFallbackSql = @"
+SELECT 
+    p.partition_number AS PartitionNumber,
+    ISNULL(CAST(prv.value AS NVARCHAR(100)), 'N/A') AS BoundaryValue,
+    CASE WHEN pf.boundary_value_on_right = 1 THEN 'RIGHT' ELSE 'LEFT' END AS RangeType,
+    p.rows AS [RowCount],
+    ISNULL(p.data_compression_desc, 'NONE') AS DataCompression
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id <= 1
+INNER JOIN sys.partitions p ON t.object_id = p.object_id AND i.index_id = p.index_id
+INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
+LEFT JOIN sys.partition_range_values prv ON pf.function_id = prv.function_id AND p.partition_number = prv.boundary_id
+WHERE s.name = @SchemaName AND t.name = @TableName
+GROUP BY 
+    p.partition_number, prv.value, pf.boundary_value_on_right, p.rows, p.data_compression_desc
+ORDER BY p.partition_number";
+
+        const string filegroupSql = @"
+SELECT DISTINCT
+    p.partition_number AS PartitionNumber,
+    fg.name AS FilegroupName
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id <= 1
+INNER JOIN sys.partitions p ON t.object_id = p.object_id AND i.index_id = p.index_id
+INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+INNER JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id AND p.partition_number = dds.destination_id
+INNER JOIN sys.filegroups fg ON dds.data_space_id = fg.data_space_id
+WHERE s.name = @SchemaName AND t.name = @TableName";
+
         await using var connection = new SqlConnection(connectionString);
-        var result = await connection.QueryAsync<PartitionDetailDto>(sql, new { SchemaName = schemaName, TableName = tableName });
-        return result.ToList();
+        await connection.OpenAsync();
+
+        List<PartitionDetailRow> detailRows;
+        try
+        {
+            detailRows = (await connection.QueryAsync<PartitionDetailRow>(detailSql, new { SchemaName = schemaName, TableName = tableName })).ToList();
+        }
+        catch (SqlException)
+        {
+            // SQL Server can deny access to allocation units without VIEW DATABASE STATE; fall back to a lightweight query.
+            var fallbackRows = (await connection.QueryAsync<PartitionDetailFallbackRow>(detailFallbackSql, new { SchemaName = schemaName, TableName = tableName })).ToList();
+            detailRows = fallbackRows.Select(row => new PartitionDetailRow
+            {
+                PartitionNumber = row.PartitionNumber,
+                BoundaryValue = row.BoundaryValue,
+                RangeType = row.RangeType,
+                RowCount = row.RowCount,
+                DataCompression = row.DataCompression,
+                TotalSpaceMB = 0m
+            }).ToList();
+        }
+
+        IReadOnlyDictionary<int, string> filegroupLookup = new Dictionary<int, string>();
+        try
+        {
+            var filegroupRows = await connection.QueryAsync<PartitionFilegroupRow>(filegroupSql, new { SchemaName = schemaName, TableName = tableName });
+            filegroupLookup = filegroupRows
+                .GroupBy(row => row.PartitionNumber)
+                .ToDictionary(group => group.Key, group => group.First().FilegroupName);
+        }
+        catch (SqlException ex) when (ex.Number is 229 or 297)
+        {
+            // Lack of permission to inspect destination_data_spaces should not block partition details.
+            filegroupLookup = new Dictionary<int, string>();
+        }
+
+        return detailRows.Select(row =>
+        {
+            filegroupLookup.TryGetValue(row.PartitionNumber, out var filegroup);
+            return new PartitionDetailDto
+            {
+                PartitionNumber = row.PartitionNumber,
+                BoundaryValue = row.BoundaryValue,
+                RangeType = row.RangeType,
+                FilegroupName = filegroup ?? "N/A",
+                RowCount = row.RowCount,
+                TotalSpaceMB = row.TotalSpaceMB,
+                DataCompression = row.DataCompression ?? "NONE"
+            };
+        }).ToList();
     }
 
     /// <summary>
@@ -244,6 +323,31 @@ ORDER BY file_id;";
 
         return $"{dataType}({normalizedLength.ToString(CultureInfo.InvariantCulture)})";
     }
+}
+
+internal sealed class PartitionDetailRow
+{
+    public int PartitionNumber { get; set; }
+    public string BoundaryValue { get; set; } = string.Empty;
+    public string RangeType { get; set; } = string.Empty;
+    public long RowCount { get; set; }
+    public decimal TotalSpaceMB { get; set; }
+    public string? DataCompression { get; set; }
+}
+
+internal sealed class PartitionDetailFallbackRow
+{
+    public int PartitionNumber { get; set; }
+    public string BoundaryValue { get; set; } = string.Empty;
+    public string RangeType { get; set; } = string.Empty;
+    public long RowCount { get; set; }
+    public string DataCompression { get; set; } = "NONE";
+}
+
+internal sealed class PartitionFilegroupRow
+{
+    public int PartitionNumber { get; set; }
+    public string FilegroupName { get; set; } = string.Empty;
 }
 
 /// <summary>
