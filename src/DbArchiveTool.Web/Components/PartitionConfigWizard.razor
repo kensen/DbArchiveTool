@@ -1,0 +1,225 @@
+@using AntDesign
+@using DbArchiveTool.Domain.Partitions
+@using DbArchiveTool.Web.Pages
+@using Microsoft.AspNetCore.Components.Web
+
+<Drawer Visible="Visible"
+        Title="@Title"
+        Width="760"
+        Placement="DrawerPlacement.Right"
+        Closable="false">
+    <Spin Spinning="@(_loadingWizard || _submitting)">
+        <Steps Current="@_configWizard.CurrentStep" Size="@StepsSize.Small">
+            <Step Title="基础信息" />
+            <Step Title="分区值" />
+            <Step Title="完成" />
+        </Steps>
+
+        <div class="partition-wizard-body">
+            @if (_configWizard.CurrentStep == 0)
+            {
+                <div class="wizard-step">
+                    <Descriptions Column="1" Size="@DescriptionsSize.Small" Style="margin-bottom:16px;">
+                        <DescriptionsItem Title="源表">@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</DescriptionsItem>
+                        <DescriptionsItem Title="分区函数">@SelectedTable?.PartitionFunction</DescriptionsItem>
+                        <DescriptionsItem Title="分区方案">@SelectedTable?.PartitionScheme</DescriptionsItem>
+                    </Descriptions>
+
+                    <Divider>分区列</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="源表" Required>
+                            <Select TItem="string" TItemValue="string"
+                                    @bind-Value="_configWizard.Form.SourceTableKey"
+                                    OnSelectedItemChanged="HandleSourceTableChanged"
+                                    Style="width:100%">
+                                @foreach (var option in _configWizard.TableOptions)
+                                {
+                                    <SelectOption Value="@option.Key" Label="@option.Label" />
+                                }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="分区列" Required>
+                            <Select TItem="string" TItemValue="string"
+                                    @bind-Value="_configWizard.Form.PartitionColumn"
+                                    OnSelectedItemChanged="HandlePartitionColumnChanged"
+                                    Style="width:100%">
+                                @foreach (var column in _configWizard.Columns)
+                                {
+                                    <SelectOption Value="@column.ColumnName" Label="@($"{column.ColumnName} ({column.DisplayType})")" />
+                                }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="列可空">
+                            <Tag Color="@(_configWizard.SelectedColumnIsNullable ? "orange" : "green")">@(_configWizard.SelectedColumnIsNullable ? "可为空" : "NOT NULL")</Tag>
+                        </FormItem>
+                        @if (_configWizard.SelectedColumnIsNullable)
+                        {
+                            <FormItem Label="去可空">
+                                <Space Align="@SpaceAlign.Center">
+                                    <Switch @bind-Checked="_configWizard.Form.RequirePartitionColumnNotNull" />
+                                    <span class="form-tip">启用后将在脚本中包含 ALTER COLUMN。</span>
+                                </Space>
+                            </FormItem>
+                        }
+                        <FormItem Label="列统计">
+                            <Space Direction="@SpaceDirection.Vertical">
+                                <span>最小值:@FormatColumnStatValue(_configWizard.ColumnMinValue)</span>
+                                <span>最大值:@FormatColumnStatValue(_configWizard.ColumnMaxValue)</span>
+                            </Space>
+                        </FormItem>
+                    </Form>
+
+                    <Divider>存放模式</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="模式">
+                            <Select TItem="PartitionStorageMode" TItemValue="PartitionStorageMode"
+                                    Value="_configWizard.Form.StorageMode"
+                                    ValueChanged="OnStorageModeChanged"
+                                    ValueExpression="() => _configWizard.Form.StorageMode"
+                                    Style="width:220px">
+                                <SelectOption Value="@PartitionStorageMode.PrimaryFilegroup" Label="主文件组" />
+                                <SelectOption Value="@PartitionStorageMode.DedicatedFilegroupSingleFile" Label="单文件组 + 数据文件" />
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="文件组名称" Required>
+                            <Input @bind-Value="_configWizard.Form.FilegroupName"
+                                   Style="width:220px" />
+                        </FormItem>
+                        @if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
+                        {
+                            <FormItem Label="数据目录" Required>
+                                <Input @bind-Value="_configWizard.Form.DataFileDirectory" Style="width:260px" />
+                            </FormItem>
+                            <FormItem Label="数据文件名" Required>
+                                <Input @bind-Value="_configWizard.Form.DataFileName" Style="width:240px" />
+                            </FormItem>
+                            <FormItem Label="初始大小(MB)" Required>
+                                <AntDesign.InputNumber TValue="int?" @bind-Value="_configWizard.Form.InitialFileSizeMb" Min="1" />
+                            </FormItem>
+                            <FormItem Label="自动增长(MB)" Required>
+                                <AntDesign.InputNumber TValue="int?" @bind-Value="_configWizard.Form.AutoGrowthMb" Min="1" />
+                            </FormItem>
+                        }
+                    </Form>
+
+                    <Divider>目标信息</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="目标数据库" Required>
+                            <Select TItem="string" TItemValue="string"
+                                    @bind-Value="_configWizard.Form.TargetDatabaseName"
+                                    Style="width:240px">
+                                @foreach (var db in _configWizard.TargetDatabases)
+                                {
+                                    <SelectOption Value="@db.Name" Label="@db.Name" />
+                                }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="目标架构" Required>
+                            <Input @bind-Value="_configWizard.Form.TargetSchemaName" Style="width:220px" />
+                        </FormItem>
+                        <FormItem Label="目标表名" Required>
+                            <Input @bind-Value="_configWizard.Form.TargetTableName" Style="width:220px" />
+                        </FormItem>
+                        <FormItem Label="备注">
+                            <Input TextAreaRows="3" @bind-Value="_configWizard.Form.Remarks" />
+                        </FormItem>
+                    </Form>
+                </div>
+            }
+            else if (_configWizard.CurrentStep == 1)
+            {
+                <div class="wizard-step">
+                    <Alert Message="将按顺序添加边界值，并自动补齐最小/最大边界。" Type="@AlertType.Info" ShowIcon="true" />
+
+                    <div class="boundary-actions">
+                        <Input Placeholder="输入新的边界值"
+                               Style="width:260px"
+                               @bind-Value="_configWizard.NewBoundaryValue"
+                               @onkeypress="OnBoundaryInputKeyPress" />
+                        <Button Type="@ButtonType.Primary" OnClick="AddManualBoundary">添加</Button>
+                        <Button OnClick="ClearBoundaryValues">清空</Button>
+                    </div>
+
+                    @if (SupportsAutoGeneration)
+                    {
+                        <Card Title="批量生成" Size="@CardSize.Small" Style="margin-top:12px;">
+                            @if (_configWizard.ColumnKind is PartitionValueKind.Int or PartitionValueKind.BigInt)
+                            {
+                                <Space Direction="@SpaceDirection.Horizontal">
+                                    <Input Placeholder="@("起始值")" Style="width:120px" @bind-Value="_configWizard.Generator.StartValue" />
+                                    <Input Placeholder="@("结束值")" Style="width:120px" @bind-Value="_configWizard.Generator.EndValue" />
+                                    <Input Placeholder="@("步长")" Style="width:120px" @bind-Value="_configWizard.Generator.StepValue" />
+                                    <Button OnClick="GenerateNumericBoundaries">生成</Button>
+                                </Space>
+                            }
+                            else if (IsDateKind)
+                            {
+                                <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
+                                    <DatePicker @bind-Value="_configWizard.Generator.StartDate"
+                                                Placeholder="@("起始日期")"
+                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
+                                    <DatePicker @bind-Value="_configWizard.Generator.EndDate"
+                                                Placeholder="@("结束日期")"
+                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
+                                    <AntDesign.InputNumber TValue="int" @bind-Value="_configWizard.Generator.StepDays" Min="1" />
+                                    <span class="form-tip">步长(天)</span>
+                                    <Button OnClick="GenerateDateBoundaries">生成</Button>
+                                </Space>
+                            }
+                        </Card>
+                    }
+
+                    <Table TItem="PartitionBoundaryItem"
+                           DataSource="_configWizard.Boundaries"
+                           Size="@TableSize.Small"
+                           Style="margin-top:16px;">
+                        <PropertyColumn Title="边界值" Property="c => c.DisplayValue" />
+                        <ActionColumn Title="操作">
+                            <Template Context="context">
+                                <Button Type="@ButtonType.Link" Danger OnClick="() => RemoveBoundary(context.Id)">删除</Button>
+                            </Template>
+                        </ActionColumn>
+                    </Table>
+                </div>
+            }
+            else
+            {
+                <div class="wizard-step wizard-step-complete">
+                    <Result Status="@ResultStatus.Success" Title="分区配置创建成功">
+                        <ul class="wizard-summary">
+                            <li>配置编号：@_configWizard.ConfigurationId</li>
+                            <li>分区表：@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</li>
+                            <li>分区列：@_configWizard.Form.PartitionColumn</li>
+                            <li>边界数量：@_configWizard.Boundaries.Count</li>
+                        </ul>
+                    </Result>
+                </div>
+            }
+        </div>
+    </Spin>
+
+    <div class="partition-wizard-footer">
+        <Space>
+            @if (_configWizard.CurrentStep < 2)
+            {
+                <Button OnClick="CloseAsync">取消</Button>
+            }
+            @if (_configWizard.CurrentStep > 0 && _configWizard.CurrentStep < 2)
+            {
+                <Button OnClick="PrevStep">上一步</Button>
+            }
+            @if (_configWizard.CurrentStep == 0)
+            {
+                <Button Type="@ButtonType.Primary" OnClick="NextStep">下一步</Button>
+            }
+            else if (_configWizard.CurrentStep == 1)
+            {
+                <Button Type="@ButtonType.Primary" Loading="_submitting" OnClick="SubmitAsync">提交配置</Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary" OnClick="CloseAsync">完成</Button>
+            }
+        </Space>
+    </div>
+</Drawer>
