@@ -45,6 +45,25 @@ ORDER BY s.name, t.name";
     }
 
     /// <summary>
+    /// 查询数据库中所有用户表信息。
+    /// </summary>
+    public async Task<List<DatabaseTableDto>> GetDatabaseTablesAsync(string connectionString)
+    {
+        const string sql = @"
+SELECT 
+    s.name AS SchemaName,
+    t.name AS TableName
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE t.is_ms_shipped = 0
+ORDER BY s.name, t.name";
+
+        await using var connection = new SqlConnection(connectionString);
+        var result = await connection.QueryAsync<DatabaseTableDto>(sql);
+        return result.ToList();
+    }
+
+    /// <summary>
     /// 查询指定表的分区边界详情。
     /// </summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(
@@ -289,6 +308,15 @@ public class TargetDatabaseDto
     public string Name { get; set; } = string.Empty;
     public int DatabaseId { get; set; }
     public bool IsCurrent { get; set; }
+}
+
+/// <summary>
+/// 数据库表 DTO。
+/// </summary>
+public class DatabaseTableDto
+{
+    public string SchemaName { get; set; } = string.Empty;
+    public string TableName { get; set; } = string.Empty;
 }
 
 internal sealed class ColumnStatsRow

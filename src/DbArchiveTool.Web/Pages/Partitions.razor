@@ -224,9 +224,9 @@
                     <Divider>分区列</Divider>
                     <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
                         <FormItem Label="源表" Required>
-                            <Select TItem="string" TItemValue="string"\r\n                                    Value="_configWizard.Form.SourceTableKey"
-                                    ValueChanged="OnSourceTableChanged"
-                                    ValueExpression="() => _configWizard.Form.SourceTableKey"
+                            <Select TItem="string" TItemValue="string"
+                                    @bind-Value="_configWizard.Form.SourceTableKey"
+                                    OnSelectedItemChanged="HandleSourceTableChanged"
                                     Style="width:100%">
                                 @foreach (var option in _configWizard.TableOptions)
                                 {
@@ -236,14 +236,13 @@
                         </FormItem>
                         <FormItem Label="分区列" Required>
                             <Select TItem="string" TItemValue="string"
-                                    Value="_configWizard.Form.PartitionColumn"
-                                    ValueChanged="OnPartitionColumnChanged"
-                                    ValueExpression="() => _configWizard.Form.PartitionColumn"
+                                    @bind-Value="_configWizard.Form.PartitionColumn"
+                                    OnSelectedItemChanged="HandlePartitionColumnChanged"
                                     Style="width:100%">
-                                  @foreach (var column in _configWizard.Columns)
-                                  {
-                                      <SelectOption Value="@column.ColumnName" Label="@($"{column.ColumnName} ({column.DisplayType})")" />
-                                  }
+                                @foreach (var column in _configWizard.Columns)
+                                {
+                                    <SelectOption Value="@column.ColumnName" Label="@($"{column.ColumnName} ({column.DisplayType})")" />
+                                }
                             </Select>
                         </FormItem>
                         <FormItem Label="列可空">
@@ -260,8 +259,8 @@
                         }
                         <FormItem Label="列统计">
                             <Space Direction="@SpaceDirection.Vertical">
-                                <span>最小值：@(_configWizard.ColumnMinValue ?? "-")</span>
-                                <span>最大值：@(_configWizard.ColumnMaxValue ?? "-")</span>
+                                <span>最小值:@FormatColumnStatValue(_configWizard.ColumnMinValue)</span>
+                                <span>最大值:@FormatColumnStatValue(_configWizard.ColumnMaxValue)</span>
                             </Space>
                         </FormItem>
                     </Form>
@@ -279,7 +278,9 @@
                             </Select>
                         </FormItem>
                         <FormItem Label="文件组名称" Required>
-                            <Input @bind-Value="_configWizard.Form.FilegroupName" Placeholder="请输入文件组名称" />
+                            <Input @bind-Value="_configWizard.Form.FilegroupName" 
+                                   Placeholder="请输入文件组名称"
+                                   OnBlur="HandleFilegroupNameChanged" />
                         </FormItem>
                         @if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
                         {
@@ -739,36 +740,37 @@
 
     private async Task InitializePartitionWizardAsync()
     {
-        if (_partitionTables.Count == 0)
-        {
-            Message.Warning("当前数据源暂无可用于配置的分区表。");
-            return;
-        }
-
         _loadingPartitionWizard = true;
         _configWizard = new PartitionConfigWizardState();
-        _configWizard.TableOptions = _partitionTables
-            .Select(t => new PartitionTableOption(
-                $"{t.SchemaName}.{t.TableName}",
-                $"{t.SchemaName}.{t.TableName}",
-                t.SchemaName,
-                t.TableName,
-                t.PartitionColumn))
-            .ToList();
-
-        _configWizard.Form.StorageMode = PartitionStorageMode.PrimaryFilegroup;
-        _configWizard.Form.FilegroupName = "PRIMARY";
-        _configWizard.Form.TargetDatabaseName = _databaseName;
-        _configWizard.Form.RequirePartitionColumnNotNull = false;
-        _configWizard.Generator.StepDays = 1;
-        _configWizard.CurrentStep = 0;
-
-        var defaultOptionKey = _selectedTable is not null
-            ? $"{_selectedTable.SchemaName}.{_selectedTable.TableName}"
-            : _configWizard.TableOptions.First().Key;
-
         try
         {
+            var allTables = await PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            if (allTables.Count == 0)
+            {
+                Message.Warning("当前数据源暂无可用于配置的用户表。");
+                return;
+            }
+
+            _configWizard.TableOptions = allTables
+                .Select(t => new PartitionTableOption(
+                    $"{t.SchemaName}.{t.TableName}",
+                    $"{t.SchemaName}.{t.TableName}",
+                    t.SchemaName,
+                    t.TableName,
+                    null))
+                .ToList();
+
+            _configWizard.Form.StorageMode = PartitionStorageMode.PrimaryFilegroup;
+            _configWizard.Form.FilegroupName = "PRIMARY";
+            _configWizard.Form.TargetDatabaseName = _databaseName;
+            _configWizard.Form.RequirePartitionColumnNotNull = false;
+            _configWizard.Generator.StepDays = 1;
+            _configWizard.CurrentStep = 0;
+
+            var defaultOptionKey = _selectedTable is not null
+                ? $"{_selectedTable.SchemaName}.{_selectedTable.TableName}"
+                : _configWizard.TableOptions.First().Key;
+
             var databases = await PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
             _configWizard.TargetDatabases = databases;
             var defaultDb = databases.FirstOrDefault(db => db.IsCurrent) ?? databases.FirstOrDefault();
@@ -777,9 +779,11 @@
                 _configWizard.Form.TargetDatabaseName = defaultDb.Name;
             }
 
+            // 获取默认数据文件目录并缓存
             var defaultPath = await PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
             if (!string.IsNullOrWhiteSpace(defaultPath))
             {
+                _configWizard.CachedDefaultFileDirectory = defaultPath;
                 _configWizard.Form.DataFileDirectory = defaultPath;
             }
 
@@ -825,8 +829,12 @@
             _configWizard.Form.FilegroupName = "PRIMARY";
         }
 
-        await LoadColumnsForConfigAsync(option.SchemaName, option.TableName, option.PartitionColumn);
+        // 先清空分区列选择，避免显示上一个表的列名
+        _configWizard.Form.PartitionColumn = string.Empty;
+        _configWizard.Columns.Clear();
         _configWizard.Boundaries.Clear();
+        
+        await LoadColumnsForConfigAsync(option.SchemaName, option.TableName, option.PartitionColumn);
     }
 
     private async Task LoadColumnsForConfigAsync(string schemaName, string tableName, string? preferredColumn)
@@ -852,17 +860,21 @@
         await LoadColumnStatisticsAsync(defaultColumn.ColumnName);
     }
 
-    private async Task OnSourceTableChanged(string? value)
+        private async Task HandleSourceTableChanged(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return;
         }
 
+        // 注意：value 已经通过 @bind-Value 自动绑定到 _configWizard.Form.SourceTableKey
+        // 不需要重复赋值
+        
         try
         {
-            await ApplyTableSelectionAsync(value, resetNaming: false);
+            await ApplyTableSelectionAsync(value, resetNaming: true);
             ApplyStorageModeDefaults();
+            await InvokeAsync(StateHasChanged);
         }
         catch (Exception ex)
         {
@@ -885,18 +897,20 @@
         }
     }
 
-    private Task OnPartitionColumnChanged(string? value)
+        private async Task HandlePartitionColumnChanged(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        _configWizard.Form.PartitionColumn = value;
+        // 注意：value 已经通过 @bind-Value 自动绑定到 _configWizard.Form.PartitionColumn
+        // 不需要重复赋值
+        
         var column = _configWizard.Columns.FirstOrDefault(c => string.Equals(c.ColumnName, value, StringComparison.OrdinalIgnoreCase));
         if (column is null)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         _configWizard.SelectedColumnIsNullable = column.IsNullable;
@@ -906,30 +920,57 @@
         _configWizard.ColumnMinValue = null;
         _configWizard.ColumnMaxValue = null;
 
-        return LoadColumnStatisticsAsync(column.ColumnName);
+        await LoadColumnStatisticsAsync(column.ColumnName);
+        await InvokeAsync(StateHasChanged);
     }
 
-    private Task OnStorageModeChanged(PartitionStorageMode mode)
+    private async Task OnStorageModeChanged(PartitionStorageMode mode)
     {
         _configWizard.Form.StorageMode = mode;
         ApplyStorageModeDefaults();
-        return Task.CompletedTask;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleFilegroupNameChanged()
+    {
+        // 当文件组名称改变时,自动更新文件名
+        if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile 
+            && !string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName))
+        {
+            RegenerateDataFileName();
+        }
+    }
+
+    private void RegenerateDataFileName()
+    {
+        var db = string.IsNullOrWhiteSpace(_configWizard.Form.TargetDatabaseName) ? _databaseName : _configWizard.Form.TargetDatabaseName;
+        var fg = _configWizard.Form.FilegroupName ?? "FG";
+        _configWizard.Form.DataFileName = $"{db}_{fg}_p{DateTime.UtcNow:yyyyMMddHHmm}.ndf";
     }
 
     private void ApplyStorageModeDefaults()
     {
         if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
         {
+            // 标记是否需要重新生成文件名
+            var filegroupChanged = false;
+            
             if (string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName) || string.Equals(_configWizard.Form.FilegroupName, "PRIMARY", StringComparison.OrdinalIgnoreCase))
             {
                 _configWizard.Form.FilegroupName = $"{_configWizard.Form.TableName}_FG_{DateTime.UtcNow:yyyyMMdd}";
+                filegroupChanged = true;
             }
 
-            if (string.IsNullOrWhiteSpace(_configWizard.Form.DataFileName))
+            // 如果数据目录为空,使用缓存的默认路径
+            if (string.IsNullOrWhiteSpace(_configWizard.Form.DataFileDirectory) && !string.IsNullOrWhiteSpace(_configWizard.CachedDefaultFileDirectory))
             {
-                var db = string.IsNullOrWhiteSpace(_configWizard.Form.TargetDatabaseName) ? _databaseName : _configWizard.Form.TargetDatabaseName;
-                var fg = _configWizard.Form.FilegroupName ?? "FG";
-                _configWizard.Form.DataFileName = $"{db}_{fg}_p{DateTime.UtcNow:yyyyMMddHHmm}.ndf";
+                _configWizard.Form.DataFileDirectory = _configWizard.CachedDefaultFileDirectory;
+            }
+
+            // 如果文件组名称发生了变化,或者文件名为空,则重新生成文件名
+            if (filegroupChanged || string.IsNullOrWhiteSpace(_configWizard.Form.DataFileName))
+            {
+                RegenerateDataFileName();
             }
 
             _configWizard.Form.InitialFileSizeMb ??= 512;
@@ -1423,6 +1464,35 @@
             _ => PartitionValueKind.String
         };
     }
+
+    /// <summary>
+    /// 格式化列统计值显示,对日期时间类型进行格式化。
+    /// </summary>
+    private string FormatColumnStatValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "-";
+        }
+
+        // 如果当前列是日期时间类型,尝试格式化显示
+        if (_configWizard.ColumnKind is PartitionValueKind.Date or PartitionValueKind.DateTime or PartitionValueKind.DateTime2)
+        {
+            if (DateTime.TryParse(value, out var dateTime))
+            {
+                // Date 类型只显示日期部分
+                if (_configWizard.ColumnKind == PartitionValueKind.Date)
+                {
+                    return dateTime.ToString("yyyy-MM-dd");
+                }
+                // DateTime 和 DateTime2 显示完整日期时间
+                return dateTime.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+        }
+
+        return value;
+    }
+
     private Task SavePartitionValue() { _addPartitionValueModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteSplit() { _splitModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteMerge() { _mergeModalVisible = false; return Task.CompletedTask; }
@@ -1443,11 +1513,14 @@
         public string NewBoundaryValue { get; set; } = string.Empty;
         public BoundaryGeneratorModel Generator { get; } = new();
         public Guid? ConfigurationId { get; set; }
+        
+        /// <summary>缓存的默认数据文件目录,从源服务器获取。</summary>
+        public string? CachedDefaultFileDirectory { get; set; }
     }
 
     private class PartitionConfigForm
     {
-        public string? SourceTableKey { get; set; }
+        public string SourceTableKey { get; set; } = string.Empty;
         public string SchemaName { get; set; } = string.Empty;
         public string TableName { get; set; } = string.Empty;
         public string PartitionColumn { get; set; } = string.Empty;
@@ -1488,7 +1561,7 @@
 
     private sealed class PartitionTableOption
     {
-        public PartitionTableOption(string key, string label, string schemaName, string tableName, string partitionColumn)
+        public PartitionTableOption(string key, string label, string schemaName, string tableName, string? partitionColumn)
         {
             Key = key;
             Label = label;
@@ -1501,7 +1574,7 @@
         public string Label { get; }
         public string SchemaName { get; }
         public string TableName { get; }
-        public string PartitionColumn { get; }
+        public string? PartitionColumn { get; }
     }
 
     private class PartitionTableInfo
@@ -1569,6 +1642,8 @@
         public string Password { get; set; } = "";
     }
 }
+
+
 
 
 

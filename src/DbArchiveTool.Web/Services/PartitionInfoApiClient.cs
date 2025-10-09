@@ -23,6 +23,14 @@ public class PartitionInfoApiClient
         return await response.Content.ReadFromJsonAsync<List<PartitionTableDto>>() ?? new List<PartitionTableDto>();
     }
 
+    /// <summary>获取数据源下的全部用户表。</summary>
+    public async Task<List<DatabaseTableDto>> GetDatabaseTablesAsync(Guid dataSourceId)
+    {
+        var response = await httpClient.GetAsync($"api/v1/data-sources/{dataSourceId}/tables");
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<List<DatabaseTableDto>>() ?? new List<DatabaseTableDto>();
+    }
+
     /// <summary>获取指定表的分区详情。</summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(Guid dataSourceId, string schemaName, string tableName)
     {
@@ -50,7 +58,7 @@ public class PartitionInfoApiClient
     /// <summary>获取指定表的列信息。</summary>
     public async Task<List<PartitionTableColumnDto>> GetTableColumnsAsync(Guid dataSourceId, string schemaName, string tableName)
     {
-        var url = $"api/v1/data-sources/{dataSourceId}/partitions/tables/{Uri.EscapeDataString(schemaName)}/{Uri.EscapeDataString(tableName)}/columns";
+        var url = $"api/v1/data-sources/{dataSourceId}/tables/{Uri.EscapeDataString(schemaName)}/{Uri.EscapeDataString(tableName)}/columns";
         var response = await httpClient.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<List<PartitionTableColumnDto>>() ?? new List<PartitionTableColumnDto>();
@@ -60,7 +68,7 @@ public class PartitionInfoApiClient
     public async Task<PartitionColumnStatisticsDto?> GetColumnStatisticsAsync(Guid dataSourceId, string schemaName, string tableName, string columnName)
     {
         var url =
-            $"api/v1/data-sources/{dataSourceId}/partitions/tables/{Uri.EscapeDataString(schemaName)}/{Uri.EscapeDataString(tableName)}/columns/{Uri.EscapeDataString(columnName)}/statistics";
+            $"api/v1/data-sources/{dataSourceId}/tables/{Uri.EscapeDataString(schemaName)}/{Uri.EscapeDataString(tableName)}/columns/{Uri.EscapeDataString(columnName)}/statistics";
         var response = await httpClient.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<PartitionColumnStatisticsDto>();
@@ -151,6 +159,12 @@ public class TargetDatabaseDto
     public bool IsCurrent { get; set; }
 }
 
+public class DatabaseTableDto
+{
+    public string SchemaName { get; set; } = "";
+    public string TableName { get; set; } = "";
+}
+
 public class DefaultFilePathResponse
 {
     public string? Path { get; set; }
@@ -199,3 +213,4 @@ public class TestConnectionRequest
     public string? UserName { get; set; }
     public string? Password { get; set; }
 }
+
