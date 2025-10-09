@@ -29,6 +29,7 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
                            pf.name AS PartitionFunctionName,
                            c.name AS ColumnName,
                            t.name AS ColumnType,
+                           c.is_nullable AS IsNullable,
                            pf.range_type AS RangeType
                     FROM sys.indexes i
                     INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
@@ -45,7 +46,8 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         }
 
         var valueKind = MapToValueKind((string)result.ColumnType);
-        var partitionColumn = new PartitionColumn(result.ColumnName, valueKind);
+        var isNullable = Convert.ToBoolean(result.IsNullable);
+        var partitionColumn = new PartitionColumn(result.ColumnName, valueKind, isNullable);
         var filegroupStrategy = PartitionFilegroupStrategy.Default("PRIMARY");
         var isRangeRight = ((int)result.RangeType) == 1;
 

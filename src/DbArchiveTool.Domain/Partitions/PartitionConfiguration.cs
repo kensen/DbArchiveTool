@@ -12,6 +12,8 @@ namespace DbArchiveTool.Domain.Partitions;
 /// </summary>
 public sealed class PartitionConfiguration : AggregateRoot
 {
+    private const string DefaultAuditUser = "PARTITION-MANAGER";
+
     /// <summary>内部维护的分区边界列表，始终按 SortKey 升序排序。</summary>
     private readonly List<PartitionBoundary> boundaries = new();
 
@@ -41,6 +43,18 @@ public sealed class PartitionConfiguration : AggregateRoot
 
     /// <summary>分区保留策略。</summary>
     public PartitionRetentionPolicy? RetentionPolicy { get; }
+
+    /// <summary>分区数据存放设置。</summary>
+    public PartitionStorageSettings StorageSettings { get; private set; }
+
+    /// <summary>目标表设置。</summary>
+    public PartitionTargetTable? TargetTable { get; private set; }
+
+    /// <summary>是否要求分区列在执行脚本前转为 NOT NULL。</summary>
+    public bool RequirePartitionColumnNotNull { get; private set; }
+
+    /// <summary>配置备注。</summary>
+    public string? Remarks { get; private set; }
 
     /// <summary>是否为 Range Right 分区函数。</summary>
     public bool IsRangeRight { get; }
@@ -81,7 +95,11 @@ public sealed class PartitionConfiguration : AggregateRoot
         PartitionRetentionPolicy? retentionPolicy = null,
         IEnumerable<PartitionBoundary>? existingBoundaries = null,
         IEnumerable<PartitionFilegroupMapping>? existingFilegroupMappings = null,
-        PartitionSafetyRule? safetyRule = null)
+        PartitionSafetyRule? safetyRule = null,
+        PartitionStorageSettings? storageSettings = null,
+        PartitionTargetTable? targetTable = null,
+        bool requirePartitionColumnNotNull = false,
+        string? remarks = null)
     {
         ArchiveDataSourceId = archiveDataSourceId != Guid.Empty ? archiveDataSourceId : throw new ArgumentException("数据源标识不能为空", nameof(archiveDataSourceId));
         SchemaName = string.IsNullOrWhiteSpace(schemaName) ? throw new ArgumentException("架构名不能为空", nameof(schemaName)) : schemaName.Trim();
@@ -93,6 +111,10 @@ public sealed class PartitionConfiguration : AggregateRoot
         IsRangeRight = isRangeRight;
         RetentionPolicy = retentionPolicy;
         SafetyRule = safetyRule;
+        StorageSettings = storageSettings ?? PartitionStorageSettings.UsePrimary(filegroupStrategy.PrimaryFilegroup);
+        TargetTable = targetTable;
+        RequirePartitionColumnNotNull = requirePartitionColumnNotNull;
+        Remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
 
         if (existingBoundaries is not null)
         {
@@ -132,7 +154,7 @@ public sealed class PartitionConfiguration : AggregateRoot
         }
 
         AddBoundaryInternal(boundary, skipValidation: false);
-        Touch("PARTITION-MANAGER");
+        Touch(DefaultAuditUser);
         return PartitionOperationResult.Success();
     }
 
@@ -160,7 +182,7 @@ public sealed class PartitionConfiguration : AggregateRoot
 
         boundaries.RemoveAt(index);
         RemoveFilegroupMapping(boundaryKey);
-        Touch("PARTITION-MANAGER");
+        Touch(DefaultAuditUser);
         return PartitionOperationResult.Success();
     }
 
@@ -189,8 +211,47 @@ public sealed class PartitionConfiguration : AggregateRoot
 
         RemoveFilegroupMapping(boundaryKey);
         filegroupMappings.Add(PartitionFilegroupMapping.Create(boundaryKey, filegroupName));
-        Touch("PARTITION-MANAGER");
+        Touch(DefaultAuditUser);
         return PartitionOperationResult.Success();
+    }
+
+    /// <summary>
+    /// 更新分区存放策略。
+    /// </summary>
+    /// <param name="settings">新的存放设置。</param>
+    public void UpdateStorageSettings(PartitionStorageSettings settings)
+    {
+        StorageSettings = settings ?? throw new ArgumentNullException(nameof(settings));
+        Touch(DefaultAuditUser);
+    }
+
+    /// <summary>
+    /// 更新目标表信息。
+    /// </summary>
+    /// <param name="targetTable">新的目标表配置。</param>
+    public void UpdateTargetTable(PartitionTargetTable targetTable)
+    {
+        TargetTable = targetTable ?? throw new ArgumentNullException(nameof(targetTable));
+        Touch(DefaultAuditUser);
+    }
+
+    /// <summary>
+    /// 更新分区列 NOT NULL 要求。
+    /// </summary>
+    public void SetPartitionColumnNotNullRequirement(bool requireNotNull)
+    {
+        RequirePartitionColumnNotNull = requireNotNull;
+        Touch(DefaultAuditUser);
+    }
+
+    /// <summary>
+    /// 更新配置备注信息。
+    /// </summary>
+    /// <param name="remarks">备注内容，可为空。</param>
+    public void UpdateRemarks(string? remarks)
+    {
+        Remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
+        Touch(DefaultAuditUser);
     }
 
     /// <summary>
@@ -205,7 +266,54 @@ public sealed class PartitionConfiguration : AggregateRoot
         }
 
         var mapping = filegroupMappings.FirstOrDefault(x => x.BoundaryKey.Equals(boundaryKey, StringComparison.Ordinal));
-        return mapping?.FilegroupName ?? FilegroupStrategy.PrimaryFilegroup;
+        return mapping?.FilegroupName ?? StorageSettings.FilegroupName;
+    }
+
+    /// <summary>
+    /// 用新的边界集合替换当前配置，操作前会清空已有映射。
+    /// </summary>
+    /// <param name="values">按增序排列的分区值。</param>
+    public PartitionOperationResult ReplaceBoundaries(IReadOnlyList<PartitionValue> values)
+    {
+        if (values is null || values.Count == 0)
+        {
+            return PartitionOperationResult.Failure("分区边界列表不能为空。");
+        }
+
+        var ordered = new List<PartitionValue>(values.Count);
+        foreach (var value in values)
+        {
+            ordered.Add(value ?? throw new ArgumentException("分区边界值不能为空。", nameof(values)));
+        }
+
+        ordered.Sort((left, right) => left.CompareTo(right));
+
+        if (ordered.Count == 0)
+        {
+            return PartitionOperationResult.Failure("分区边界列表不能为空。");
+        }
+
+        var unique = new List<PartitionValue>(ordered.Count);
+        foreach (var value in ordered)
+        {
+            if (unique.Count == 0 || unique[^1].CompareTo(value) != 0)
+            {
+                unique.Add(value);
+            }
+        }
+
+        boundaries.Clear();
+        filegroupMappings.Clear();
+
+        for (var index = 0; index < unique.Count; index++)
+        {
+            var boundaryKey = (index + 1).ToString("D4", System.Globalization.CultureInfo.InvariantCulture);
+            boundaries.Add(new PartitionBoundary(boundaryKey, unique[index]));
+        }
+
+        EnsureSortedOrder();
+        Touch(DefaultAuditUser);
+        return PartitionOperationResult.Success();
     }
 
     /// <summary>
@@ -215,7 +323,7 @@ public sealed class PartitionConfiguration : AggregateRoot
     public void UpdateSafetyRule(PartitionSafetyRule safetyRule)
     {
         SafetyRule = safetyRule ?? throw new ArgumentNullException(nameof(safetyRule));
-        Touch("PARTITION-MANAGER");
+        Touch(DefaultAuditUser);
     }
 
     /// <summary>
@@ -224,7 +332,7 @@ public sealed class PartitionConfiguration : AggregateRoot
     public void ClearSafetyRule()
     {
         SafetyRule = null;
-        Touch("PARTITION-MANAGER");
+        Touch(DefaultAuditUser);
     }
 
     /// <summary>
@@ -321,12 +429,13 @@ public sealed class PartitionConfiguration : AggregateRoot
         var pairs = boundaries.Zip(boundaries.Skip(1), (prev, next) => (prev, next));
         foreach (var (prev, next) in pairs)
         {
-            if (prev.CompareTo(next) >= 0)
+            if (prev.CompareTo(next) >= 0)
             {
                 throw new InvalidOperationException("提供的初始分区边界顺序无效。");
             }
         }
     }
+
 }
 
 /// <summary>

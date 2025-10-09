@@ -2,6 +2,7 @@ using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Infrastructure.Persistence.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace DbArchiveTool.Infrastructure.Persistence;
@@ -16,6 +17,7 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
     public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
+    public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -68,6 +70,68 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.RequestedAt).HasConversion(
                 v => v.UtcDateTime,
                 v => DateTime.SpecifyKind(v, DateTimeKind.Utc));
+        });
+
+        modelBuilder.Entity<PartitionConfigurationEntity>(builder =>
+        {
+            builder.ToTable("PartitionConfiguration");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.SchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.PartitionFunctionName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.PartitionSchemeName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.PartitionColumnName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.PrimaryFilegroup).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.StorageFilegroupName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.StorageDataFileDirectory).HasMaxLength(260);
+            builder.Property(x => x.StorageDataFileName).HasMaxLength(128);
+            builder.Property(x => x.TargetDatabaseName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetSchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetTableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetRemarks).HasMaxLength(512);
+            builder.Property(x => x.Remarks).HasMaxLength(512);
+            builder.Property(x => x.CreatedBy).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.UpdatedBy).IsRequired().HasMaxLength(64);
+
+            builder.HasIndex(x => new { x.ArchiveDataSourceId, x.SchemaName, x.TableName }).IsUnique();
+
+            builder.HasMany(x => x.Boundaries)
+                .WithOne(x => x.Configuration)
+                .HasForeignKey(x => x.ConfigurationId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.HasMany(x => x.AdditionalFilegroups)
+                .WithOne(x => x.Configuration)
+                .HasForeignKey(x => x.ConfigurationId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            builder.HasMany(x => x.FilegroupMappings)
+                .WithOne(x => x.Configuration)
+                .HasForeignKey(x => x.ConfigurationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PartitionConfigurationBoundaryEntity>(builder =>
+        {
+            builder.ToTable("PartitionConfigurationBoundary");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.SortKey).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.RawValue).IsRequired();
+        });
+
+        modelBuilder.Entity<PartitionConfigurationFilegroupEntity>(builder =>
+        {
+            builder.ToTable("PartitionConfigurationFilegroup");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.FilegroupName).IsRequired().HasMaxLength(128);
+        });
+
+        modelBuilder.Entity<PartitionConfigurationFilegroupMappingEntity>(builder =>
+        {
+            builder.ToTable("PartitionConfigurationFilegroupMapping");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.BoundaryKey).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.FilegroupName).IsRequired().HasMaxLength(128);
         });
     }
 }

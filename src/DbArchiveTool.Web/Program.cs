@@ -33,6 +33,11 @@ builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient
     client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
 });
 
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfigurationApiClient>(client =>
+{
+    client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
+});
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

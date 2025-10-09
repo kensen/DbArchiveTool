@@ -50,6 +50,46 @@ public class PartitionConfigurationTests
         Assert.Null(config.SafetyRule);
     }
 
+    [Fact]
+    public void ReplaceBoundaries_ShouldSortAndDeduplicate()
+    {
+        var config = CreateConfig(isRangeRight: true, existing: Array.Empty<PartitionValue>());
+        var values = new[]
+        {
+            PartitionValue.FromInt(30),
+            PartitionValue.FromInt(10),
+            PartitionValue.FromInt(20),
+            PartitionValue.FromInt(10)
+        };
+
+        var result = config.ReplaceBoundaries(values);
+
+        Assert.True(result.IsSuccess);
+        var ordered = config.Boundaries.Select(b => b.Value.ToInvariantString()).ToArray();
+        Assert.Equal(new[] { "10", "20", "30" }, ordered);
+    }
+
+    [Fact]
+    public void ReplaceBoundaries_ShouldFail_WhenEmpty()
+    {
+        var config = CreateConfig(isRangeRight: true, existing: Array.Empty<PartitionValue>());
+
+        var result = config.ReplaceBoundaries(Array.Empty<PartitionValue>());
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("分区边界列表不能为空。", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void StorageSettings_CreateDedicated_ShouldValidateParameters()
+    {
+        Assert.Throws<ArgumentException>(() => PartitionStorageSettings.CreateDedicated("", "D:/data", "file.ndf", 32, 8));
+        Assert.Throws<ArgumentException>(() => PartitionStorageSettings.CreateDedicated("FG1", "", "file.ndf", 32, 8));
+        Assert.Throws<ArgumentException>(() => PartitionStorageSettings.CreateDedicated("FG1", "D:/data", "", 32, 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PartitionStorageSettings.CreateDedicated("FG1", "D:/data", "file.ndf", 0, 8));
+        Assert.Throws<ArgumentOutOfRangeException>(() => PartitionStorageSettings.CreateDedicated("FG1", "D:/data", "file.ndf", 32, 0));
+    }
+
     private static PartitionConfiguration CreateConfig(bool isRangeRight, IEnumerable<PartitionValue> existing)
     {
         var boundaries = existing.Select((value, index) => new PartitionBoundary(index.ToString("D4"), value)).ToList();

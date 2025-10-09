@@ -1,4 +1,6 @@
-﻿namespace DbArchiveTool.Domain.Abstractions;
+using System;
+
+namespace DbArchiveTool.Domain.Abstractions;
 
 public abstract class BaseEntity
 {
@@ -8,6 +10,7 @@ public abstract class BaseEntity
     public DateTime UpdatedAtUtc { get; protected set; } = DateTime.UtcNow;
     public string UpdatedBy { get; protected set; } = "SYSTEM";
     public bool IsDeleted { get; protected set; }
+
     public void MarkDeleted(string user)
     {
         IsDeleted = true;
@@ -19,5 +22,38 @@ public abstract class BaseEntity
     {
         UpdatedBy = user;
         UpdatedAtUtc = DateTime.UtcNow;
+    }
+
+    public void InitializeAudit(string user)
+    {
+        if (string.IsNullOrWhiteSpace(user))
+        {
+            throw new ArgumentException("操作人不能为空。", nameof(user));
+        }
+
+        var normalized = user.Trim();
+        CreatedBy = normalized;
+        UpdatedBy = normalized;
+        CreatedAtUtc = DateTime.UtcNow;
+        UpdatedAtUtc = CreatedAtUtc;
+    }
+
+    public void OverrideId(Guid id)
+    {
+        if (id == Guid.Empty)
+        {
+            throw new ArgumentException("标识不能为空。", nameof(id));
+        }
+
+        Id = id;
+    }
+
+    public void RestoreAudit(DateTime createdAtUtc, string createdBy, DateTime updatedAtUtc, string updatedBy, bool isDeleted)
+    {
+        CreatedAtUtc = createdAtUtc;
+        CreatedBy = createdBy;
+        UpdatedAtUtc = updatedAtUtc;
+        UpdatedBy = updatedBy;
+        IsDeleted = isDeleted;
     }
 }

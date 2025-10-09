@@ -1,11 +1,18 @@
 @page "/archive-data-sources/{DataSourceId:guid}/partitions"
 @attribute [ReuseTabsPage(Title = "分区管理", Closable = true)]
 @using AntDesign
+@using System.Globalization
+@using System.Text.RegularExpressions
 @using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Domain.Partitions
+@using DbArchiveTool.Web.Core
 @using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components.Web
 @using Microsoft.AspNetCore.Components
 @inject PartitionManagementApiClient PartitionApi
 @inject PartitionInfoApiClient PartitionInfoApi
+@inject PartitionConfigurationApiClient PartitionConfigApi
+@inject AdminSessionState AdminSession
 @inject MessageService Message
 @inject NavigationManager Navigation
 
@@ -192,9 +199,230 @@
     </Form>
 </Modal>
 
-<Modal Title="@_partitionConfigModalTitle" @bind-Visible="_partitionConfigModalVisible" Width="800" OnOk="SavePartitionConfig" OnCancel="() => _partitionConfigModalVisible = false">
-    <Alert Type="@AlertType.Info" Message="分区配置功能开发中" ShowIcon="true" />
-</Modal>
+<Drawer @bind-Visible="_partitionConfigModalVisible"
+        Title="@_partitionConfigModalTitle"
+        Width="760"
+        Placement="DrawerPlacement.Right"
+        Closable="false">
+    <Spin Spinning="@(_loadingPartitionWizard || _submittingPartitionConfig)">
+        <Steps Current="@_configWizard.CurrentStep" Size="@StepsSize.Small">
+            <Step Title="基础信息" />
+            <Step Title="分区值" />
+            <Step Title="完成" />
+        </Steps>
+
+        <div class="partition-wizard-body">
+            @if (_configWizard.CurrentStep == 0)
+            {
+                <div class="wizard-step">
+                    <Descriptions Column="1" Size="@DescriptionsSize.Small" Style="margin-bottom:16px;">
+                        <DescriptionsItem Title="源表">@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</DescriptionsItem>
+                        <DescriptionsItem Title="分区函数">@_selectedTable?.PartitionFunction</DescriptionsItem>
+                        <DescriptionsItem Title="分区方案">@_selectedTable?.PartitionScheme</DescriptionsItem>
+                    </Descriptions>
+
+                    <Divider>分区列</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="源表" Required>
+                            <Select TItem="string" TItemValue="string"\r\n                                    Value="_configWizard.Form.SourceTableKey"
+                                    ValueChanged="OnSourceTableChanged"
+                                    ValueExpression="() => _configWizard.Form.SourceTableKey"
+                                    Style="width:100%">
+                                @foreach (var option in _configWizard.TableOptions)
+                                {
+                                    <SelectOption Value="@option.Key" Label="@option.Label" />
+                                }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="分区列" Required>
+                            <Select TItem="string" TItemValue="string"
+                                    Value="_configWizard.Form.PartitionColumn"
+                                    ValueChanged="OnPartitionColumnChanged"
+                                    ValueExpression="() => _configWizard.Form.PartitionColumn"
+                                    Style="width:100%">
+                                  @foreach (var column in _configWizard.Columns)
+                                  {
+                                      <SelectOption Value="@column.ColumnName" Label="@($"{column.ColumnName} ({column.DisplayType})")" />
+                                  }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="列可空">
+                            <Tag Color="@(_configWizard.SelectedColumnIsNullable ? "orange" : "green")">@(_configWizard.SelectedColumnIsNullable ? "可为空" : "NOT NULL")</Tag>
+                        </FormItem>
+                        @if (_configWizard.SelectedColumnIsNullable)
+                        {
+                            <FormItem Label="去可空">
+                                <Space Align="@SpaceAlign.Center">
+                                    <Switch @bind-Checked="_configWizard.Form.RequirePartitionColumnNotNull" />
+                                    <span class="form-tip">启用后将在脚本中包含 ALTER COLUMN。</span>
+                                </Space>
+                            </FormItem>
+                        }
+                        <FormItem Label="列统计">
+                            <Space Direction="@SpaceDirection.Vertical">
+                                <span>最小值：@(_configWizard.ColumnMinValue ?? "-")</span>
+                                <span>最大值：@(_configWizard.ColumnMaxValue ?? "-")</span>
+                            </Space>
+                        </FormItem>
+                    </Form>
+
+                    <Divider>存放模式</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="模式">
+                            <Select TItem="PartitionStorageMode" TItemValue="PartitionStorageMode"
+                                    Value="_configWizard.Form.StorageMode"
+                                    ValueChanged="OnStorageModeChanged"
+                                    ValueExpression="() => _configWizard.Form.StorageMode"
+                                    Style="width:220px">
+                                <SelectOption Value="@PartitionStorageMode.PrimaryFilegroup" Label="主文件组" />
+                                <SelectOption Value="@PartitionStorageMode.DedicatedFilegroupSingleFile" Label="单文件组 + 数据文件" />
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="文件组名称" Required>
+                            <Input @bind-Value="_configWizard.Form.FilegroupName" Placeholder="请输入文件组名称" />
+                        </FormItem>
+                        @if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
+                        {
+                            <FormItem Label="数据目录" Required>
+                                <Input @bind-Value="_configWizard.Form.DataFileDirectory" Placeholder="例如 D:\SQLData\" />
+                            </FormItem>
+                            <FormItem Label="文件名" Required>
+                                <Input @bind-Value="_configWizard.Form.DataFileName" Placeholder="示例 DB_FG_p202501010101.ndf" />
+                            </FormItem>
+                            <FormItem Label="初始大小(MB)" Required>
+                                <AntDesign.InputNumber TValue="int?" @bind-Value="_configWizard.Form.InitialFileSizeMb" Min="1" />
+                            </FormItem>
+                            <FormItem Label="自动增长(MB)" Required>
+                                <AntDesign.InputNumber TValue="int?" @bind-Value="_configWizard.Form.AutoGrowthMb" Min="1" />
+                            </FormItem>
+                        }
+                    </Form>
+
+                    <Divider>目标表</Divider>
+                    <Form Model="_configWizard.Form" Layout="FormLayout.Horizontal" LabelColSpan="6" WrapperColSpan="18">
+                        <FormItem Label="目标数据库" Required>
+                            <Select TItem="string" TItemValue="string" @bind-Value="_configWizard.Form.TargetDatabaseName" Style="width:100%">
+                                @foreach (var db in _configWizard.TargetDatabases)
+                                {
+                                    <SelectOption Value="@db.Name" Label="@db.Name" />
+                                }
+                            </Select>
+                        </FormItem>
+                        <FormItem Label="目标架构" Required>
+                            <Input @bind-Value="_configWizard.Form.TargetSchemaName" />
+                        </FormItem>
+                        <FormItem Label="目标表名" Required>
+                            <Input @bind-Value="_configWizard.Form.TargetTableName" />
+                        </FormItem>
+                        <FormItem Label="备注">
+                            <InputTextArea @bind-Value="_configWizard.Form.Remarks" Rows="3" />
+                        </FormItem>
+                    </Form>
+                </div>
+            }
+            else if (_configWizard.CurrentStep == 1)
+            {
+                <div class="wizard-step">
+                    <Descriptions Column="1" Size="@DescriptionsSize.Small" Style="margin-bottom:16px;">
+                        <DescriptionsItem Title="源表">@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</DescriptionsItem>
+                        <DescriptionsItem Title="分区列">@_configWizard.Form.PartitionColumn</DescriptionsItem>
+                        <DescriptionsItem Title="当前数量">@_configWizard.Boundaries.Count</DescriptionsItem>
+                    </Descriptions>
+
+                    <Alert Type="@AlertType.Info" ShowIcon="true" Message="分区边界需按升序排列，提交时系统会自动排序并去重。" />
+
+                    <div class="boundary-actions">
+                        <Input Placeholder="输入新的边界值"
+                               Style="width:260px"
+                               @bind-Value="_configWizard.NewBoundaryValue"
+                               @onkeypress="OnBoundaryInputKeyPress" />
+                        <Button Type="@ButtonType.Primary" OnClick="AddManualBoundary">添加</Button>
+                        <Button OnClick="ClearBoundaryValues">清空</Button>
+                    </div>
+
+                    @if (SupportsAutoGeneration)
+                    {
+                        <Card Title="批量生成" Size="@CardSize.Small" Style="margin-top:12px;">
+                            @if (_configWizard.ColumnKind == PartitionValueKind.Int || _configWizard.ColumnKind == PartitionValueKind.BigInt)
+                            {
+                                <Space Direction="@SpaceDirection.Horizontal">
+                                    <Input Placeholder="@("起始值")" Style="width:120px" @bind-Value="_configWizard.Generator.StartValue" />
+                                    <Input Placeholder="@("结束值")" Style="width:120px" @bind-Value="_configWizard.Generator.EndValue" />
+                                    <Input Placeholder="@("步长")" Style="width:120px" @bind-Value="_configWizard.Generator.StepValue" />
+                                    <Button OnClick="GenerateNumericBoundaries">生成</Button>
+                                </Space>
+                            }
+                            else if (IsDateKind)
+                            {
+                                <Space Direction="@SpaceDirection.Horizontal" Align="@SpaceAlign.Center">
+                                    <DatePicker @bind-Value="_configWizard.Generator.StartDate"
+                                                Placeholder="@("起始日期")"
+                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
+                                    <DatePicker @bind-Value="_configWizard.Generator.EndDate"
+                                                Placeholder="@("结束日期")"
+                                                ShowTime="@(_configWizard.ColumnKind != PartitionValueKind.Date)" />
+                                    <AntDesign.InputNumber TValue="int" @bind-Value="_configWizard.Generator.StepDays" Min="1" />
+                                    <span class="form-tip">步长(天)</span>
+                                    <Button OnClick="GenerateDateBoundaries">生成</Button>
+                                </Space>
+                            }
+                        </Card>
+                    }
+
+                    <Table TItem="PartitionBoundaryItem"
+                           DataSource="_configWizard.Boundaries"
+                           Size="@TableSize.Small"
+                           Style="margin-top:16px;">
+                        <PropertyColumn Title="边界值" Property="c => c.DisplayValue" />
+                        <ActionColumn Title="操作">
+                            <Template Context="context">
+                                <Button Type="@ButtonType.Link" Danger OnClick="() => RemoveBoundary(context.Id)">删除</Button>
+                            </Template>
+                        </ActionColumn>
+                    </Table>
+                </div>
+            }
+            else
+            {
+                <div class="wizard-step wizard-step-complete">
+                    <Result Status="@ResultStatus.Success" Title="分区配置创建成功">
+                        <ul class="wizard-summary">
+                            <li>配置编号：@_configWizard.ConfigurationId</li>
+                            <li>分区表：@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</li>
+                            <li>分区列：@_configWizard.Form.PartitionColumn</li>
+                            <li>边界数量：@_configWizard.Boundaries.Count</li>
+                        </ul>
+                    </Result>
+                </div>
+            }
+        </div>
+    </Spin>
+
+    <div class="partition-wizard-footer">
+        <Space>
+            @if (_configWizard.CurrentStep < 2)
+            {
+                <Button OnClick="ClosePartitionWizard">取消</Button>
+            }
+            @if (_configWizard.CurrentStep > 0 && _configWizard.CurrentStep < 2)
+            {
+                <Button OnClick="PrevPartitionStep">上一步</Button>
+            }
+            @if (_configWizard.CurrentStep == 0)
+            {
+                <Button Type="@ButtonType.Primary" OnClick="NextPartitionStep">下一步</Button>
+            }
+            else if (_configWizard.CurrentStep == 1)
+            {
+                <Button Type="@ButtonType.Primary" Loading="_submittingPartitionConfig" OnClick="SubmitPartitionConfigurationAsync">提交配置</Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary" OnClick="ClosePartitionWizard">完成</Button>
+            }
+        </Space>
+    </div>
+</Drawer>
 
 <Modal Title="添加分区边界值" @bind-Visible="_addPartitionValueModalVisible" Width="600" OnOk="SavePartitionValue" OnCancel="() => _addPartitionValueModalVisible = false">
     <Alert Type="@AlertType.Info" Message="添加分区值功能开发中" ShowIcon="true" />
@@ -217,6 +445,13 @@
     .partition-tables-section { flex: 0 0 auto; max-height: 40%; overflow: auto; background: white; padding: 16px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
     .partition-details-section { flex: 1 1 auto; overflow: auto; background: white; padding: 16px; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f0; }
+    .partition-wizard-body { margin-top: 16px; }
+    .wizard-step { padding-top: 16px; }
+    .wizard-step .form-tip { color: #8c8c8c; font-size: 12px; }
+    .boundary-actions { margin-top: 12px; display: flex; gap: 12px; align-items: center; }
+    .partition-wizard-footer { margin-top: 24px; text-align: right; }
+    .wizard-summary { list-style: none; padding-left: 0; margin: 16px 0 0; }
+    .wizard-summary li { margin-bottom: 6px; }
     .section-header h3 { margin: 0; font-size: 16px; font-weight: 600; color: #262626; }
     .header-actions { display: flex; gap: 8px; }
     .server-info { margin-top: 12px; }
@@ -248,6 +483,9 @@
     private bool _targetConnectionTestSuccess = false;
     private bool _partitionConfigModalVisible = false;
     private string _partitionConfigModalTitle = "添加分区配置";
+    private bool _loadingPartitionWizard = false;
+    private bool _submittingPartitionConfig = false;
+    private PartitionConfigWizardState _configWizard = new();
     private bool _addPartitionValueModalVisible = false;
     private bool _splitModalVisible = false;
     private bool _mergeModalVisible = false;
@@ -383,8 +621,16 @@
             Message.Error($"加载目标服务器配置失败: {ex.Message}");
         }
     }
-    private void ShowAddPartitionConfig() { _partitionConfigModalTitle = "添加分区配置"; _partitionConfigModalVisible = true; }
-    private void ShowEditPartitionConfig() { _partitionConfigModalTitle = "修改分区配置"; _partitionConfigModalVisible = true; }
+    private async Task ShowAddPartitionConfig()
+    {
+        _partitionConfigModalTitle = "添加分区配置";
+        await InitializePartitionWizardAsync();
+    }
+
+    private void ShowEditPartitionConfig()
+    {
+        Message.Info("分区配置修改功能仍在规划中，敬请期待。");
+    }
     private void ShowAddPartitionValue() => _addPartitionValueModalVisible = true;
     private void ShowSplitPartition() => _splitModalVisible = true;
     private void ShowMergePartition() => _mergeModalVisible = true;
@@ -490,11 +736,773 @@
             Message.Error($"保存目标服务器配置失败: {ex.Message}");
         }
     }
-    private Task SavePartitionConfig() { _partitionConfigModalVisible = false; return Task.CompletedTask; }
+
+    private async Task InitializePartitionWizardAsync()
+    {
+        if (_partitionTables.Count == 0)
+        {
+            Message.Warning("当前数据源暂无可用于配置的分区表。");
+            return;
+        }
+
+        _loadingPartitionWizard = true;
+        _configWizard = new PartitionConfigWizardState();
+        _configWizard.TableOptions = _partitionTables
+            .Select(t => new PartitionTableOption(
+                $"{t.SchemaName}.{t.TableName}",
+                $"{t.SchemaName}.{t.TableName}",
+                t.SchemaName,
+                t.TableName,
+                t.PartitionColumn))
+            .ToList();
+
+        _configWizard.Form.StorageMode = PartitionStorageMode.PrimaryFilegroup;
+        _configWizard.Form.FilegroupName = "PRIMARY";
+        _configWizard.Form.TargetDatabaseName = _databaseName;
+        _configWizard.Form.RequirePartitionColumnNotNull = false;
+        _configWizard.Generator.StepDays = 1;
+        _configWizard.CurrentStep = 0;
+
+        var defaultOptionKey = _selectedTable is not null
+            ? $"{_selectedTable.SchemaName}.{_selectedTable.TableName}"
+            : _configWizard.TableOptions.First().Key;
+
+        try
+        {
+            var databases = await PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+            _configWizard.TargetDatabases = databases;
+            var defaultDb = databases.FirstOrDefault(db => db.IsCurrent) ?? databases.FirstOrDefault();
+            if (defaultDb is not null)
+            {
+                _configWizard.Form.TargetDatabaseName = defaultDb.Name;
+            }
+
+            var defaultPath = await PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            if (!string.IsNullOrWhiteSpace(defaultPath))
+            {
+                _configWizard.Form.DataFileDirectory = defaultPath;
+            }
+
+            await ApplyTableSelectionAsync(defaultOptionKey, resetNaming: true);
+            ApplyStorageModeDefaults();
+            _partitionConfigModalVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"初始化分区配置向导失败: {ex.Message}");
+            _partitionConfigModalVisible = false;
+        }
+        finally
+        {
+            _loadingPartitionWizard = false;
+        }
+    }
+
+    private async Task ApplyTableSelectionAsync(string tableKey, bool resetNaming)
+    {
+        var option = _configWizard.TableOptions.FirstOrDefault(o => o.Key.Equals(tableKey, StringComparison.OrdinalIgnoreCase));
+        if (option is null)
+        {
+            return;
+        }
+
+        _configWizard.Form.SourceTableKey = option.Key;
+        _configWizard.Form.SchemaName = option.SchemaName;
+        _configWizard.Form.TableName = option.TableName;
+
+        if (resetNaming || string.IsNullOrWhiteSpace(_configWizard.Form.TargetSchemaName))
+        {
+            _configWizard.Form.TargetSchemaName = option.SchemaName;
+        }
+
+        if (resetNaming || string.IsNullOrWhiteSpace(_configWizard.Form.TargetTableName))
+        {
+            _configWizard.Form.TargetTableName = $"{option.TableName}_bak";
+        }
+
+        if (resetNaming || string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName))
+        {
+            _configWizard.Form.FilegroupName = "PRIMARY";
+        }
+
+        await LoadColumnsForConfigAsync(option.SchemaName, option.TableName, option.PartitionColumn);
+        _configWizard.Boundaries.Clear();
+    }
+
+    private async Task LoadColumnsForConfigAsync(string schemaName, string tableName, string? preferredColumn)
+    {
+        var columns = await PartitionInfoApi.GetTableColumnsAsync(DataSourceId, schemaName, tableName);
+        if (columns.Count == 0)
+        {
+            throw new InvalidOperationException("未能读取分区列信息。");
+        }
+
+        _configWizard.Columns = columns;
+        var defaultColumn = columns.FirstOrDefault(c => string.Equals(c.ColumnName, preferredColumn, StringComparison.OrdinalIgnoreCase))
+                            ?? columns.FirstOrDefault();
+        if (defaultColumn is null)
+        {
+            throw new InvalidOperationException("未能读取分区列信息。");
+        }
+
+        _configWizard.Form.PartitionColumn = defaultColumn.ColumnName;
+        _configWizard.SelectedColumnIsNullable = defaultColumn.IsNullable;
+        _configWizard.Form.RequirePartitionColumnNotNull = defaultColumn.IsNullable;
+        _configWizard.ColumnKind = ResolveValueKind(defaultColumn);
+        await LoadColumnStatisticsAsync(defaultColumn.ColumnName);
+    }
+
+    private async Task OnSourceTableChanged(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        try
+        {
+            await ApplyTableSelectionAsync(value, resetNaming: false);
+            ApplyStorageModeDefaults();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载分区元数据失败: {ex.Message}");
+        }
+    }
+
+    private async Task LoadColumnStatisticsAsync(string columnName)
+    {
+        try
+        {
+            var stats = await PartitionInfoApi.GetColumnStatisticsAsync(DataSourceId, _configWizard.Form.SchemaName, _configWizard.Form.TableName, columnName);
+            _configWizard.ColumnMinValue = stats?.MinValue;
+            _configWizard.ColumnMaxValue = stats?.MaxValue;
+        }
+        catch
+        {
+            _configWizard.ColumnMinValue = null;
+            _configWizard.ColumnMaxValue = null;
+        }
+    }
+
+    private Task OnPartitionColumnChanged(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Task.CompletedTask;
+        }
+
+        _configWizard.Form.PartitionColumn = value;
+        var column = _configWizard.Columns.FirstOrDefault(c => string.Equals(c.ColumnName, value, StringComparison.OrdinalIgnoreCase));
+        if (column is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        _configWizard.SelectedColumnIsNullable = column.IsNullable;
+        _configWizard.Form.RequirePartitionColumnNotNull = column.IsNullable;
+        _configWizard.ColumnKind = ResolveValueKind(column);
+        _configWizard.Boundaries.Clear();
+        _configWizard.ColumnMinValue = null;
+        _configWizard.ColumnMaxValue = null;
+
+        return LoadColumnStatisticsAsync(column.ColumnName);
+    }
+
+    private Task OnStorageModeChanged(PartitionStorageMode mode)
+    {
+        _configWizard.Form.StorageMode = mode;
+        ApplyStorageModeDefaults();
+        return Task.CompletedTask;
+    }
+
+    private void ApplyStorageModeDefaults()
+    {
+        if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
+        {
+            if (string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName) || string.Equals(_configWizard.Form.FilegroupName, "PRIMARY", StringComparison.OrdinalIgnoreCase))
+            {
+                _configWizard.Form.FilegroupName = $"{_configWizard.Form.TableName}_FG_{DateTime.UtcNow:yyyyMMdd}";
+            }
+
+            if (string.IsNullOrWhiteSpace(_configWizard.Form.DataFileName))
+            {
+                var db = string.IsNullOrWhiteSpace(_configWizard.Form.TargetDatabaseName) ? _databaseName : _configWizard.Form.TargetDatabaseName;
+                var fg = _configWizard.Form.FilegroupName ?? "FG";
+                _configWizard.Form.DataFileName = $"{db}_{fg}_p{DateTime.UtcNow:yyyyMMddHHmm}.ndf";
+            }
+
+            _configWizard.Form.InitialFileSizeMb ??= 512;
+            _configWizard.Form.AutoGrowthMb ??= 128;
+        }
+        else
+        {
+            _configWizard.Form.FilegroupName = string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName) ? "PRIMARY" : _configWizard.Form.FilegroupName;
+            _configWizard.Form.DataFileDirectory = null;
+            _configWizard.Form.DataFileName = null;
+            _configWizard.Form.InitialFileSizeMb = null;
+            _configWizard.Form.AutoGrowthMb = null;
+        }
+    }
+
+    private bool ValidatePartitionStepOne()
+    {
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.SourceTableKey))
+        {
+            Message.Warning("请选择源表。");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.PartitionColumn))
+        {
+            Message.Warning("请选择分区列。");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.FilegroupName))
+        {
+            Message.Warning("请输入文件组名称。");
+            return false;
+        }
+
+        if (!Regex.IsMatch(_configWizard.Form.FilegroupName, @"^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            Message.Warning("文件组名称仅支持字母、数字与下划线，并以字母或下划线开头。");
+            return false;
+        }
+
+        if (_configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
+        {
+            if (string.IsNullOrWhiteSpace(_configWizard.Form.DataFileDirectory))
+            {
+                Message.Warning("请输入数据文件目录。");
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(_configWizard.Form.DataFileName))
+            {
+                Message.Warning("请输入数据文件名称。");
+                return false;
+            }
+
+            if (!Regex.IsMatch(_configWizard.Form.DataFileName, @"^[A-Za-z0-9_\-\.]+$"))
+            {
+                Message.Warning("数据文件名称仅支持字母、数字、下划线、短横线与点号。");
+                return false;
+            }
+
+            if (!_configWizard.Form.InitialFileSizeMb.HasValue || _configWizard.Form.InitialFileSizeMb <= 0)
+            {
+                Message.Warning("请填写有效的初始大小。");
+                return false;
+            }
+
+            if (!_configWizard.Form.AutoGrowthMb.HasValue || _configWizard.Form.AutoGrowthMb <= 0)
+            {
+                Message.Warning("请填写有效的自动增长大小。");
+                return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.TargetDatabaseName))
+        {
+            Message.Warning("请选择目标数据库。");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.TargetSchemaName))
+        {
+            Message.Warning("请输入目标架构。");
+            return false;
+        }
+
+        if (!Regex.IsMatch(_configWizard.Form.TargetSchemaName, @"^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            Message.Warning("目标架构仅支持字母、数字与下划线，并以字母或下划线开头。");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(_configWizard.Form.TargetTableName))
+        {
+            Message.Warning("请输入目标表名。");
+            return false;
+        }
+
+        if (!Regex.IsMatch(_configWizard.Form.TargetTableName, @"^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            Message.Warning("目标表名仅支持字母、数字与下划线，并以字母或下划线开头。");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool ValidatePartitionStepTwo()
+    {
+        if (_configWizard.Boundaries.Count == 0)
+        {
+            Message.Warning("请至少添加一个分区边界值。");
+            return false;
+        }
+
+        return true;
+    }
+
+    private void NextPartitionStep()
+    {
+        if (_configWizard.CurrentStep == 0 && ValidatePartitionStepOne())
+        {
+            _configWizard.CurrentStep = 1;
+        }
+    }
+
+    private void PrevPartitionStep()
+    {
+        if (_configWizard.CurrentStep > 0)
+        {
+            _configWizard.CurrentStep--;
+        }
+    }
+
+    private void ClosePartitionWizard()
+    {
+        _partitionConfigModalVisible = false;
+    }
+
+    private void AddManualBoundary()
+    {
+        if (!TryParseBoundaryValue(_configWizard.NewBoundaryValue, out var partitionValue, out var error))
+        {
+            if (!string.IsNullOrEmpty(error))
+            {
+                Message.Warning(error);
+            }
+
+            return;
+        }
+
+        var invariant = partitionValue.ToInvariantString();
+        if (_configWizard.Boundaries.Any(x => x.DisplayValue.Equals(invariant, StringComparison.Ordinal)))
+        {
+            Message.Warning("该边界值已存在。");
+            _configWizard.NewBoundaryValue = string.Empty;
+            return;
+        }
+
+        _configWizard.Boundaries.Add(new PartitionBoundaryItem(partitionValue));
+        _configWizard.NewBoundaryValue = string.Empty;
+    }
+
+    private void RemoveBoundary(Guid id)
+    {
+        var target = _configWizard.Boundaries.FirstOrDefault(x => x.Id == id);
+        if (target is not null)
+        {
+            _configWizard.Boundaries.Remove(target);
+        }
+    }
+
+    private void ClearBoundaryValues()
+    {
+        _configWizard.Boundaries.Clear();
+    }
+
+    private void GenerateNumericBoundaries()
+    {
+        if (_configWizard.ColumnKind is not (PartitionValueKind.Int or PartitionValueKind.BigInt))
+        {
+            return;
+        }
+
+        if (!long.TryParse(_configWizard.Generator.StartValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var start))
+        {
+            Message.Warning("请输入有效的起始值。");
+            return;
+        }
+
+        if (!long.TryParse(_configWizard.Generator.EndValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var end))
+        {
+            Message.Warning("请输入有效的结束值。");
+            return;
+        }
+
+        if (!long.TryParse(_configWizard.Generator.StepValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var step) || step <= 0)
+        {
+            Message.Warning("请输入有效的步长。");
+            return;
+        }
+
+        if (end <= start)
+        {
+            Message.Warning("结束值必须大于起始值。");
+            return;
+        }
+
+        var values = new List<PartitionValue>();
+        for (var current = start; current <= end; current += step)
+        {
+            if (_configWizard.ColumnKind == PartitionValueKind.Int)
+            {
+                if (current > int.MaxValue || current < int.MinValue)
+                {
+                    break;
+                }
+
+                values.Add(PartitionValue.FromInt((int)current));
+            }
+            else
+            {
+                values.Add(PartitionValue.FromBigInt(current));
+            }
+        }
+
+        AddBoundaryItems(values);
+    }
+
+    private void GenerateDateBoundaries()
+    {
+        if (!IsDateKind)
+        {
+            return;
+        }
+
+        if (!_configWizard.Generator.StartDate.HasValue || !_configWizard.Generator.EndDate.HasValue)
+        {
+            Message.Warning("请选择起始和结束日期。");
+            return;
+        }
+
+        var start = _configWizard.Generator.StartDate.Value;
+        var end = _configWizard.Generator.EndDate.Value;
+        var stepDays = _configWizard.Generator.StepDays;
+
+        if (stepDays <= 0)
+        {
+            Message.Warning("步长必须大于 0。");
+            return;
+        }
+
+        if (end <= start)
+        {
+            Message.Warning("结束时间必须晚于起始时间。");
+            return;
+        }
+
+        var values = new List<PartitionValue>();
+        var current = start;
+
+        while (current <= end)
+        {
+            var value = _configWizard.ColumnKind switch
+            {
+                PartitionValueKind.Date => PartitionValue.FromDate(DateOnly.FromDateTime(current)),
+                PartitionValueKind.DateTime => PartitionValue.FromDateTime(current),
+                PartitionValueKind.DateTime2 => PartitionValue.FromDateTime2(current),
+                _ => PartitionValue.FromDateTime(current)
+            };
+
+            values.Add(value);
+            current = current.AddDays(stepDays);
+        }
+
+        AddBoundaryItems(values);
+    }
+
+    private void AddBoundaryItems(IEnumerable<PartitionValue> values)
+    {
+        var existing = new HashSet<string>(_configWizard.Boundaries.Select(x => x.DisplayValue), StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            var invariant = value.ToInvariantString();
+            if (existing.Add(invariant))
+            {
+                _configWizard.Boundaries.Add(new PartitionBoundaryItem(value));
+            }
+        }
+    }
+
+    private bool TryParseBoundaryValue(string? input, out PartitionValue value, out string error)
+    {
+        value = null!;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            error = "边界值不能为空。";
+            return false;
+        }
+
+        var raw = input.Trim();
+
+        try
+        {
+            switch (_configWizard.ColumnKind)
+            {
+                case PartitionValueKind.Int:
+                    if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intValue))
+                    {
+                        error = "请输入有效的整数边界值。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromInt(intValue);
+                    break;
+
+                case PartitionValueKind.BigInt:
+                    if (!long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var longValue))
+                    {
+                        error = "请输入有效的整数边界值。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromBigInt(longValue);
+                    break;
+
+                case PartitionValueKind.Date:
+                    if (!DateOnly.TryParse(raw, CultureInfo.InvariantCulture, out var dateValue))
+                    {
+                        error = "请输入有效的日期（yyyy-MM-dd）。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromDate(dateValue);
+                    break;
+
+                case PartitionValueKind.DateTime:
+                    if (!DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateTimeValue))
+                    {
+                        error = "请输入有效的时间（yyyy-MM-dd HH:mm:ss）。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromDateTime(dateTimeValue);
+                    break;
+
+                case PartitionValueKind.DateTime2:
+                    if (!DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateTime2Value))
+                    {
+                        error = "请输入有效的时间（yyyy-MM-dd HH:mm:ss.fffffff）。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromDateTime2(dateTime2Value);
+                    break;
+
+                case PartitionValueKind.Guid:
+                    if (!Guid.TryParse(raw, out var guidValue))
+                    {
+                        error = "请输入有效的 GUID。";
+                        return false;
+                    }
+
+                    value = PartitionValue.FromGuid(guidValue);
+                    break;
+
+                default:
+                    value = PartitionValue.FromString(raw);
+                    break;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"解析边界值失败: {ex.Message}";
+            return false;
+        }
+    }
+
+    private List<string> PrepareBoundaryValues()
+    {
+        var unique = new Dictionary<string, PartitionBoundaryItem>(StringComparer.Ordinal);
+        foreach (var item in _configWizard.Boundaries)
+        {
+            unique[item.DisplayValue] = item;
+        }
+
+        var ordered = unique.Values.ToList();
+        ordered.Sort((left, right) => left.Value.CompareTo(right.Value));
+        return ordered.Select(x => x.Value.ToInvariantString()).ToList();
+    }
+
+    private bool SupportsAutoGeneration =>
+        _configWizard.ColumnKind is PartitionValueKind.Int or PartitionValueKind.BigInt or PartitionValueKind.Date or PartitionValueKind.DateTime or PartitionValueKind.DateTime2;
+
+    private bool IsDateKind =>
+        _configWizard.ColumnKind is PartitionValueKind.Date or PartitionValueKind.DateTime or PartitionValueKind.DateTime2;
+
+    private async Task SubmitPartitionConfigurationAsync()
+    {
+        if (!ValidatePartitionStepTwo())
+        {
+            return;
+        }
+
+        var boundaryValues = PrepareBoundaryValues();
+        if (boundaryValues.Count == 0)
+        {
+            Message.Warning("未找到有效的分区边界值。");
+            return;
+        }
+
+        _submittingPartitionConfig = true;
+        try
+        {
+            var createRequest = new CreatePartitionConfigurationRequestModel
+            {
+                DataSourceId = DataSourceId,
+                SchemaName = _configWizard.Form.SchemaName,
+                TableName = _configWizard.Form.TableName,
+                StorageMode = _configWizard.Form.StorageMode,
+                FilegroupName = _configWizard.Form.FilegroupName,
+                DataFileDirectory = _configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile ? _configWizard.Form.DataFileDirectory : null,
+                DataFileName = _configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile ? _configWizard.Form.DataFileName : null,
+                InitialFileSizeMb = _configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile ? _configWizard.Form.InitialFileSizeMb : null,
+                AutoGrowthMb = _configWizard.Form.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile ? _configWizard.Form.AutoGrowthMb : null,
+                TargetDatabaseName = _configWizard.Form.TargetDatabaseName,
+                TargetSchemaName = _configWizard.Form.TargetSchemaName,
+                TargetTableName = _configWizard.Form.TargetTableName,
+                RequirePartitionColumnNotNull = _configWizard.Form.RequirePartitionColumnNotNull,
+                CreatedBy = string.IsNullOrWhiteSpace(AdminSession.UserName) ? "SYSTEM" : AdminSession.UserName!,
+                Remarks = _configWizard.Form.Remarks
+            };
+
+            var createResult = await PartitionConfigApi.CreateAsync(createRequest);
+            if (!createResult.IsSuccess)
+            {
+                Message.Error(createResult.Error ?? "创建分区配置失败。");
+                return;
+            }
+
+            var replaceRequest = new ReplacePartitionValuesRequestModel
+            {
+                BoundaryValues = boundaryValues,
+                UpdatedBy = string.IsNullOrWhiteSpace(AdminSession.UserName) ? "SYSTEM" : AdminSession.UserName!
+            };
+
+            var replaceResult = await PartitionConfigApi.ReplaceValuesAsync(createResult.Value, replaceRequest);
+            if (!replaceResult.IsSuccess)
+            {
+                Message.Error(replaceResult.Error ?? "保存分区边界值失败。");
+                return;
+            }
+
+            _configWizard.ConfigurationId = createResult.Value;
+            _configWizard.CurrentStep = 2;
+            await LoadPartitionTablesAsync();
+            Message.Success("分区配置创建成功。");
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"提交分区配置失败: {ex.Message}");
+        }
+        finally
+        {
+            _submittingPartitionConfig = false;
+        }
+    }
+
+    private void OnBoundaryInputKeyPress(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            AddManualBoundary();
+        }
+    }
+
+    private PartitionValueKind ResolveValueKind(PartitionTableColumnDto column)
+    {
+        return column.DataType.ToLowerInvariant() switch
+        {
+            "int" => PartitionValueKind.Int,
+            "bigint" => PartitionValueKind.BigInt,
+            "date" => PartitionValueKind.Date,
+            "datetime" => PartitionValueKind.DateTime,
+            "datetime2" => PartitionValueKind.DateTime2,
+            "uniqueidentifier" => PartitionValueKind.Guid,
+            _ => PartitionValueKind.String
+        };
+    }
     private Task SavePartitionValue() { _addPartitionValueModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteSplit() { _splitModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteMerge() { _mergeModalVisible = false; return Task.CompletedTask; }
     private Task ExecuteSwitch() { _switchModalVisible = false; return Task.CompletedTask; }
+
+    private class PartitionConfigWizardState
+    {
+        public int CurrentStep { get; set; }
+        public PartitionConfigForm Form { get; } = new();
+        public List<PartitionTableColumnDto> Columns { get; set; } = new();
+        public List<TargetDatabaseDto> TargetDatabases { get; set; } = new();
+        public List<PartitionTableOption> TableOptions { get; set; } = new();
+        public List<PartitionBoundaryItem> Boundaries { get; set; } = new();
+        public string? ColumnMinValue { get; set; }
+        public string? ColumnMaxValue { get; set; }
+        public PartitionValueKind ColumnKind { get; set; } = PartitionValueKind.String;
+        public bool SelectedColumnIsNullable { get; set; }
+        public string NewBoundaryValue { get; set; } = string.Empty;
+        public BoundaryGeneratorModel Generator { get; } = new();
+        public Guid? ConfigurationId { get; set; }
+    }
+
+    private class PartitionConfigForm
+    {
+        public string? SourceTableKey { get; set; }
+        public string SchemaName { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public string PartitionColumn { get; set; } = string.Empty;
+        public bool RequirePartitionColumnNotNull { get; set; }
+        public PartitionStorageMode StorageMode { get; set; } = PartitionStorageMode.PrimaryFilegroup;
+        public string? FilegroupName { get; set; }
+        public string? DataFileDirectory { get; set; }
+        public string? DataFileName { get; set; }
+        public int? InitialFileSizeMb { get; set; }
+        public int? AutoGrowthMb { get; set; }
+        public string TargetDatabaseName { get; set; } = string.Empty;
+        public string? TargetSchemaName { get; set; }
+        public string TargetTableName { get; set; } = string.Empty;
+        public string? Remarks { get; set; }
+    }
+
+    private class BoundaryGeneratorModel
+    {
+        public string? StartValue { get; set; }
+        public string? EndValue { get; set; }
+        public string? StepValue { get; set; }
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
+        public int StepDays { get; set; } = 1;
+    }
+
+    private class PartitionBoundaryItem
+    {
+        public PartitionBoundaryItem(PartitionValue value)
+        {
+            Value = value;
+        }
+
+        public Guid Id { get; } = Guid.NewGuid();
+        public PartitionValue Value { get; }
+        public string DisplayValue => Value.ToInvariantString();
+    }
+
+    private sealed class PartitionTableOption
+    {
+        public PartitionTableOption(string key, string label, string schemaName, string tableName, string partitionColumn)
+        {
+            Key = key;
+            Label = label;
+            SchemaName = schemaName;
+            TableName = tableName;
+            PartitionColumn = partitionColumn;
+        }
+
+        public string Key { get; }
+        public string Label { get; }
+        public string SchemaName { get; }
+        public string TableName { get; }
+        public string PartitionColumn { get; }
+    }
 
     private class PartitionTableInfo
     {
@@ -561,3 +1569,6 @@
         public string Password { get; set; } = "";
     }
 }
+
+
+

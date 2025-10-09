@@ -1,7 +1,7 @@
 namespace DbArchiveTool.Domain.Partitions;
 
 /// <summary>
-/// 描述分区列的元数据信息，包括列名与值类型。
+/// 描述分区列的元数据信息，包括列名、类型以及可空性。
 /// </summary>
 public sealed class PartitionColumn
 {
@@ -11,10 +11,13 @@ public sealed class PartitionColumn
     /// <summary>分区值的数据类型。</summary>
     public PartitionValueKind ValueKind { get; }
 
+    /// <summary>指示该分区列在源表中是否允许 NULL。</summary>
+    public bool IsNullable { get; }
+
     /// <summary>
     /// 构造分区列定义。
     /// </summary>
-    public PartitionColumn(string name, PartitionValueKind valueKind)
+    public PartitionColumn(string name, PartitionValueKind valueKind, bool isNullable = false)
     {
         if (string.IsNullOrWhiteSpace(name))
         {
@@ -23,5 +26,6 @@ public sealed class PartitionColumn
 
         Name = name.Trim();
         ValueKind = valueKind;
+        IsNullable = isNullable;
     }
 }

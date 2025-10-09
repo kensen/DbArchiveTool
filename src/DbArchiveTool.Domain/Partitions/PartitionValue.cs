@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace DbArchiveTool.Domain.Partitions;
 
@@ -12,6 +13,9 @@ public abstract class PartitionValue
 
     /// <summary>转换为 SQL 字面量，确保安全且可执行。</summary>
     public abstract string ToLiteral();
+
+    /// <summary>以 InvariantCulture 输出原始字符串表示，便于持久化。</summary>
+    public abstract string ToInvariantString();
 
     /// <summary>用于比较两个分区值的大小关系。</summary>
     public abstract int CompareTo(PartitionValue other);
@@ -37,12 +41,33 @@ public abstract class PartitionValue
     /// <summary>创建 string 类型的分区值。</summary>
     public static PartitionValue FromString(string value) => new StringPartitionValue(value);
 
+    public static PartitionValue FromInvariantString(PartitionValueKind kind, string value)
+    {
+        if (value is null)
+        {
+            throw new ArgumentNullException(nameof(value));
+        }
+
+        return kind switch
+        {
+            PartitionValueKind.Int => FromInt(int.Parse(value, CultureInfo.InvariantCulture)),
+            PartitionValueKind.BigInt => FromBigInt(long.Parse(value, CultureInfo.InvariantCulture)),
+            PartitionValueKind.Date => FromDate(DateOnly.Parse(value, CultureInfo.InvariantCulture)),
+            PartitionValueKind.DateTime => FromDateTime(DateTime.Parse(value, CultureInfo.InvariantCulture)),
+            PartitionValueKind.DateTime2 => FromDateTime2(DateTime.Parse(value, CultureInfo.InvariantCulture)),
+            PartitionValueKind.Guid => FromGuid(Guid.Parse(value)),
+            PartitionValueKind.String => FromString(value),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
+        };
+    }
+
     private sealed class IntPartitionValue : PartitionValue
     {
         private readonly int value;
         public IntPartitionValue(int value) => this.value = value;
         public override PartitionValueKind Kind => PartitionValueKind.Int;
-        public override string ToLiteral() => value.ToString();
+        public override string ToLiteral() => value.ToString(CultureInfo.InvariantCulture);
+        public override string ToInvariantString() => value.ToString(CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((IntPartitionValue)other).value);
     }
 
@@ -51,7 +76,8 @@ public abstract class PartitionValue
         private readonly long value;
         public BigIntPartitionValue(long value) => this.value = value;
         public override PartitionValueKind Kind => PartitionValueKind.BigInt;
-        public override string ToLiteral() => value.ToString();
+        public override string ToLiteral() => value.ToString(CultureInfo.InvariantCulture);
+        public override string ToInvariantString() => value.ToString(CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((BigIntPartitionValue)other).value);
     }
 
@@ -61,6 +87,7 @@ public abstract class PartitionValue
         public DatePartitionValue(DateOnly value) => this.value = value;
         public override PartitionValueKind Kind => PartitionValueKind.Date;
         public override string ToLiteral() => $"'{value:yyyy-MM-dd}'";
+        public override string ToInvariantString() => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((DatePartitionValue)other).value);
     }
 
@@ -70,6 +97,7 @@ public abstract class PartitionValue
         public DateTimePartitionValue(DateTime value) => this.value = DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
         public override PartitionValueKind Kind => PartitionValueKind.DateTime;
         public override string ToLiteral() => $"'{value:yyyy-MM-dd HH:mm:ss}'";
+        public override string ToInvariantString() => value.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((DateTimePartitionValue)other).value);
     }
 
@@ -79,6 +107,7 @@ public abstract class PartitionValue
         public DateTime2PartitionValue(DateTime value) => this.value = DateTime.SpecifyKind(value, DateTimeKind.Unspecified);
         public override PartitionValueKind Kind => PartitionValueKind.DateTime2;
         public override string ToLiteral() => $"'{value:yyyy-MM-dd HH:mm:ss.fffffff}'";
+        public override string ToInvariantString() => value.ToString("yyyy-MM-dd HH:mm:ss.fffffff", CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((DateTime2PartitionValue)other).value);
     }
 
@@ -88,6 +117,7 @@ public abstract class PartitionValue
         public GuidPartitionValue(Guid value) => this.value = value;
         public override PartitionValueKind Kind => PartitionValueKind.Guid;
         public override string ToLiteral() => $"'{value:D}'";
+        public override string ToInvariantString() => value.ToString("D", CultureInfo.InvariantCulture);
         public override int CompareTo(PartitionValue other) => value.CompareTo(((GuidPartitionValue)other).value);
     }
 
@@ -105,6 +135,7 @@ public abstract class PartitionValue
         }
         public override PartitionValueKind Kind => PartitionValueKind.String;
         public override string ToLiteral() => $"'{value.Replace("'", "''")}'";
+        public override string ToInvariantString() => value;
         public override int CompareTo(PartitionValue other) => string.CompareOrdinal(value, ((StringPartitionValue)other).value);
     }
 }

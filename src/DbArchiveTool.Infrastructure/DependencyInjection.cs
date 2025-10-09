@@ -44,6 +44,7 @@ public static class DependencyInjection
         services.AddScoped<ISqlTemplateProvider, FileSqlTemplateProvider>();
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
+        services.AddScoped<IPartitionConfigurationRepository, PartitionConfigurationRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<SqlPartitionQueryService>();
 
