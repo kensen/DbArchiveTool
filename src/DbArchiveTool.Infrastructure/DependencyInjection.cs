@@ -51,6 +51,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionExecutionLogRepository, PartitionExecutionLogRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<SqlPartitionQueryService>();
+        services.AddScoped<PartitionExecutionProcessor>();
         services.AddSingleton<PartitionExecutionQueue>();
         services.AddHostedService<PartitionExecutionHostedService>();
         services.AddSingleton<IPartitionExecutionDispatcher, PartitionExecutionDispatcher>();

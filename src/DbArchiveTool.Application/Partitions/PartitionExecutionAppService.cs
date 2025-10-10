@@ -53,6 +53,11 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             return Result<Guid>.Failure("该分区配置已执行，无需重复提交。");
         }
 
+        if (configuration.Boundaries.Count == 0)
+        {
+            return Result<Guid>.Failure("分区配置尚未设置任何边界，无法执行。");
+        }
+
         if (configuration.ArchiveDataSourceId != request.DataSourceId)
         {
             return Result<Guid>.Failure("请求中的数据源与配置草稿不一致。");
@@ -75,6 +80,14 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         try
         {
             await taskRepository.AddAsync(task, cancellationToken);
+            await logRepository.AddAsync(
+                PartitionExecutionLogEntry.Create(
+                    task.Id,
+                    "Info",
+                    "任务创建",
+                    $"由 {request.RequestedBy} 发起的分区执行任务已创建。备份确认: {request.BackupConfirmed}，参考: {request.BackupReference ?? "无"}。"),
+                cancellationToken);
+
             await dispatcher.DispatchAsync(task.Id, task.DataSourceId, cancellationToken);
             logger.LogInformation("Partition execution task {TaskId} created for configuration {ConfigurationId}", task.Id, configuration.Id);
             return Result<Guid>.Success(task.Id);

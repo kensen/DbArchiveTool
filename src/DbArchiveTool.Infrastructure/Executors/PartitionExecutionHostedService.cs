@@ -45,27 +45,8 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
         try
         {
             using var scope = serviceProvider.CreateScope();
-            var taskRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionTaskRepository>();
-            var logRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionLogRepository>();
-
-            var task = await taskRepository.GetByIdAsync(dispatch.ExecutionTaskId, stoppingToken);
-            if (task is null)
-            {
-                logger.LogWarning("Execution task {TaskId} not found", dispatch.ExecutionTaskId);
-                return;
-            }
-
-            task.MarkQueued("SYSTEM");
-            await taskRepository.UpdateAsync(task, stoppingToken);
-
-            // TODO: 调用实际执行器执行分区操作，写入日志
-            await logRepository.AddAsync(
-                PartitionExecutionLogEntry.Create(
-                    task.Id,
-                    "Info",
-                    "Execution queued",
-                    $"Execution task {task.Id} queued for data source {task.DataSourceId}"),
-                stoppingToken);
+            var processor = scope.ServiceProvider.GetRequiredService<PartitionExecutionProcessor>();
+            await processor.ExecuteAsync(dispatch.ExecutionTaskId, stoppingToken);
         }
         catch (Exception ex)
         {

@@ -38,6 +38,7 @@ builder.Services.AddHttpClient("ArchiveApi", configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionManagementApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfigurationApiClient>(configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionExecutionApiClient>(configureClient);
 
 var app = builder.Build();
 
