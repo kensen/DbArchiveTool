@@ -52,6 +52,32 @@ public sealed class PartitionConfigurationApiClient
                ?? Result.Failure("更新分区值成功，但解析响应失败。");
     }
 
+    public async Task<Result<List<PartitionConfigurationSummaryModel>>> GetByDataSourceAsync(Guid dataSourceId)
+    {
+        var response = await httpClient.GetAsync($"api/v1/partition-configurations/by-datasource/{dataSourceId}");
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result<List<PartitionConfigurationSummaryModel>>>(response)
+                   ?? Result<List<PartitionConfigurationSummaryModel>>.Failure($"获取配置列表失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result<List<PartitionConfigurationSummaryModel>>>(response)
+               ?? Result<List<PartitionConfigurationSummaryModel>>.Failure("获取配置列表成功，但解析响应失败。");
+    }
+
+    public async Task<Result> DeleteAsync(Guid configurationId)
+    {
+        var response = await httpClient.DeleteAsync($"api/v1/partition-configurations/{configurationId}");
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result>(response)
+                   ?? Result.Failure($"删除配置失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result>(response)
+               ?? Result.Failure("删除配置成功，但解析响应失败。");
+    }
+
     private static async Task<T?> ReadSuccessAsync<T>(HttpResponseMessage response)
     {
         try

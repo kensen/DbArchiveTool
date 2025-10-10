@@ -12,6 +12,16 @@ public sealed class CreatePartitionConfigurationRequestModel
     public Guid DataSourceId { get; set; }
     public string SchemaName { get; set; } = string.Empty;
     public string TableName { get; set; } = string.Empty;
+    
+    /// <summary>分区列名称。</summary>
+    public string PartitionColumnName { get; set; } = string.Empty;
+    
+    /// <summary>分区列数据类型（用于确定 PartitionValueKind）。</summary>
+    public PartitionValueKind PartitionColumnKind { get; set; }
+    
+    /// <summary>分区列是否可空。</summary>
+    public bool PartitionColumnIsNullable { get; set; }
+    
     public PartitionStorageMode StorageMode { get; set; }
     public string? FilegroupName { get; set; }
     public string? DataFileDirectory { get; set; }
@@ -33,5 +43,25 @@ public sealed class ReplacePartitionValuesRequestModel
 {
     public List<string> BoundaryValues { get; set; } = new();
     public string UpdatedBy { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 分区配置摘要信息（用于列表显示）。
+/// </summary>
+public sealed class PartitionConfigurationSummaryModel
+{
+    public Guid Id { get; set; }
+    public string SchemaName { get; set; } = string.Empty;
+    public string TableName { get; set; } = string.Empty;
+    public string PartitionColumnName { get; set; } = string.Empty;
+    public string PartitionFunctionName { get; set; } = string.Empty;
+    public string PartitionSchemeName { get; set; } = string.Empty;
+    public int BoundaryCount { get; set; }
+    public string StorageMode { get; set; } = string.Empty;
+    public string TargetTableName { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; }
+    public string CreatedBy { get; set; } = string.Empty;
+    public DateTime? UpdatedAtUtc { get; set; }
+    public string? Remarks { get; set; }
 }
 

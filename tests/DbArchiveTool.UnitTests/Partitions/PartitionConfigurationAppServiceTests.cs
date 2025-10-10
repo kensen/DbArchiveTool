@@ -24,6 +24,9 @@ public class PartitionConfigurationAppServiceTests
             Guid.Empty,
             "dbo",
             "Orders",
+            "OrderDate",
+            PartitionValueKind.DateTime,
+            false,
             PartitionStorageMode.PrimaryFilegroup,
             null,
             null,
@@ -129,6 +132,23 @@ public class PartitionConfigurationAppServiceTests
             p.Boundaries.Select(b => b.Value.ToInvariantString()).SequenceEqual(new[] { "10", "20" })), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task CreateAsync_ShouldSucceed_AfterDeletingPreviousConfiguration()
+    {
+        // Simulate: GetByTableAsync returns null because deleted configs are filtered out
+        configurationRepository.Setup(x => x.GetByTableAsync(It.IsAny<Guid>(), "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PartitionConfiguration?)null);
+
+        var service = CreateService();
+        var request = CreateValidRequest();
+
+        var result = await service.CreateAsync(request);
+
+        // Should succeed since no active (non-deleted) configuration exists
+        Assert.True(result.IsSuccess);
+        configurationRepository.Verify(x => x.AddAsync(It.IsAny<PartitionConfiguration>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
     private PartitionConfigurationAppService CreateService()
         => new(metadataRepository.Object, configurationRepository.Object, parser, logger.Object);
 
@@ -149,6 +169,9 @@ public class PartitionConfigurationAppServiceTests
             Guid.NewGuid(),
             "dbo",
             "Orders",
+            "OrderDate",
+            PartitionValueKind.DateTime,
+            false,
             PartitionStorageMode.PrimaryFilegroup,
             "PRIMARY",
             null,

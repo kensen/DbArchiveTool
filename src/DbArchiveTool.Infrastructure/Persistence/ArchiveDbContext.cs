@@ -93,7 +93,10 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.CreatedBy).IsRequired().HasMaxLength(64);
             builder.Property(x => x.UpdatedBy).IsRequired().HasMaxLength(64);
 
-            builder.HasIndex(x => new { x.ArchiveDataSourceId, x.SchemaName, x.TableName }).IsUnique();
+            // 唯一索引:只对未删除的记录生效
+            builder.HasIndex(x => new { x.ArchiveDataSourceId, x.SchemaName, x.TableName })
+                .IsUnique()
+                .HasFilter("[IsDeleted] = 0");
 
             builder.HasMany(x => x.Boundaries)
                 .WithOne(x => x.Configuration)

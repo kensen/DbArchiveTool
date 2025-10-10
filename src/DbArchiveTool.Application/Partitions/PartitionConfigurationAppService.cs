@@ -37,29 +37,27 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             return Result<Guid>.Failure(validation.Error!);
         }
 
-        var metadata = await metadataRepository.GetConfigurationAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
-        if (metadata is null)
+        // 检查列的可空性要求
+        if (request.PartitionColumnIsNullable && !request.RequirePartitionColumnNotNull)
         {
-            return Result<Guid>.Failure("未找到目标表的分区元数据信息。");
+            return Result<Guid>.Failure("目标分区列当前允许 NULL，请勾选'去可空'以确保脚本生成 ALTER COLUMN。");
         }
 
-        if (metadata.PartitionColumn.IsNullable && !request.RequirePartitionColumnNotNull)
-        {
-            return Result<Guid>.Failure("目标分区列当前允许 NULL，请勾选“去可空”以确保脚本生成 ALTER COLUMN。");
-        }
-
+        // 检查是否已存在配置
         var duplicate = await configurationRepository.GetByTableAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
         if (duplicate is not null)
         {
             return Result<Guid>.Failure("已存在该表的分区配置草稿，请勿重复创建。");
         }
 
-        var storageResult = BuildStorageSettings(request, metadata.FilegroupStrategy.PrimaryFilegroup, metadata.TableName);
+        // 构建存储设置
+        var storageResult = BuildStorageSettings(request, "PRIMARY", request.TableName);
         if (!storageResult.IsSuccess)
         {
             return Result<Guid>.Failure(storageResult.Error!);
         }
 
+        // 构建目标表信息
         PartitionTargetTable targetTable;
         try
         {
@@ -71,20 +69,30 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             return Result<Guid>.Failure(ex.Message);
         }
 
-        var partitionColumn = new PartitionColumn(metadata.PartitionColumn.Name, metadata.PartitionColumn.ValueKind, metadata.PartitionColumn.IsNullable);
-        var filegroupStrategy = CloneStrategy(metadata.FilegroupStrategy);
+        // 使用前端传递的列信息构建 PartitionColumn
+        var partitionColumn = new PartitionColumn(request.PartitionColumnName, request.PartitionColumnKind, request.PartitionColumnIsNullable);
+        
+        // 使用默认的文件组策略（对于新建分区，使用 PRIMARY）
+        var filegroupStrategy = PartitionFilegroupStrategy.Default("PRIMARY");
+
+        // 生成默认的分区函数和方案名称
+        var partitionFunctionName = $"PF_{request.SchemaName}_{request.TableName}_{DateTime.UtcNow:yyyyMMdd}";
+        var partitionSchemeName = $"PS_{request.SchemaName}_{request.TableName}_{DateTime.UtcNow:yyyyMMdd}";
+        
+        // 默认使用 RANGE RIGHT（边界值属于右侧分区）
+        var isRangeRight = true;
 
         var configuration = new PartitionConfiguration(
             request.DataSourceId,
             request.SchemaName,
             request.TableName,
-            metadata.PartitionFunctionName,
-            metadata.PartitionSchemeName,
+            partitionFunctionName,
+            partitionSchemeName,
             partitionColumn,
             filegroupStrategy,
-            metadata.IsRangeRight,
-            retentionPolicy: metadata.RetentionPolicy,
-            safetyRule: metadata.SafetyRule,
+            isRangeRight,
+            retentionPolicy: null,
+            safetyRule: null,
             storageSettings: storageResult.Value!,
             targetTable: targetTable,
             requirePartitionColumnNotNull: request.RequirePartitionColumnNotNull,
@@ -141,6 +149,58 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         {
             logger.LogError(ex, "Failed to update partition configuration {ConfigurationId}", configurationId);
             return Result.Failure("保存分区值时发生错误，请稍后重试。");
+        }
+    }
+
+    public async Task<Result<List<PartitionConfigurationSummaryDto>>> GetByDataSourceAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configurations = await configurationRepository.GetByDataSourceAsync(dataSourceId, cancellationToken);
+            var summaries = configurations.Select(c => new PartitionConfigurationSummaryDto
+            {
+                Id = c.Id,
+                SchemaName = c.SchemaName,
+                TableName = c.TableName,
+                PartitionColumnName = c.PartitionColumn.Name,
+                PartitionFunctionName = c.PartitionFunctionName,
+                PartitionSchemeName = c.PartitionSchemeName,
+                BoundaryCount = c.Boundaries.Count,
+                StorageMode = c.StorageSettings.Mode.ToString(),
+                TargetTableName = c.TargetTable?.TableName ?? c.TableName,
+                CreatedAtUtc = c.CreatedAtUtc,
+                CreatedBy = c.CreatedBy,
+                UpdatedAtUtc = c.UpdatedAtUtc,
+                Remarks = c.Remarks
+            }).ToList();
+
+            return Result<List<PartitionConfigurationSummaryDto>>.Success(summaries);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to get configurations for data source {DataSourceId}", dataSourceId);
+            return Result<List<PartitionConfigurationSummaryDto>>.Failure("获取配置列表失败，请稍后重试。");
+        }
+    }
+
+    public async Task<Result> DeleteAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+            if (configuration is null)
+            {
+                return Result.Failure("配置不存在。");
+            }
+
+            await configurationRepository.DeleteAsync(configurationId, cancellationToken);
+            logger.LogInformation("Partition configuration {ConfigurationId} deleted", configurationId);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to delete partition configuration {ConfigurationId}", configurationId);
+            return Result.Failure("删除配置失败，请稍后重试。");
         }
     }
 

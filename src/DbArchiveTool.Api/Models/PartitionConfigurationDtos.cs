@@ -19,6 +19,17 @@ public sealed class CreatePartitionConfigurationDto
     [Required]
     public string TableName { get; set; } = string.Empty;
 
+    /// <summary>分区列名称。</summary>
+    [Required]
+    public string PartitionColumnName { get; set; } = string.Empty;
+
+    /// <summary>分区列数据类型。</summary>
+    [Required]
+    public PartitionValueKind PartitionColumnKind { get; set; }
+
+    /// <summary>分区列是否可空。</summary>
+    public bool PartitionColumnIsNullable { get; set; }
+
     [Required]
     public PartitionStorageMode StorageMode { get; set; }
 
@@ -52,6 +63,9 @@ public sealed class CreatePartitionConfigurationDto
             DataSourceId,
             SchemaName,
             TableName,
+            PartitionColumnName,
+            PartitionColumnKind,
+            PartitionColumnIsNullable,
             StorageMode,
             FilegroupName,
             DataFileDirectory,

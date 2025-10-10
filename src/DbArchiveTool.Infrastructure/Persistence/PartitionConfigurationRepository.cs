@@ -24,7 +24,7 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
     public async Task<PartitionConfiguration?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var entity = await Query()
-            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, cancellationToken);
 
         return entity is null ? null : MapToDomain(entity);
     }
@@ -34,11 +34,21 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
         var entity = await Query()
             .FirstOrDefaultAsync(
                 x => x.ArchiveDataSourceId == dataSourceId &&
-                     x.SchemaName.Equals(schemaName, StringComparison.OrdinalIgnoreCase) &&
-                     x.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase),
+                     x.SchemaName == schemaName &&
+                     x.TableName == tableName &&
+                     !x.IsDeleted,
                 cancellationToken);
 
         return entity is null ? null : MapToDomain(entity);
+    }
+
+    public async Task<List<PartitionConfiguration>> GetByDataSourceAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
+    {
+        var entities = await Query()
+            .Where(x => x.ArchiveDataSourceId == dataSourceId && !x.IsDeleted)
+            .ToListAsync(cancellationToken);
+
+        return entities.Select(MapToDomain).ToList();
     }
 
     public async Task AddAsync(PartitionConfiguration configuration, CancellationToken cancellationToken = default)
@@ -50,19 +60,57 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
 
     public async Task UpdateAsync(PartitionConfiguration configuration, CancellationToken cancellationToken = default)
     {
-        var entity = await Query().FirstOrDefaultAsync(x => x.Id == configuration.Id, cancellationToken);
+        var executionStrategy = context.Database.CreateExecutionStrategy();
+
+        await executionStrategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+
+            var affected = await context.PartitionConfigurations
+                .Where(x => x.Id == configuration.Id)
+                .ExecuteDeleteAsync(cancellationToken);
+
+            if (affected == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw new InvalidOperationException("目标分区配置不存在，无法更新。");
+            }
+
+            context.ChangeTracker.Clear();
+
+            var entity = MapToEntity(configuration);
+            await context.PartitionConfigurations.AddAsync(entity, cancellationToken);
+            await context.SaveChangesAsync(cancellationToken);
+
+            context.ChangeTracker.Clear();
+
+            await transaction.CommitAsync(cancellationToken);
+        });
+    }
+
+    public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+    {
+        var entity = await context.PartitionConfigurations
+            .Include(x => x.Boundaries)
+            .Include(x => x.AdditionalFilegroups)
+            .Include(x => x.FilegroupMappings)
+            .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+
         if (entity is null)
         {
-            throw new InvalidOperationException("目标分区配置不存在，无法更新。");
+            throw new InvalidOperationException("目标分区配置不存在，无法删除。");
         }
 
-        ApplyToEntity(configuration, entity);
+        // 硬删除:物理删除配置及其所有关联数据
+        // EF Core 会自动级联删除关联的 Boundaries, AdditionalFilegroups, FilegroupMappings
+        context.PartitionConfigurations.Remove(entity);
         await context.SaveChangesAsync(cancellationToken);
     }
 
     private IQueryable<PartitionConfigurationEntity> Query()
     {
         return context.PartitionConfigurations
+            .AsNoTracking()
             .Include(x => x.Boundaries)
             .Include(x => x.AdditionalFilegroups)
             .Include(x => x.FilegroupMappings);
@@ -147,84 +195,6 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
         }
 
         return entity;
-    }
-
-    private static void ApplyToEntity(PartitionConfiguration configuration, PartitionConfigurationEntity entity)
-    {
-        entity.ArchiveDataSourceId = configuration.ArchiveDataSourceId;
-        entity.SchemaName = configuration.SchemaName;
-        entity.TableName = configuration.TableName;
-        entity.PartitionFunctionName = configuration.PartitionFunctionName;
-        entity.PartitionSchemeName = configuration.PartitionSchemeName;
-        entity.PartitionColumnName = configuration.PartitionColumn.Name;
-        entity.PartitionColumnKind = (int)configuration.PartitionColumn.ValueKind;
-        entity.PartitionColumnIsNullable = configuration.PartitionColumn.IsNullable;
-        entity.PrimaryFilegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
-        entity.IsRangeRight = configuration.IsRangeRight;
-        entity.RequirePartitionColumnNotNull = configuration.RequirePartitionColumnNotNull;
-        entity.Remarks = configuration.Remarks;
-
-        entity.StorageMode = (int)configuration.StorageSettings.Mode;
-        entity.StorageFilegroupName = configuration.StorageSettings.FilegroupName;
-        entity.StorageDataFileDirectory = configuration.StorageSettings.DataFileDirectory;
-        entity.StorageDataFileName = configuration.StorageSettings.DataFileName;
-        entity.StorageInitialSizeMb = configuration.StorageSettings.InitialSizeMb;
-        entity.StorageAutoGrowthMb = configuration.StorageSettings.AutoGrowthMb;
-
-        if (configuration.TargetTable is not null)
-        {
-            entity.TargetDatabaseName = configuration.TargetTable.DatabaseName;
-            entity.TargetSchemaName = configuration.TargetTable.SchemaName;
-            entity.TargetTableName = configuration.TargetTable.TableName;
-            entity.TargetRemarks = configuration.TargetTable.Remarks;
-        }
-
-        entity.CreatedAtUtc = configuration.CreatedAtUtc;
-        entity.CreatedBy = configuration.CreatedBy;
-        entity.UpdatedAtUtc = configuration.UpdatedAtUtc;
-        entity.UpdatedBy = configuration.UpdatedBy;
-        entity.IsDeleted = configuration.IsDeleted;
-
-        entity.Boundaries.Clear();
-        foreach (var boundary in configuration.Boundaries)
-        {
-            entity.Boundaries.Add(new PartitionConfigurationBoundaryEntity
-            {
-                Id = Guid.NewGuid(),
-                ConfigurationId = configuration.Id,
-                SortKey = boundary.SortKey,
-                ValueKind = (int)boundary.Value.Kind,
-                RawValue = boundary.Value.ToInvariantString()
-            });
-        }
-
-        entity.AdditionalFilegroups.Clear();
-        if (configuration.FilegroupStrategy.AdditionalFilegroups.Count > 0)
-        {
-            var index = 0;
-            foreach (var filegroup in configuration.FilegroupStrategy.AdditionalFilegroups)
-            {
-                entity.AdditionalFilegroups.Add(new PartitionConfigurationFilegroupEntity
-                {
-                    Id = Guid.NewGuid(),
-                    ConfigurationId = configuration.Id,
-                    FilegroupName = filegroup,
-                    SortOrder = index++
-                });
-            }
-        }
-
-        entity.FilegroupMappings.Clear();
-        foreach (var mapping in configuration.FilegroupMappings)
-        {
-            entity.FilegroupMappings.Add(new PartitionConfigurationFilegroupMappingEntity
-            {
-                Id = Guid.NewGuid(),
-                ConfigurationId = configuration.Id,
-                BoundaryKey = mapping.BoundaryKey,
-                FilegroupName = mapping.FilegroupName
-            });
-        }
     }
 
     private static PartitionConfiguration MapToDomain(PartitionConfigurationEntity entity)

@@ -9,6 +9,7 @@
 @using Microsoft.AspNetCore.Components.Web
 @using Microsoft.AspNetCore.Components
 @inject PartitionInfoApiClient PartitionInfoApi
+@inject PartitionConfigurationApiClient PartitionConfigApi
 @inject MessageService Message
 @inject NavigationManager Navigation
 
@@ -47,35 +48,78 @@
             </Space>
         </div>
 
-        <Table TItem="PartitionTableInfo"
-               DataSource="_partitionTables"
-               Loading="_loading"
-               Size="@TableSize.Small"
-               Bordered
-               @bind-SelectedRows="_selectedTableRows"
-               OnRowClick="OnTableRowClick"
-               RowClassName="@(x => x.Data == _selectedTable ? "table-row-selected" : "")">
-            <Selection Key="@(context.TableName)" Type="@SelectionType.Radio" />
-            <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
-            <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
-            <PropertyColumn Property="c => c.PartitionFunction" Title="分区函数" />
-            <PropertyColumn Property="c => c.PartitionScheme" Title="分区方案" />
-            <PropertyColumn Property="c => c.PartitionColumn" Title="分区列" />
-            <PropertyColumn Property="c => c.DataType" Title="数据类型" />
-            <PropertyColumn Property="c => c.TotalPartitions" Title="分区数" Sortable />
-            <PropertyColumn Property="c => c.IsRangeRight" Title="分区类型">
-                <Template>
-                    <Tag Color="@(context.IsRangeRight ? "blue" : "green")">@(context.IsRangeRight ? "RIGHT" : "LEFT")</Tag>
-                </Template>
-            </PropertyColumn>
-            <ActionColumn Title="操作">
-                <Space Size="@("small")">
-                    <SpaceItem>
-                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => ViewTableDetails(context)">详情</Button>
-                    </SpaceItem>
-                </Space>
-            </ActionColumn>
-        </Table>
+        <Tabs @bind-ActiveKey="_activeTab" OnChange="OnTabChanged">
+            <TabPane Key="partitioned" Tab="已分区表">
+                <Table TItem="PartitionTableInfo"
+                       DataSource="_partitionTables"
+                       Loading="_loading"
+                       Size="@TableSize.Small"
+                       Bordered
+                       @bind-SelectedRows="_selectedTableRows"
+                       OnRowClick="OnTableRowClick"
+                       RowClassName="@(x => x.Data == _selectedTable ? "table-row-selected" : "")">
+                    <Selection Key="@(context.TableName)" Type="@SelectionType.Radio" />
+                    <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
+                    <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
+                    <PropertyColumn Property="c => c.PartitionFunction" Title="分区函数" />
+                    <PropertyColumn Property="c => c.PartitionScheme" Title="分区方案" />
+                    <PropertyColumn Property="c => c.PartitionColumn" Title="分区列" />
+                    <PropertyColumn Property="c => c.DataType" Title="数据类型" />
+                    <PropertyColumn Property="c => c.TotalPartitions" Title="分区数" Sortable />
+                    <PropertyColumn Property="c => c.IsRangeRight" Title="分区类型">
+                        <Template>
+                            <Tag Color="@(context.IsRangeRight ? "blue" : "green")">@(context.IsRangeRight ? "RIGHT" : "LEFT")</Tag>
+                        </Template>
+                    </PropertyColumn>
+                    <ActionColumn Title="操作">
+                        <Space Size="@("small")">
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => ViewTableDetails(context)">详情</Button>
+                            </SpaceItem>
+                        </Space>
+                    </ActionColumn>
+                </Table>
+            </TabPane>
+
+            <TabPane Key="drafts" Tab="配置草稿">
+                <Table TItem="ConfigurationDraftInfo"
+                       DataSource="_configurationDrafts"
+                       Loading="_loadingDrafts"
+                       Size="@TableSize.Small"
+                       Bordered>
+                    <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
+                    <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
+                    <PropertyColumn Property="c => c.PartitionColumnName" Title="分区列" />
+                    <PropertyColumn Property="c => c.PartitionFunctionName" Title="分区函数" />
+                    <PropertyColumn Property="c => c.PartitionSchemeName" Title="分区方案" />
+                    <PropertyColumn Property="c => c.BoundaryCount" Title="边界值数" Sortable />
+                    <PropertyColumn Property="c => c.StorageMode" Title="存储模式">
+                        <Template>
+                            <Tag Color="@(context.StorageMode == "DedicatedFilegroupSingleFile" ? "purple" : "blue")">
+                                @(context.StorageMode == "DedicatedFilegroupSingleFile" ? "专用文件组" : "使用PRIMARY")
+                            </Tag>
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn Property="c => c.CreatedAtUtc" Title="创建时间" Format="yyyy-MM-dd HH:mm" />
+                    <PropertyColumn Property="c => c.CreatedBy" Title="创建人" />
+                    <ActionColumn Title="操作">
+                        <Space Size="@("small")">
+                            <SpaceItem>
+                                <Popconfirm Title="确定要删除此配置草稿吗？"
+                                            OnConfirm="() => DeleteConfigurationDraftAsync(context.Id)"
+                                            OkText="删除"
+                                            CancelText="取消">
+                                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
+                                </Popconfirm>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Disabled>执行分区</Button>
+                            </SpaceItem>
+                        </Space>
+                    </ActionColumn>
+                </Table>
+            </TabPane>
+        </Tabs>
     </div>
 
     <div class="partition-details-section">
@@ -267,10 +311,90 @@
     private bool _mergeModalVisible = false;
     private bool _switchModalVisible = false;
 
+    // Tabs and configuration drafts
+    private string _activeTab = "partitioned";
+    private List<ConfigurationDraftInfo> _configurationDrafts = new();
+    private bool _loadingDrafts = false;
+
     protected override async Task OnInitializedAsync()
     {
         await LoadDataSourceInfoAsync();
         await LoadPartitionTablesAsync();
+        await LoadConfigurationDraftsAsync();
+    }
+
+    private async Task OnTabChanged(string key)
+    {
+        _activeTab = key;
+        if (key == "drafts")
+        {
+            await LoadConfigurationDraftsAsync();
+        }
+    }
+
+    private async Task LoadConfigurationDraftsAsync()
+    {
+        _loadingDrafts = true;
+        try
+        {
+            var result = await PartitionConfigApi.GetByDataSourceAsync(DataSourceId);
+            if (result.IsSuccess && result.Value != null)
+            {
+                _configurationDrafts = result.Value.Select(d => new ConfigurationDraftInfo
+                {
+                    Id = d.Id,
+                    SchemaName = d.SchemaName,
+                    TableName = d.TableName,
+                    PartitionColumnName = d.PartitionColumnName,
+                    PartitionFunctionName = d.PartitionFunctionName,
+                    PartitionSchemeName = d.PartitionSchemeName,
+                    BoundaryCount = d.BoundaryCount,
+                    StorageMode = d.StorageMode,
+                    TargetTableName = d.TargetTableName,
+                    CreatedAtUtc = d.CreatedAtUtc,
+                    CreatedBy = d.CreatedBy,
+                    Remarks = d.Remarks
+                }).ToList();
+            }
+            else
+            {
+                _configurationDrafts = new List<ConfigurationDraftInfo>();
+                if (!result.IsSuccess)
+                {
+                    Message.Warning($"加载配置草稿失败: {result.Error}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置草稿失败: {ex.Message}");
+            _configurationDrafts = new List<ConfigurationDraftInfo>();
+        }
+        finally
+        {
+            _loadingDrafts = false;
+        }
+    }
+
+    private async Task DeleteConfigurationDraftAsync(Guid configurationId)
+    {
+        try
+        {
+            var result = await PartitionConfigApi.DeleteAsync(configurationId);
+            if (result.IsSuccess)
+            {
+                Message.Success("配置草稿已删除");
+                await LoadConfigurationDraftsAsync();
+            }
+            else
+            {
+                Message.Error($"删除失败: {result.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"删除失败: {ex.Message}");
+        }
     }
 
     private async Task LoadDataSourceInfoAsync()
@@ -547,6 +671,25 @@
         {
             Message.Error($"保存目标服务器配置失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 分区配置草稿信息（用于列表显示）
+    /// </summary>
+    private class ConfigurationDraftInfo
+    {
+        public Guid Id { get; set; }
+        public string SchemaName { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public string PartitionColumnName { get; set; } = string.Empty;
+        public string PartitionFunctionName { get; set; } = string.Empty;
+        public string PartitionSchemeName { get; set; } = string.Empty;
+        public int BoundaryCount { get; set; }
+        public string StorageMode { get; set; } = string.Empty;
+        public string TargetTableName { get; set; } = string.Empty;
+        public DateTime CreatedAtUtc { get; set; }
+        public string CreatedBy { get; set; } = string.Empty;
+        public string? Remarks { get; set; }
     }
 
     private class PartitionDetailInfo
