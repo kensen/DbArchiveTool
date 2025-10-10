@@ -1,10 +1,12 @@
 using System;
 using DbArchiveTool.Application.Abstractions;
+using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.DataSources;
+using DbArchiveTool.Infrastructure.Executors;
 using DbArchiveTool.Infrastructure.Partitions;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.Queries;
@@ -45,8 +47,13 @@ public static class DependencyInjection
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
         services.AddScoped<IPartitionConfigurationRepository, PartitionConfigurationRepository>();
+        services.AddScoped<IPartitionExecutionTaskRepository, PartitionExecutionTaskRepository>();
+        services.AddScoped<IPartitionExecutionLogRepository, PartitionExecutionLogRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<SqlPartitionQueryService>();
+        services.AddSingleton<PartitionExecutionQueue>();
+        services.AddHostedService<PartitionExecutionHostedService>();
+        services.AddSingleton<IPartitionExecutionDispatcher, PartitionExecutionDispatcher>();
 
         // 注册密码加密服务
         services.AddDataProtection();

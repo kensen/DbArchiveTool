@@ -18,6 +18,8 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
     public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
     public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
+    public DbSet<PartitionExecutionTask> PartitionExecutionTasks => Set<PartitionExecutionTask>();
+    public DbSet<PartitionExecutionLogEntry> PartitionExecutionLogs => Set<PartitionExecutionLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -136,6 +138,42 @@ public sealed class ArchiveDbContext : DbContext
             builder.HasKey(x => x.Id);
             builder.Property(x => x.BoundaryKey).IsRequired().HasMaxLength(64);
             builder.Property(x => x.FilegroupName).IsRequired().HasMaxLength(128);
+        });
+
+        modelBuilder.Entity<PartitionExecutionTask>(builder =>
+        {
+            builder.ToTable("PartitionExecutionTask");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.PartitionConfigurationId).IsRequired();
+            builder.Property(x => x.DataSourceId).IsRequired();
+            builder.Property(x => x.Status).IsRequired();
+            builder.Property(x => x.Phase).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.Progress).IsRequired();
+            builder.Property(x => x.RequestedBy).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.BackupReference).HasMaxLength(256);
+            builder.Property(x => x.Notes).HasMaxLength(512);
+            builder.Property(x => x.FailureReason).HasMaxLength(512);
+            builder.Property(x => x.SummaryJson);
+            builder.Property(x => x.Priority).HasDefaultValue(0);
+            builder.Property(x => x.LastHeartbeatUtc).IsRequired();
+
+            builder.HasIndex(x => new { x.DataSourceId, x.Status });
+            builder.HasIndex(x => new { x.PartitionConfigurationId, x.IsDeleted })
+                .HasFilter("[IsDeleted] = 0");
+        });
+
+        modelBuilder.Entity<PartitionExecutionLogEntry>(builder =>
+        {
+            builder.ToTable("PartitionExecutionLog");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.ExecutionTaskId).IsRequired();
+            builder.Property(x => x.LogTimeUtc).IsRequired();
+            builder.Property(x => x.Category).IsRequired().HasMaxLength(32);
+            builder.Property(x => x.Title).IsRequired().HasMaxLength(256);
+            builder.Property(x => x.Message).IsRequired();
+            builder.Property(x => x.ExtraJson);
+
+            builder.HasIndex(x => new { x.ExecutionTaskId, x.LogTimeUtc });
         });
     }
 }

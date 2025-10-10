@@ -12,7 +12,6 @@ public sealed class CreatePartitionConfigurationRequestModel
     public Guid DataSourceId { get; set; }
     public string SchemaName { get; set; } = string.Empty;
     public string TableName { get; set; } = string.Empty;
-    
     /// <summary>分区列名称。</summary>
     public string PartitionColumnName { get; set; } = string.Empty;
     
