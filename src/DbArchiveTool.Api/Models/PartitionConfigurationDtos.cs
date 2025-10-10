@@ -94,3 +94,52 @@ public sealed class ReplacePartitionValuesDto
     public ReplacePartitionValuesRequest ToApplicationRequest() =>
         new(BoundaryValues, UpdatedBy);
 }
+
+/// <summary>
+/// 更新分区配置的请求体。
+/// </summary>
+public sealed class UpdatePartitionConfigurationDto
+{
+    [Required]
+    public PartitionStorageMode StorageMode { get; set; }
+
+    public string? FilegroupName { get; set; }
+
+    public string? DataFileDirectory { get; set; }
+
+    public string? DataFileName { get; set; }
+
+    public int? InitialFileSizeMb { get; set; }
+
+    public int? AutoGrowthMb { get; set; }
+
+    [Required]
+    public string TargetDatabaseName { get; set; } = string.Empty;
+
+    public string? TargetSchemaName { get; set; }
+
+    [Required]
+    public string TargetTableName { get; set; } = string.Empty;
+
+    public bool RequirePartitionColumnNotNull { get; set; }
+
+    [Required]
+    public string UpdatedBy { get; set; } = string.Empty;
+
+    public string? Remarks { get; set; }
+
+    public UpdatePartitionConfigurationRequest ToApplicationRequest() =>
+        new(
+            StorageMode,
+            FilegroupName,
+            DataFileDirectory,
+            DataFileName,
+            InitialFileSizeMb,
+            AutoGrowthMb,
+            TargetDatabaseName,
+            TargetSchemaName,
+            TargetTableName,
+            RequirePartitionColumnNotNull,
+            UpdatedBy,
+            Remarks);
+}

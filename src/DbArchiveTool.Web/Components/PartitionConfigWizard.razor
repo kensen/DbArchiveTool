@@ -7,7 +7,9 @@
         Title="@Title"
         Width="760"
         Placement="DrawerPlacement.Right"
-        Closable="false">
+        Closable="true"
+        MaskClosable="false"
+        OnClose="HandleDrawerClose">
     <Spin Spinning="@(_loadingWizard || _submitting)">
         <Steps Current="@_configWizard.CurrentStep" Size="@StepsSize.Small">
             <Step Title="基础信息" />
@@ -31,6 +33,7 @@
                             <Select TItem="string" TItemValue="string"
                                     @bind-Value="_configWizard.Form.SourceTableKey"
                                     OnSelectedItemChanged="HandleSourceTableChanged"
+                                    Disabled="@IsEditing"
                                     Style="width:100%">
                                 @foreach (var option in _configWizard.TableOptions)
                                 {
@@ -42,6 +45,7 @@
                             <Select TItem="string" TItemValue="string"
                                     @bind-Value="_configWizard.Form.PartitionColumn"
                                     OnSelectedItemChanged="HandlePartitionColumnChanged"
+                                    Disabled="@IsEditing"
                                     Style="width:100%">
                                 @foreach (var column in _configWizard.Columns)
                                 {
@@ -206,7 +210,7 @@
             else
             {
                 <div class="wizard-step wizard-step-complete">
-                    <Result Status="@ResultStatus.Success" Title="分区配置创建成功">
+                    <Result Status="@ResultStatus.Success" Title="@(IsEditing ? "分区配置更新成功" : "分区配置创建成功")">
                         <ul class="wizard-summary">
                             <li>配置编号：@_configWizard.ConfigurationId</li>
                             <li>分区表：@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</li>

@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.Partitions;
@@ -51,7 +52,15 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
 
         // 构建存储设置
-        var storageResult = BuildStorageSettings(request, "PRIMARY", request.TableName);
+        var storageResult = BuildStorageSettings(
+            request.StorageMode,
+            request.TableName,
+            "PRIMARY",
+            request.FilegroupName,
+            request.DataFileDirectory,
+            request.DataFileName,
+            request.InitialFileSizeMb,
+            request.AutoGrowthMb);
         if (!storageResult.IsSuccess)
         {
             return Result<Guid>.Failure(storageResult.Error!);
@@ -112,6 +121,141 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
     }
 
+    public async Task<Result<PartitionConfigurationDetailDto>> GetAsync(Guid configurationId, CancellationToken cancellationToken = default)
+    {
+        if (configurationId == Guid.Empty)
+        {
+            return Result<PartitionConfigurationDetailDto>.Failure("配置标识不能为空。");
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<PartitionConfigurationDetailDto>.Failure("未找到分区配置。");
+        }
+
+        var metadata = await metadataRepository.GetConfigurationAsync(
+            configuration.ArchiveDataSourceId,
+            configuration.SchemaName,
+            configuration.TableName,
+            cancellationToken);
+
+        var dto = new PartitionConfigurationDetailDto
+        {
+            Id = configuration.Id,
+            DataSourceId = configuration.ArchiveDataSourceId,
+            SchemaName = configuration.SchemaName,
+            TableName = configuration.TableName,
+            PartitionFunctionName = configuration.PartitionFunctionName,
+            PartitionSchemeName = configuration.PartitionSchemeName,
+            PartitionColumnName = configuration.PartitionColumn.Name,
+            PartitionColumnKind = configuration.PartitionColumn.ValueKind,
+            PartitionColumnIsNullable = configuration.PartitionColumn.IsNullable,
+            StorageMode = configuration.StorageSettings.Mode,
+            FilegroupName = configuration.StorageSettings.FilegroupName,
+            DataFileDirectory = configuration.StorageSettings.DataFileDirectory,
+            DataFileName = configuration.StorageSettings.DataFileName,
+            InitialFileSizeMb = configuration.StorageSettings.InitialSizeMb,
+            AutoGrowthMb = configuration.StorageSettings.AutoGrowthMb,
+            TargetDatabaseName = configuration.TargetTable?.DatabaseName ?? configuration.SchemaName,
+            TargetSchemaName = configuration.TargetTable?.SchemaName ?? configuration.SchemaName,
+            TargetTableName = configuration.TargetTable?.TableName ?? configuration.TableName,
+            RequirePartitionColumnNotNull = configuration.RequirePartitionColumnNotNull,
+            Remarks = configuration.Remarks,
+            IsCommitted = configuration.IsCommitted,
+            SourceTableIsPartitioned = metadata is not null,
+            BoundaryValues = configuration.Boundaries
+                .OrderBy(x => x.SortKey, StringComparer.Ordinal)
+                .Select(x => x.Value.ToInvariantString())
+                .ToList(),
+            CreatedBy = configuration.CreatedBy,
+            CreatedAtUtc = configuration.CreatedAtUtc,
+            UpdatedAtUtc = configuration.UpdatedAtUtc
+        };
+
+        return Result<PartitionConfigurationDetailDto>.Success(dto);
+    }
+
+    public async Task<Result> UpdateAsync(Guid configurationId, UpdatePartitionConfigurationRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateUpdateRequest(configurationId, request);
+        if (!validation.IsSuccess)
+        {
+            return validation;
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result.Failure("未找到分区配置。");
+        }
+
+        if (configuration.IsCommitted)
+        {
+            return Result.Failure("配置已执行，禁止修改。");
+        }
+
+        var existing = await metadataRepository.GetConfigurationAsync(
+            configuration.ArchiveDataSourceId,
+            configuration.SchemaName,
+            configuration.TableName,
+            cancellationToken);
+        if (existing is not null)
+        {
+            return Result.Failure("目标表已是分区表，禁止修改方案，请通过分区操作功能调整边界。");
+        }
+
+        var storageResult = BuildStorageSettings(
+            request.StorageMode,
+            configuration.TableName,
+            configuration.FilegroupStrategy.PrimaryFilegroup,
+            request.FilegroupName,
+            request.DataFileDirectory,
+            request.DataFileName,
+            request.InitialFileSizeMb,
+            request.AutoGrowthMb);
+        if (!storageResult.IsSuccess)
+        {
+            return Result.Failure(storageResult.Error!);
+        }
+
+        PartitionTargetTable targetTable;
+        try
+        {
+            var targetSchema = string.IsNullOrWhiteSpace(request.TargetSchemaName)
+                ? configuration.SchemaName
+                : request.TargetSchemaName!;
+
+            targetTable = PartitionTargetTable.Create(
+                request.TargetDatabaseName,
+                targetSchema,
+                request.TargetTableName,
+                request.Remarks);
+        }
+        catch (Exception ex) when (ex is ArgumentException or ArgumentOutOfRangeException)
+        {
+            return Result.Failure(ex.Message);
+        }
+
+        configuration.UpdateStorageSettings(storageResult.Value!);
+        configuration.UpdateTargetTable(targetTable);
+        configuration.SetPartitionColumnNotNullRequirement(request.RequirePartitionColumnNotNull);
+        configuration.UpdateRemarks(request.Remarks);
+        configuration.Touch(request.UpdatedBy);
+
+        try
+        {
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+            logger.LogInformation("Partition configuration {ConfigurationId} updated by {User}", configuration.Id, request.UpdatedBy);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to update partition configuration {ConfigurationId}", configurationId);
+            return Result.Failure("更新分区配置时发生错误，请稍后重试。");
+        }
+    }
+
     public async Task<Result> ReplaceValuesAsync(Guid configurationId, ReplacePartitionValuesRequest request, CancellationToken cancellationToken = default)
     {
         var validation = ValidateReplaceRequest(configurationId, request);
@@ -124,6 +268,11 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         if (configuration is null)
         {
             return Result.Failure("未找到分区配置。");
+        }
+
+        if (configuration.IsCommitted)
+        {
+            return Result.Failure("配置已执行，禁止修改分区值。");
         }
 
         var parseResult = valueParser.ParseValues(configuration.PartitionColumn, request.BoundaryValues);
@@ -171,7 +320,8 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
                 CreatedAtUtc = c.CreatedAtUtc,
                 CreatedBy = c.CreatedBy,
                 UpdatedAtUtc = c.UpdatedAtUtc,
-                Remarks = c.Remarks
+                Remarks = c.Remarks,
+                IsCommitted = c.IsCommitted
             }).ToList();
 
             return Result<List<PartitionConfigurationSummaryDto>>.Success(summaries);
@@ -191,6 +341,11 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             if (configuration is null)
             {
                 return Result.Failure("配置不存在。");
+            }
+
+            if (configuration.IsCommitted)
+            {
+                return Result.Failure("配置已执行，禁止删除。");
             }
 
             await configurationRepository.DeleteAsync(configurationId, cancellationToken);
@@ -226,6 +381,11 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             return Result.Failure("源表名称不能为空。");
         }
 
+        if (string.IsNullOrWhiteSpace(request.PartitionColumnName))
+        {
+            return Result.Failure("分区列不能为空。");
+        }
+
         if (string.IsNullOrWhiteSpace(request.TargetDatabaseName))
         {
             return Result.Failure("目标数据库名称不能为空。");
@@ -237,6 +397,54 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
 
         if (string.IsNullOrWhiteSpace(request.CreatedBy))
+        {
+            return Result.Failure("操作人不能为空。");
+        }
+
+        if (request.StorageMode == PartitionStorageMode.DedicatedFilegroupSingleFile)
+        {
+            if (!request.InitialFileSizeMb.HasValue || request.InitialFileSizeMb.Value <= 0)
+            {
+                return Result.Failure("请填写有效的数据文件初始大小。");
+            }
+
+            if (!request.AutoGrowthMb.HasValue || request.AutoGrowthMb.Value <= 0)
+            {
+                return Result.Failure("请填写有效的自动增长大小。");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.DataFileDirectory) || string.IsNullOrWhiteSpace(request.DataFileName))
+            {
+                return Result.Failure("请填写数据文件目录与文件名。");
+            }
+        }
+
+        return Result.Success();
+    }
+
+    private static Result ValidateUpdateRequest(Guid configurationId, UpdatePartitionConfigurationRequest request)
+    {
+        if (configurationId == Guid.Empty)
+        {
+            return Result.Failure("配置标识不能为空。");
+        }
+
+        if (request is null)
+        {
+            return Result.Failure("请求体不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetDatabaseName))
+        {
+            return Result.Failure("目标数据库名称不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetTableName))
+        {
+            return Result.Failure("目标表名称不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.UpdatedBy))
         {
             return Result.Failure("操作人不能为空。");
         }
@@ -288,17 +496,28 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
     }
 
     private static Result<PartitionStorageSettings> BuildStorageSettings(
-        CreatePartitionConfigurationRequest request,
+        PartitionStorageMode storageMode,
+        string tableName,
         string primaryFilegroup,
-        string tableName)
+        string? filegroupName,
+        string? dataFileDirectory,
+        string? dataFileName,
+        int? initialFileSizeMb,
+        int? autoGrowthMb)
     {
         try
         {
-            return request.StorageMode switch
+            return storageMode switch
             {
                 PartitionStorageMode.PrimaryFilegroup => Result<PartitionStorageSettings>.Success(
                     PartitionStorageSettings.UsePrimary(primaryFilegroup)),
-                PartitionStorageMode.DedicatedFilegroupSingleFile => CreateDedicatedStorage(request, tableName),
+                PartitionStorageMode.DedicatedFilegroupSingleFile => CreateDedicatedStorage(
+                    tableName,
+                    filegroupName,
+                    dataFileDirectory!,
+                    dataFileName!,
+                    initialFileSizeMb!.Value,
+                    autoGrowthMb!.Value),
                 _ => Result<PartitionStorageSettings>.Failure("不支持的存放模式。")
             };
         }
@@ -308,18 +527,24 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
     }
 
-    private static Result<PartitionStorageSettings> CreateDedicatedStorage(CreatePartitionConfigurationRequest request, string tableName)
+    private static Result<PartitionStorageSettings> CreateDedicatedStorage(
+        string tableName,
+        string? filegroupName,
+        string dataFileDirectory,
+        string dataFileName,
+        int initialFileSizeMb,
+        int autoGrowthMb)
     {
-        var filegroupName = string.IsNullOrWhiteSpace(request.FilegroupName)
+        var finalFilegroupName = string.IsNullOrWhiteSpace(filegroupName)
             ? $"{tableName}_FG_{DateTime.UtcNow:yyyyMMdd}"
-            : request.FilegroupName!;
+            : filegroupName!;
 
         var settings = PartitionStorageSettings.CreateDedicated(
-            filegroupName,
-            request.DataFileDirectory!,
-            request.DataFileName!,
-            request.InitialFileSizeMb!.Value,
-            request.AutoGrowthMb!.Value);
+            finalFilegroupName,
+            dataFileDirectory,
+            dataFileName,
+            initialFileSizeMb,
+            autoGrowthMb);
 
         return Result<PartitionStorageSettings>.Success(settings);
     }

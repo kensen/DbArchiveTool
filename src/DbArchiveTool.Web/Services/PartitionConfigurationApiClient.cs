@@ -52,6 +52,32 @@ public sealed class PartitionConfigurationApiClient
                ?? Result.Failure("更新分区值成功，但解析响应失败。");
     }
 
+    public async Task<Result<PartitionConfigurationDetailModel>> GetAsync(Guid configurationId)
+    {
+        var response = await httpClient.GetAsync($"api/v1/partition-configurations/{configurationId}");
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result<PartitionConfigurationDetailModel>>(response)
+                   ?? Result<PartitionConfigurationDetailModel>.Failure($"获取配置详情失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result<PartitionConfigurationDetailModel>>(response)
+               ?? Result<PartitionConfigurationDetailModel>.Failure("获取配置详情成功，但解析响应失败。");
+    }
+
+    public async Task<Result> UpdateAsync(Guid configurationId, UpdatePartitionConfigurationRequestModel request)
+    {
+        var response = await httpClient.PutAsJsonAsync($"api/v1/partition-configurations/{configurationId}", request, JsonOptions);
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result>(response)
+                   ?? Result.Failure($"更新分区配置失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result>(response)
+               ?? Result.Failure("更新分区配置成功，但解析响应失败。");
+    }
+
     public async Task<Result<List<PartitionConfigurationSummaryModel>>> GetByDataSourceAsync(Guid dataSourceId)
     {
         var response = await httpClient.GetAsync($"api/v1/partition-configurations/by-datasource/{dataSourceId}");

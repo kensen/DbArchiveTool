@@ -143,6 +143,7 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
             TargetSchemaName = configuration.TargetTable?.SchemaName ?? configuration.SchemaName,
             TargetTableName = configuration.TargetTable?.TableName ?? configuration.TableName,
             TargetRemarks = configuration.TargetTable?.Remarks ?? configuration.Remarks,
+            IsCommitted = configuration.IsCommitted,
             CreatedAtUtc = configuration.CreatedAtUtc,
             CreatedBy = configuration.CreatedBy,
             UpdatedAtUtc = configuration.UpdatedAtUtc,
@@ -258,7 +259,8 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
             storageSettings: storageSettings,
             targetTable: targetTable,
             requirePartitionColumnNotNull: entity.RequirePartitionColumnNotNull,
-            remarks: entity.Remarks);
+            remarks: entity.Remarks,
+            isCommitted: entity.IsCommitted);
 
         configuration.OverrideId(entity.Id);
         configuration.RestoreAudit(entity.CreatedAtUtc, entity.CreatedBy, entity.UpdatedAtUtc, entity.UpdatedBy, entity.IsDeleted);

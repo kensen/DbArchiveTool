@@ -59,6 +59,9 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// <summary>是否为 Range Right 分区函数。</summary>
     public bool IsRangeRight { get; }
 
+    /// <summary>指示该配置是否已经执行到数据库（一旦执行将不允许修改基础信息）。</summary>
+    public bool IsCommitted { get; private set; }
+
     /// <summary>分区操作的安全规则。</summary>
     public PartitionSafetyRule? SafetyRule { get; private set; }
 
@@ -99,7 +102,8 @@ public sealed class PartitionConfiguration : AggregateRoot
         PartitionStorageSettings? storageSettings = null,
         PartitionTargetTable? targetTable = null,
         bool requirePartitionColumnNotNull = false,
-        string? remarks = null)
+        string? remarks = null,
+        bool isCommitted = false)
     {
         ArchiveDataSourceId = archiveDataSourceId != Guid.Empty ? archiveDataSourceId : throw new ArgumentException("数据源标识不能为空", nameof(archiveDataSourceId));
         SchemaName = string.IsNullOrWhiteSpace(schemaName) ? throw new ArgumentException("架构名不能为空", nameof(schemaName)) : schemaName.Trim();
@@ -115,6 +119,7 @@ public sealed class PartitionConfiguration : AggregateRoot
         TargetTable = targetTable;
         RequirePartitionColumnNotNull = requirePartitionColumnNotNull;
         Remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
+        IsCommitted = isCommitted;
 
         if (existingBoundaries is not null)
         {
@@ -122,9 +127,6 @@ public sealed class PartitionConfiguration : AggregateRoot
             {
                 AddBoundaryInternal(boundary, skipValidation: true);
             }
-
-            EnsureSortedOrder();
-            EnsureMonotonicGrowth();
         }
 
         if (existingFilegroupMappings is not null)
@@ -134,6 +136,39 @@ public sealed class PartitionConfiguration : AggregateRoot
                 filegroupMappings.Add(mapping);
             }
         }
+
+        EnsureSortedOrder();
+        EnsureMonotonicGrowth();
+    }
+
+    /// <summary>
+    /// 将配置标记为已执行，后续不允许修改基础信息。
+    /// </summary>
+    /// <param name="user">操作人。</param>
+    public void MarkCommitted(string user)
+    {
+        if (IsCommitted)
+        {
+            return;
+        }
+
+        IsCommitted = true;
+        Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
+    }
+
+    /// <summary>
+    /// 将配置恢复为草稿状态（仅用于撤销执行的场景）。
+    /// </summary>
+    /// <param name="user">操作人。</param>
+    public void MarkDraft(string user)
+    {
+        if (!IsCommitted)
+        {
+            return;
+        }
+
+        IsCommitted = false;
+        Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
     }
 
     /// <summary>

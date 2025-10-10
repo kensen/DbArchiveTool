@@ -90,6 +90,7 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.TargetTableName).IsRequired().HasMaxLength(128);
             builder.Property(x => x.TargetRemarks).HasMaxLength(512);
             builder.Property(x => x.Remarks).HasMaxLength(512);
+            builder.Property(x => x.IsCommitted).IsRequired().HasDefaultValue(false);
             builder.Property(x => x.CreatedBy).IsRequired().HasMaxLength(64);
             builder.Property(x => x.UpdatedBy).IsRequired().HasMaxLength(64);
 

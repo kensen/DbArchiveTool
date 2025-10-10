@@ -48,6 +48,34 @@ public sealed class PartitionConfigurationsController : ControllerBase
     }
 
     /// <summary>
+    /// 获取指定的分区配置草稿详情。
+    /// </summary>
+    [HttpGet("{id:guid}")]
+    [ProducesResponseType(typeof(Result<PartitionConfigurationDetailDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<PartitionConfigurationDetailDto>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await appService.GetAsync(id, cancellationToken);
+        return result.IsSuccess
+            ? Ok(result)
+            : BadRequest(result);
+    }
+
+    /// <summary>
+    /// 更新指定的分区配置草稿。
+    /// </summary>
+    [HttpPut("{id:guid}")]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> UpdateAsync(Guid id, [FromBody] UpdatePartitionConfigurationDto request, CancellationToken cancellationToken)
+    {
+        var result = await appService.UpdateAsync(id, request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(result)
+            : BadRequest(result);
+    }
+
+    /// <summary>
     /// 获取指定数据源的所有分区配置（包括草稿）。
     /// </summary>
     [HttpGet("by-datasource/{dataSourceId:guid}")]

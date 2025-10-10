@@ -1,7 +1,9 @@
 @page "/archive-data-sources/{DataSourceId:guid}/partitions"
 @attribute [ReuseTabsPage(Title = "分区管理", Closable = true)]
 @using AntDesign
+@using AntDesign.TableModels
 @using System.Globalization
+@using System.Linq
 @using DbArchiveTool.Application.Partitions
 @using DbArchiveTool.Web.Components
 @using DbArchiveTool.Web.Core
@@ -43,7 +45,11 @@
                     <Button Type="@ButtonType.Primary" Icon="plus" Size="@ButtonSize.Small" OnClick="ShowAddPartitionConfig">添加分区配置</Button>
                 </SpaceItem>
                 <SpaceItem>
-                    <Button Type="@ButtonType.Default" Icon="edit" Size="@ButtonSize.Small" Disabled="@(_selectedTable == null)" OnClick="ShowEditPartitionConfig">修改分区配置</Button>
+                    <Button Type="@ButtonType.Default"
+                            Icon="edit"
+                            Size="@ButtonSize.Small"
+                            Disabled="@(!CanEditDraft)"
+                            OnClick="EditSelectedDraftAsync">修改分区配置</Button>
                 </SpaceItem>
             </Space>
         </div>
@@ -57,7 +63,7 @@
                        Bordered
                        @bind-SelectedRows="_selectedTableRows"
                        OnRowClick="OnTableRowClick"
-                       RowClassName="@(x => x.Data == _selectedTable ? "table-row-selected" : "")">
+                       RowClassName="@GetPartitionRowClass">
                     <Selection Key="@(context.TableName)" Type="@SelectionType.Radio" />
                     <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
                     <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
@@ -86,7 +92,11 @@
                        DataSource="_configurationDrafts"
                        Loading="_loadingDrafts"
                        Size="@TableSize.Small"
-                       Bordered>
+                       Bordered
+                       @bind-SelectedRows="_selectedDraftRows"
+                       OnRowClick="OnDraftRowClick"
+                       RowClassName="@GetDraftRowClass">
+                    <Selection Key="@(context.Id.ToString())" Type="@SelectionType.Radio" />
                     <PropertyColumn Property="c => c.SchemaName" Title="架构名" Sortable />
                     <PropertyColumn Property="c => c.TableName" Title="表名" Sortable />
                     <PropertyColumn Property="c => c.PartitionColumnName" Title="分区列" />
@@ -105,15 +115,18 @@
                     <ActionColumn Title="操作">
                         <Space Size="@("small")">
                             <SpaceItem>
+                                <Button Type="@ButtonType.Link"
+                                        Size="@ButtonSize.Small"
+                                        Disabled="@(context.IsCommitted || context.IsPartitioned)"
+                                        OnClick="() => EditConfigurationDraftAsync(context)">编辑</Button>
+                            </SpaceItem>
+                            <SpaceItem>
                                 <Popconfirm Title="确定要删除此配置草稿吗？"
                                             OnConfirm="() => DeleteConfigurationDraftAsync(context.Id)"
                                             OkText="删除"
                                             CancelText="取消">
                                     <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
                                 </Popconfirm>
-                            </SpaceItem>
-                            <SpaceItem>
-                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Disabled>执行分区</Button>
                             </SpaceItem>
                         </Space>
                     </ActionColumn>
@@ -245,6 +258,9 @@
                        DataSourceId="DataSourceId"
                        DatabaseName="_databaseName"
                        SelectedTable="_selectedTable"
+                       IsEditMode="_partitionConfigWizardIsEdit"
+                       EditingConfigurationId="_editingConfigurationId"
+                       EditingConfiguration="_editingConfigurationDetail"
                        OnCompleted="OnPartitionConfigCompletedAsync" />
 
 <Modal Title="添加分区边界值" @bind-Visible="_addPartitionValueModalVisible" Width="600" OnOk="() => _addPartitionValueModalVisible = false" OnCancel="() => _addPartitionValueModalVisible = false">
@@ -314,6 +330,17 @@
     // Tabs and configuration drafts
     private string _activeTab = "partitioned";
     private List<ConfigurationDraftInfo> _configurationDrafts = new();
+    private IEnumerable<ConfigurationDraftInfo> _selectedDraftRows = Array.Empty<ConfigurationDraftInfo>();
+    private ConfigurationDraftInfo? _selectedDraft;
+    private Guid? _editingConfigurationId;
+    private PartitionConfigurationDetailModel? _editingConfigurationDetail;
+    private bool _partitionConfigWizardIsEdit;
+    private bool CanEditDraft =>
+        _activeTab == "drafts" &&
+        _selectedDraft is not null &&
+        !_selectedDraft.IsCommitted &&
+        !_selectedDraft.IsPartitioned;
+
     private bool _loadingDrafts = false;
 
     protected override async Task OnInitializedAsync()
@@ -330,6 +357,11 @@
         {
             await LoadConfigurationDraftsAsync();
         }
+        else
+        {
+            _selectedDraft = null;
+            _selectedDraftRows = Array.Empty<ConfigurationDraftInfo>();
+        }
     }
 
     private async Task LoadConfigurationDraftsAsync()
@@ -337,9 +369,13 @@
         _loadingDrafts = true;
         try
         {
+            var previousSelectedId = _selectedDraft?.Id;
             var result = await PartitionConfigApi.GetByDataSourceAsync(DataSourceId);
             if (result.IsSuccess && result.Value != null)
             {
+                var partitionedLookup = new HashSet<string>(
+                    _partitionTables.Select(t => $"{t.SchemaName}.{t.TableName}".ToLowerInvariant()));
+
                 _configurationDrafts = result.Value.Select(d => new ConfigurationDraftInfo
                 {
                     Id = d.Id,
@@ -353,8 +389,23 @@
                     TargetTableName = d.TargetTableName,
                     CreatedAtUtc = d.CreatedAtUtc,
                     CreatedBy = d.CreatedBy,
-                    Remarks = d.Remarks
+                    Remarks = d.Remarks,
+                    IsCommitted = d.IsCommitted,
+                    IsPartitioned = partitionedLookup.Contains($"{d.SchemaName}.{d.TableName}".ToLowerInvariant())
                 }).ToList();
+
+                if (previousSelectedId.HasValue)
+                {
+                    _selectedDraft = _configurationDrafts.FirstOrDefault(d => d.Id == previousSelectedId.Value);
+                }
+                else
+                {
+                    _selectedDraft = null;
+                }
+
+                _selectedDraftRows = _selectedDraft is null
+                    ? Array.Empty<ConfigurationDraftInfo>()
+                    : new[] { _selectedDraft };
             }
             else
             {
@@ -363,12 +414,17 @@
                 {
                     Message.Warning($"加载配置草稿失败: {result.Error}");
                 }
+
+                _selectedDraft = null;
+                _selectedDraftRows = Array.Empty<ConfigurationDraftInfo>();
             }
         }
         catch (Exception ex)
         {
             Message.Error($"加载配置草稿失败: {ex.Message}");
             _configurationDrafts = new List<ConfigurationDraftInfo>();
+            _selectedDraft = null;
+            _selectedDraftRows = Array.Empty<ConfigurationDraftInfo>();
         }
         finally
         {
@@ -384,6 +440,11 @@
             if (result.IsSuccess)
             {
                 Message.Success("配置草稿已删除");
+                if (_selectedDraft?.Id == configurationId)
+                {
+                    _selectedDraft = null;
+                    _selectedDraftRows = Array.Empty<ConfigurationDraftInfo>();
+                }
                 await LoadConfigurationDraftsAsync();
             }
             else
@@ -394,6 +455,58 @@
         catch (Exception ex)
         {
             Message.Error($"删除失败: {ex.Message}");
+        }
+    }
+
+    private async Task EditConfigurationDraftAsync(ConfigurationDraftInfo draft)
+    {
+        _selectedDraft = draft;
+        _selectedDraftRows = new[] { draft };
+
+        if (draft.IsCommitted)
+        {
+            Message.Warning("该配置已执行，无法修改。");
+            return;
+        }
+
+        if (draft.IsPartitioned)
+        {
+            Message.Warning("目标表已是分区表，只能通过分区操作调整边界。");
+            return;
+        }
+
+        try
+        {
+            var detailResult = await PartitionConfigApi.GetAsync(draft.Id);
+            if (!detailResult.IsSuccess || detailResult.Value is null)
+            {
+                Message.Error($"加载配置详情失败: {detailResult.Error ?? "未知错误"}");
+                return;
+            }
+
+            var detail = detailResult.Value;
+            if (detail.IsCommitted)
+            {
+                Message.Warning("该配置已执行，无法修改。");
+                await LoadConfigurationDraftsAsync();
+                return;
+            }
+
+            if (detail.SourceTableIsPartitioned)
+            {
+                Message.Warning("目标表已是分区表，只能通过分区操作调整边界。");
+                return;
+            }
+
+            _editingConfigurationId = draft.Id;
+            _editingConfigurationDetail = detail;
+            PartitionConfigModalTitle = "编辑分区配置";
+            _partitionConfigWizardIsEdit = true;
+            _partitionConfigModalVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置详情失败: {ex.Message}");
         }
     }
 
@@ -495,6 +608,24 @@
         });
     }
 
+    private void OnDraftRowClick(RowData<ConfigurationDraftInfo> row)
+    {
+        if (row?.Data is null)
+        {
+            return;
+        }
+
+        _selectedDraft = row.Data;
+        _selectedDraftRows = new[] { row.Data };
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string GetPartitionRowClass(RowData<PartitionTableInfo> row) =>
+        row.Data == _selectedTable ? "table-row-selected" : string.Empty;
+
+    private string GetDraftRowClass(RowData<ConfigurationDraftInfo> row) =>
+        _selectedDraft is not null && row.Data.Id == _selectedDraft.Id ? "table-row-selected" : string.Empty;
+
     private async Task ReloadAsync()
     {
         await LoadPartitionTablesAsync();
@@ -533,18 +664,32 @@
     private Task ShowAddPartitionConfig()
     {
         PartitionConfigModalTitle = "分区配置向导";
+        _partitionConfigWizardIsEdit = false;
+        _editingConfigurationId = null;
+        _editingConfigurationDetail = null;
         _partitionConfigModalVisible = true;
         return Task.CompletedTask;
     }
 
-    private void ShowEditPartitionConfig()
+    private async Task EditSelectedDraftAsync()
     {
-        Message.Info("分区配置修改功能仍在规划中，敬请期待。");
+        if (!CanEditDraft || _selectedDraft is null)
+        {
+            return;
+        }
+
+        await EditConfigurationDraftAsync(_selectedDraft);
     }
 
     private Task HandlePartitionWizardVisibleChanged(bool value)
     {
         _partitionConfigModalVisible = value;
+        if (!value)
+        {
+            _partitionConfigWizardIsEdit = false;
+            _editingConfigurationId = null;
+            _editingConfigurationDetail = null;
+        }
         return Task.CompletedTask;
     }
 
@@ -566,6 +711,11 @@
                 await LoadPartitionDetailsAsync(refreshed);
             }
         }
+
+        await LoadConfigurationDraftsAsync();
+        _partitionConfigWizardIsEdit = false;
+        _editingConfigurationId = null;
+        _editingConfigurationDetail = null;
     }
     private void ShowAddPartitionValue() => _addPartitionValueModalVisible = true;
     private void ShowSplitPartition() => _splitModalVisible = true;
@@ -690,6 +840,8 @@
         public DateTime CreatedAtUtc { get; set; }
         public string CreatedBy { get; set; } = string.Empty;
         public string? Remarks { get; set; }
+        public bool IsCommitted { get; set; }
+        public bool IsPartitioned { get; set; }
     }
 
     private class PartitionDetailInfo

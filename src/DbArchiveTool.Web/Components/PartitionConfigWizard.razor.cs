@@ -22,6 +22,9 @@ public sealed partial class PartitionConfigWizard : ComponentBase
     [Parameter] public string Title { get; set; } = "添加分区配置";
     [Parameter] public PartitionTableInfo? SelectedTable { get; set; }
     [Parameter] public EventCallback OnCompleted { get; set; }
+    [Parameter] public Guid? EditingConfigurationId { get; set; }
+    [Parameter] public PartitionConfigurationDetailModel? EditingConfiguration { get; set; }
+    [Parameter] public bool IsEditMode { get; set; }
 
     [Inject] private PartitionInfoApiClient PartitionInfoApi { get; set; } = default!;
     [Inject] private PartitionConfigurationApiClient PartitionConfigApi { get; set; } = default!;
@@ -32,12 +35,25 @@ public sealed partial class PartitionConfigWizard : ComponentBase
     private bool _submitting;
     private PartitionConfigWizardState _configWizard = new();
     private bool _wasVisible;
+    private bool IsEditing => IsEditMode && EditingConfigurationId.HasValue && EditingConfiguration is not null;
+
+    private Task HandleDrawerClose()
+    {
+        return VisibleChanged.InvokeAsync(false);
+    }
 
     protected override async Task OnParametersSetAsync()
     {
         if (Visible && !_wasVisible)
         {
-            await InitializeWizardAsync();
+            if (IsEditing)
+            {
+                await InitializeWizardForEditAsync();
+            }
+            else
+            {
+                await InitializeWizardAsync();
+            }
         }
 
         _wasVisible = Visible;
@@ -103,6 +119,103 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         catch (Exception ex)
         {
             Message.Error($"初始化分区配置向导失败: {ex.Message}");
+            await CloseAsync();
+        }
+        finally
+        {
+            _loadingWizard = false;
+        }
+    }
+
+    private async Task InitializeWizardForEditAsync()
+    {
+        _loadingWizard = true;
+        _configWizard = new PartitionConfigWizardState();
+
+        if (!IsEditing)
+        {
+            await InitializeWizardAsync();
+            return;
+        }
+
+        try
+        {
+            var detail = EditingConfiguration!;
+            var tableKey = $"{detail.SchemaName}.{detail.TableName}";
+
+            var allTables = await PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            _configWizard.TableOptions = allTables
+                .Select(t => new PartitionTableOption(
+                    $"{t.SchemaName}.{t.TableName}",
+                    $"{t.SchemaName}.{t.TableName}",
+                    t.SchemaName,
+                    t.TableName,
+                    null))
+                .ToList();
+
+            if (_configWizard.TableOptions.All(o => !o.Key.Equals(tableKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                _configWizard.TableOptions.Add(new PartitionTableOption(
+                    tableKey,
+                    tableKey,
+                    detail.SchemaName,
+                    detail.TableName,
+                    detail.PartitionColumnName));
+            }
+
+            _configWizard.Form.SourceTableKey = tableKey;
+            _configWizard.Form.SchemaName = detail.SchemaName;
+            _configWizard.Form.TableName = detail.TableName;
+
+            var databases = await PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+            _configWizard.TargetDatabases = databases;
+            if (_configWizard.TargetDatabases.All(db => !string.Equals(db.Name, detail.TargetDatabaseName, StringComparison.OrdinalIgnoreCase)))
+            {
+                _configWizard.TargetDatabases.Add(new TargetDatabaseDto
+                {
+                    Name = detail.TargetDatabaseName,
+                    DatabaseId = -1,
+                    IsCurrent = false
+                });
+            }
+            _configWizard.Form.TargetDatabaseName = detail.TargetDatabaseName;
+            _configWizard.Form.TargetSchemaName = detail.TargetSchemaName;
+            _configWizard.Form.TargetTableName = detail.TargetTableName;
+
+            var defaultPath = await PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            if (!string.IsNullOrWhiteSpace(defaultPath))
+            {
+                _configWizard.CachedDefaultFileDirectory = defaultPath;
+            }
+
+            await LoadColumnsAsync(detail.SchemaName, detail.TableName, detail.PartitionColumnName);
+
+            _configWizard.Form.PartitionColumn = detail.PartitionColumnName;
+            _configWizard.SelectedColumnIsNullable = detail.PartitionColumnIsNullable;
+            _configWizard.Form.RequirePartitionColumnNotNull = detail.RequirePartitionColumnNotNull;
+            _configWizard.ColumnKind = detail.PartitionColumnKind;
+
+            _configWizard.Form.StorageMode = detail.StorageMode;
+            _configWizard.Form.FilegroupName = detail.FilegroupName;
+            _configWizard.Form.DataFileDirectory = !string.IsNullOrWhiteSpace(detail.DataFileDirectory)
+                ? detail.DataFileDirectory
+                : _configWizard.CachedDefaultFileDirectory;
+            _configWizard.Form.DataFileName = detail.DataFileName;
+            _configWizard.Form.InitialFileSizeMb = detail.InitialFileSizeMb;
+            _configWizard.Form.AutoGrowthMb = detail.AutoGrowthMb;
+            _configWizard.Form.Remarks = detail.Remarks;
+
+            _configWizard.Boundaries = detail.BoundaryValues
+                .Select(value => PartitionValue.FromInvariantString(detail.PartitionColumnKind, value))
+                .Select(boundaryValue => new PartitionBoundaryItem(boundaryValue))
+                .ToList();
+
+            _configWizard.ConfigurationId = detail.Id;
+            _configWizard.CurrentStep = 0;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置详情失败: {ex.Message}");
             await CloseAsync();
         }
         finally
@@ -537,49 +650,86 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 .OrderBy(v => v, StringComparer.Ordinal)
                 .ToList();
 
-            var createRequest = new CreatePartitionConfigurationRequestModel
-            {
-                DataSourceId = DataSourceId,
-                SchemaName = _configWizard.Form.SchemaName,
-                TableName = _configWizard.Form.TableName,
-                PartitionColumnName = _configWizard.Form.PartitionColumn,
-                PartitionColumnKind = _configWizard.ColumnKind,
-                PartitionColumnIsNullable = _configWizard.SelectedColumnIsNullable,
-                StorageMode = _configWizard.Form.StorageMode,
-                FilegroupName = _configWizard.Form.FilegroupName,
-                DataFileDirectory = _configWizard.Form.DataFileDirectory,
-                DataFileName = _configWizard.Form.DataFileName,
-                InitialFileSizeMb = _configWizard.Form.InitialFileSizeMb,
-                AutoGrowthMb = _configWizard.Form.AutoGrowthMb,
-                TargetDatabaseName = _configWizard.Form.TargetDatabaseName,
-                TargetSchemaName = _configWizard.Form.TargetSchemaName ?? _configWizard.Form.SchemaName,
-                TargetTableName = _configWizard.Form.TargetTableName,
-                RequirePartitionColumnNotNull = _configWizard.Form.RequirePartitionColumnNotNull,
-                Remarks = _configWizard.Form.Remarks,
-                CreatedBy = string.IsNullOrWhiteSpace(AdminSession.UserName) ? "SYSTEM" : AdminSession.UserName!
-            };
+            var userName = string.IsNullOrWhiteSpace(AdminSession.UserName) ? "SYSTEM" : AdminSession.UserName!;
+            var successMessage = IsEditing ? "分区配置更新成功。" : "分区配置创建成功。";
+            Guid configurationId;
 
-            var createResult = await PartitionConfigApi.CreateAsync(createRequest);
-            if (!createResult.IsSuccess)
+            if (IsEditing && _configWizard.ConfigurationId.HasValue)
             {
-                Message.Error(createResult.Error ?? "创建分区配置失败。");
-                return;
+                var updateRequest = new UpdatePartitionConfigurationRequestModel
+                {
+                    StorageMode = _configWizard.Form.StorageMode,
+                    FilegroupName = _configWizard.Form.FilegroupName,
+                    DataFileDirectory = _configWizard.Form.DataFileDirectory,
+                    DataFileName = _configWizard.Form.DataFileName,
+                    InitialFileSizeMb = _configWizard.Form.InitialFileSizeMb,
+                    AutoGrowthMb = _configWizard.Form.AutoGrowthMb,
+                    TargetDatabaseName = _configWizard.Form.TargetDatabaseName,
+                    TargetSchemaName = _configWizard.Form.TargetSchemaName ?? _configWizard.Form.SchemaName,
+                    TargetTableName = _configWizard.Form.TargetTableName,
+                    RequirePartitionColumnNotNull = _configWizard.Form.RequirePartitionColumnNotNull,
+                    Remarks = _configWizard.Form.Remarks,
+                    UpdatedBy = userName
+                };
+
+                var updateResult = await PartitionConfigApi.UpdateAsync(_configWizard.ConfigurationId.Value, updateRequest);
+                if (!updateResult.IsSuccess)
+                {
+                    Message.Error(updateResult.Error ?? "更新分区配置失败。");
+                    return;
+                }
+
+                configurationId = _configWizard.ConfigurationId.Value;
+            }
+            else
+            {
+                var createRequest = new CreatePartitionConfigurationRequestModel
+                {
+                    DataSourceId = DataSourceId,
+                    SchemaName = _configWizard.Form.SchemaName,
+                    TableName = _configWizard.Form.TableName,
+                    PartitionColumnName = _configWizard.Form.PartitionColumn,
+                    PartitionColumnKind = _configWizard.ColumnKind,
+                    PartitionColumnIsNullable = _configWizard.SelectedColumnIsNullable,
+                    StorageMode = _configWizard.Form.StorageMode,
+                    FilegroupName = _configWizard.Form.FilegroupName,
+                    DataFileDirectory = _configWizard.Form.DataFileDirectory,
+                    DataFileName = _configWizard.Form.DataFileName,
+                    InitialFileSizeMb = _configWizard.Form.InitialFileSizeMb,
+                    AutoGrowthMb = _configWizard.Form.AutoGrowthMb,
+                    TargetDatabaseName = _configWizard.Form.TargetDatabaseName,
+                    TargetSchemaName = _configWizard.Form.TargetSchemaName ?? _configWizard.Form.SchemaName,
+                    TargetTableName = _configWizard.Form.TargetTableName,
+                    RequirePartitionColumnNotNull = _configWizard.Form.RequirePartitionColumnNotNull,
+                    Remarks = _configWizard.Form.Remarks,
+                    CreatedBy = userName
+                };
+
+                var createResult = await PartitionConfigApi.CreateAsync(createRequest);
+                if (!createResult.IsSuccess)
+                {
+                    Message.Error(createResult.Error ?? "创建分区配置失败。");
+                    return;
+                }
+
+                configurationId = createResult.Value;
+                _configWizard.ConfigurationId = configurationId;
             }
 
             var replaceRequest = new ReplacePartitionValuesRequestModel
             {
                 BoundaryValues = boundaryValues,
-                UpdatedBy = string.IsNullOrWhiteSpace(AdminSession.UserName) ? "SYSTEM" : AdminSession.UserName!
+                UpdatedBy = userName
             };
 
-            var replaceResult = await PartitionConfigApi.ReplaceValuesAsync(createResult.Value, replaceRequest);
+            var replaceResult = await PartitionConfigApi.ReplaceValuesAsync(configurationId, replaceRequest);
             if (!replaceResult.IsSuccess)
             {
                 Message.Error(replaceResult.Error ?? "保存分区边界值失败。");
                 return;
             }
 
-            _configWizard.ConfigurationId = createResult.Value;
+            _configWizard.ConfigurationId = configurationId;
             _configWizard.CurrentStep = 2;
 
             if (OnCompleted.HasDelegate)
@@ -587,7 +737,7 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 await OnCompleted.InvokeAsync();
             }
 
-            Message.Success("分区配置创建成功。");
+            Message.Success(successMessage);
         }
         catch (Exception ex)
         {

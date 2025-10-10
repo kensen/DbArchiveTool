@@ -34,6 +34,8 @@ public class PartitionConfigurationEntity
     public string TargetTableName { get; set; } = string.Empty;
     public string? TargetRemarks { get; set; }
 
+    public bool IsCommitted { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public string CreatedBy { get; set; } = string.Empty;
     public DateTime UpdatedAtUtc { get; set; }
@@ -84,4 +86,3 @@ public class PartitionConfigurationFilegroupMappingEntity
 
     public PartitionConfigurationEntity Configuration { get; set; } = null!;
 }
-

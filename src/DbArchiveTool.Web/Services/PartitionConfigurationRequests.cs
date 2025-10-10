@@ -63,5 +63,57 @@ public sealed class PartitionConfigurationSummaryModel
     public string CreatedBy { get; set; } = string.Empty;
     public DateTime? UpdatedAtUtc { get; set; }
     public string? Remarks { get; set; }
+    public bool IsCommitted { get; set; }
 }
 
+/// <summary>
+/// 更新分区配置基础信息的请求模型。
+/// </summary>
+public sealed class UpdatePartitionConfigurationRequestModel
+{
+    public PartitionStorageMode StorageMode { get; set; }
+    public string? FilegroupName { get; set; }
+    public string? DataFileDirectory { get; set; }
+    public string? DataFileName { get; set; }
+    public int? InitialFileSizeMb { get; set; }
+    public int? AutoGrowthMb { get; set; }
+    public string TargetDatabaseName { get; set; } = string.Empty;
+    public string? TargetSchemaName { get; set; }
+    public string TargetTableName { get; set; } = string.Empty;
+    public bool RequirePartitionColumnNotNull { get; set; }
+    public string UpdatedBy { get; set; } = string.Empty;
+    public string? Remarks { get; set; }
+}
+
+/// <summary>
+/// 分区配置草稿详情。
+/// </summary>
+public sealed class PartitionConfigurationDetailModel
+{
+    public Guid Id { get; set; }
+    public Guid DataSourceId { get; set; }
+    public string SchemaName { get; set; } = string.Empty;
+    public string TableName { get; set; } = string.Empty;
+    public string PartitionFunctionName { get; set; } = string.Empty;
+    public string PartitionSchemeName { get; set; } = string.Empty;
+    public string PartitionColumnName { get; set; } = string.Empty;
+    public PartitionValueKind PartitionColumnKind { get; set; }
+    public bool PartitionColumnIsNullable { get; set; }
+    public PartitionStorageMode StorageMode { get; set; }
+    public string? FilegroupName { get; set; }
+    public string? DataFileDirectory { get; set; }
+    public string? DataFileName { get; set; }
+    public int? InitialFileSizeMb { get; set; }
+    public int? AutoGrowthMb { get; set; }
+    public string TargetDatabaseName { get; set; } = string.Empty;
+    public string TargetSchemaName { get; set; } = string.Empty;
+    public string TargetTableName { get; set; } = string.Empty;
+    public bool RequirePartitionColumnNotNull { get; set; }
+    public string? Remarks { get; set; }
+    public bool IsCommitted { get; set; }
+    public bool SourceTableIsPartitioned { get; set; }
+    public List<string> BoundaryValues { get; set; } = new();
+    public string CreatedBy { get; set; } = string.Empty;
+    public DateTime CreatedAtUtc { get; set; }
+    public DateTime UpdatedAtUtc { get; set; }
+}
