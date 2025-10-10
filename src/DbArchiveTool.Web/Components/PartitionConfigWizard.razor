@@ -23,8 +23,26 @@
                 <div class="wizard-step">
                     <Descriptions Column="1" Size="@DescriptionsSize.Small" Style="margin-bottom:16px;">
                         <DescriptionsItem Title="源表">@($"{_configWizard.Form.SchemaName}.{_configWizard.Form.TableName}")</DescriptionsItem>
-                        <DescriptionsItem Title="分区函数">@SelectedTable?.PartitionFunction</DescriptionsItem>
-                        <DescriptionsItem Title="分区方案">@SelectedTable?.PartitionScheme</DescriptionsItem>
+                        <DescriptionsItem Title="分区函数">
+                            @if (!string.IsNullOrWhiteSpace(_configWizard.Form.PartitionFunctionName))
+                            {
+                                @_configWizard.Form.PartitionFunctionName
+                            }
+                            else
+                            {
+                                <span style="color: #999;">未设置</span>
+                            }
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="分区方案">
+                            @if (!string.IsNullOrWhiteSpace(_configWizard.Form.PartitionSchemeName))
+                            {
+                                @_configWizard.Form.PartitionSchemeName
+                            }
+                            else
+                            {
+                                <span style="color: #999;">未设置</span>
+                            }
+                        </DescriptionsItem>
                     </Descriptions>
 
                     <Divider>分区列</Divider>
@@ -67,8 +85,8 @@
                         }
                         <FormItem Label="列统计">
                             <Space Direction="@SpaceDirection.Vertical">
-                                <span>最小值:@FormatColumnStatValue(_configWizard.ColumnMinValue)</span>
-                                <span>最大值:@FormatColumnStatValue(_configWizard.ColumnMaxValue)</span>
+                                <span>最小值: @FormatColumnStatValue(_configWizard.ColumnMinValue)</span>
+                                <span>最大值: @FormatColumnStatValue(_configWizard.ColumnMaxValue)</span>
                             </Space>
                         </FormItem>
                     </Form>

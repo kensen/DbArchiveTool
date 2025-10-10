@@ -66,7 +66,17 @@ public sealed partial class PartitionConfigWizard : ComponentBase
 
         try
         {
-            var allTables = await PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            // 🚀 性能优化：并行加载基础数据（表列表、目标数据库、默认路径）
+            var tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            var databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+            var defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            
+            await Task.WhenAll(tablesTask, databasesTask, defaultPathTask);
+            
+            var allTables = await tablesTask;
+            var databases = await databasesTask;
+            var defaultPath = await defaultPathTask;
+
             if (allTables.Count == 0)
             {
                 Message.Warning("当前数据源暂无可用于配置的用户表。");
@@ -98,7 +108,6 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 ? $"{SelectedTable.SchemaName}.{SelectedTable.TableName}"
                 : _configWizard.TableOptions.First().Key;
 
-            var databases = await PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
             _configWizard.TargetDatabases = databases;
             var defaultDb = databases.FirstOrDefault(db => db.IsCurrent) ?? databases.FirstOrDefault();
             if (defaultDb is not null)
@@ -106,7 +115,6 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 _configWizard.Form.TargetDatabaseName = defaultDb.Name;
             }
 
-            var defaultPath = await PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
             if (!string.IsNullOrWhiteSpace(defaultPath))
             {
                 _configWizard.CachedDefaultFileDirectory = defaultPath;
@@ -143,7 +151,20 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             var detail = EditingConfiguration!;
             var tableKey = $"{detail.SchemaName}.{detail.TableName}";
 
-            var allTables = await PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            // 🚀 性能优化：并行加载所有基础数据
+            var tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+            var databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+            var defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            var columnsTask = PartitionInfoApi.GetTableColumnsAsync(DataSourceId, detail.SchemaName, detail.TableName);
+            
+            await Task.WhenAll(tablesTask, databasesTask, defaultPathTask, columnsTask);
+            
+            var allTables = await tablesTask;
+            var databases = await databasesTask;
+            var defaultPath = await defaultPathTask;
+            var columns = await columnsTask;
+
+            // 处理表选项
             _configWizard.TableOptions = allTables
                 .Select(t => new PartitionTableOption(
                     $"{t.SchemaName}.{t.TableName}",
@@ -167,7 +188,7 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             _configWizard.Form.SchemaName = detail.SchemaName;
             _configWizard.Form.TableName = detail.TableName;
 
-            var databases = await PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+            // 处理目标数据库列表
             _configWizard.TargetDatabases = databases;
             if (_configWizard.TargetDatabases.All(db => !string.Equals(db.Name, detail.TargetDatabaseName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -182,15 +203,32 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             _configWizard.Form.TargetSchemaName = detail.TargetSchemaName;
             _configWizard.Form.TargetTableName = detail.TargetTableName;
 
-            var defaultPath = await PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            // 处理默认文件路径
             if (!string.IsNullOrWhiteSpace(defaultPath))
             {
                 _configWizard.CachedDefaultFileDirectory = defaultPath;
             }
 
-            await LoadColumnsAsync(detail.SchemaName, detail.TableName, detail.PartitionColumnName);
+            // 处理列信息（同步处理，避免再次API调用）
+            if (columns.Count == 0)
+            {
+                throw new InvalidOperationException("未能读取分区列信息。");
+            }
+
+            _configWizard.Columns = columns;
+            var defaultColumn = columns.FirstOrDefault(c => string.Equals(c.ColumnName, detail.PartitionColumnName, StringComparison.OrdinalIgnoreCase))
+                                ?? columns.FirstOrDefault();
+            if (defaultColumn is null)
+            {
+                throw new InvalidOperationException("未能读取分区列信息。");
+            }
+
+            // � 性能优化：异步后台加载列统计信息（不阻塞主流程，加载完成后自动更新UI）
+            _ = LoadColumnStatisticsAsync(detail.PartitionColumnName);
 
             _configWizard.Form.PartitionColumn = detail.PartitionColumnName;
+            _configWizard.Form.PartitionFunctionName = detail.PartitionFunctionName;
+            _configWizard.Form.PartitionSchemeName = detail.PartitionSchemeName;
             _configWizard.SelectedColumnIsNullable = detail.PartitionColumnIsNullable;
             _configWizard.Form.RequirePartitionColumnNotNull = detail.RequirePartitionColumnNotNull;
             _configWizard.ColumnKind = detail.PartitionColumnKind;
@@ -331,11 +369,15 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             var stats = await PartitionInfoApi.GetColumnStatisticsAsync(DataSourceId, _configWizard.Form.SchemaName, _configWizard.Form.TableName, columnName);
             _configWizard.ColumnMinValue = stats?.MinValue;
             _configWizard.ColumnMaxValue = stats?.MaxValue;
+            
+            // 🔔 通知 UI 更新：统计数据已加载完成
+            await InvokeAsync(StateHasChanged);
         }
         catch
         {
             _configWizard.ColumnMinValue = null;
             _configWizard.ColumnMaxValue = null;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -896,6 +938,8 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         public string SchemaName { get; set; } = string.Empty;
         public string TableName { get; set; } = string.Empty;
         public string PartitionColumn { get; set; } = string.Empty;
+        public string PartitionFunctionName { get; set; } = string.Empty;
+        public string PartitionSchemeName { get; set; } = string.Empty;
         public bool RequirePartitionColumnNotNull { get; set; }
         public PartitionStorageMode StorageMode { get; set; } = PartitionStorageMode.PrimaryFilegroup;
         public string? FilegroupName { get; set; }
