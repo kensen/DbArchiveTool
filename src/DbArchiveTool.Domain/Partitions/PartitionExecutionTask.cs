@@ -68,6 +68,12 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>执行摘要信息（JSON）。</summary>
     public string? SummaryJson { get; private set; }
 
+    /// <summary>配置快照(JSON格式,保存执行时的配置详情)。</summary>
+    public string? ConfigurationSnapshot { get; private set; }
+
+    /// <summary>最后一个检查点(用于失败恢复或进度展示)。</summary>
+    public string? LastCheckpoint { get; private set; }
+
     /// <summary>任务发起人。</summary>
     public string RequestedBy { get; private set; } = DefaultUser;
 
@@ -139,6 +145,20 @@ public sealed class PartitionExecutionTask : AggregateRoot
     public void UpdatePhase(string phase, string user)
     {
         Phase = string.IsNullOrWhiteSpace(phase) ? DefaultPhase : phase.Trim();
+        UpdateHeartbeat(user);
+    }
+
+    /// <summary>保存配置快照(在任务启动时调用)。</summary>
+    public void SaveConfigurationSnapshot(string snapshotJson, string user)
+    {
+        ConfigurationSnapshot = EnsureNotEmpty(snapshotJson, nameof(snapshotJson));
+        UpdateHeartbeat(user);
+    }
+
+    /// <summary>更新检查点(记录执行到哪个步骤)。</summary>
+    public void UpdateCheckpoint(string checkpoint, string user)
+    {
+        LastCheckpoint = EnsureNotEmpty(checkpoint, nameof(checkpoint));
         UpdateHeartbeat(user);
     }
 
@@ -255,6 +275,14 @@ public static class PartitionExecutionPhases
 {
     public const string PendingValidation = "PendingValidation";
     public const string Validation = "Validation";
+    public const string BackupCheck = "BackupCheck";
+    public const string PermissionCheck = "PermissionCheck";
+    public const string SafetyCheck = "SafetyCheck";
+    public const string AlterNullability = "AlterNullability";
+    public const string DropIndex = "DropIndex";
+    public const string SplitPartition = "SplitPartition";
+    public const string RebuildIndex = "RebuildIndex";
+    public const string UpdateStatistics = "UpdateStatistics";
     public const string Executing = "Executing";
     public const string RebuildingIndexes = "RebuildingIndexes";
     public const string Finalizing = "Finalizing";

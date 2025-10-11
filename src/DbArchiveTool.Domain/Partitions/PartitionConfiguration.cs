@@ -59,11 +59,17 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// <summary>是否为 Range Right 分区函数。</summary>
     public bool IsRangeRight { get; }
 
-    /// <summary>指示该配置是否已经执行到数据库（一旦执行将不允许修改基础信息）。</summary>
+    /// <summary>指示该配置是否已经执行到数据库(一旦执行将不允许修改基础信息)。</summary>
     public bool IsCommitted { get; private set; }
 
     /// <summary>分区操作的安全规则。</summary>
     public PartitionSafetyRule? SafetyRule { get; private set; }
+
+    /// <summary>当前执行阶段(用于向导流程跟踪)。</summary>
+    public string? ExecutionStage { get; private set; }
+
+    /// <summary>最后一次执行任务的ID(用于关联执行日志)。</summary>
+    public Guid? LastExecutionTaskId { get; private set; }
 
     /// <summary>当前注册的分区边界集合。</summary>
     public IReadOnlyList<PartitionBoundary> Boundaries => new ReadOnlyCollection<PartitionBoundary>(boundaries);
@@ -153,6 +159,20 @@ public sealed class PartitionConfiguration : AggregateRoot
         }
 
         IsCommitted = true;
+        ExecutionStage = "Completed";
+        Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
+    }
+
+    /// <summary>
+    /// 更新执行阶段信息(向导流程使用)。
+    /// </summary>
+    /// <param name="stage">当前阶段名称(例如: PendingValidation/Validating/Queued/Running)</param>
+    /// <param name="executionTaskId">关联的执行任务ID</param>
+    /// <param name="user">操作人</param>
+    public void UpdateExecutionStage(string stage, Guid executionTaskId, string user)
+    {
+        ExecutionStage = stage;
+        LastExecutionTaskId = executionTaskId;
         Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
     }
 

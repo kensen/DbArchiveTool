@@ -57,7 +57,15 @@
                     </PropertyColumn>
                     <PropertyColumn Property="@(t => t.Status)" Title="状态">
                         <Template>
-                            @RenderStatusTag(context.Status)
+                            <Tag Color="@(context.Status == "PendingValidation" ? TagColor.Default :
+                                         context.Status == "Validating" ? TagColor.Processing :
+                                         context.Status == "Queued" ? TagColor.Cyan :
+                                         context.Status == "Running" ? TagColor.Blue :
+                                         context.Status == "Succeeded" ? TagColor.Success :
+                                         context.Status == "Failed" ? TagColor.Error :
+                                         context.Status == "Cancelled" ? TagColor.Warning : TagColor.Default)">
+                                @GetStatusDisplayText(context.Status)
+                            </Tag>
                         </Template>
                     </PropertyColumn>
                     <PropertyColumn Property="@(t => t.Phase)" Title="当前阶段" />
@@ -108,7 +116,15 @@
                 <Text Code>@TaskDetail.Id</Text>
             </DescriptionsItem>
             <DescriptionsItem Title="状态">
-                @RenderStatusTag(TaskDetail.Status)
+                <Tag Color="@(TaskDetail.Status == "PendingValidation" ? TagColor.Default :
+                             TaskDetail.Status == "Validating" ? TagColor.Processing :
+                             TaskDetail.Status == "Queued" ? TagColor.Cyan :
+                             TaskDetail.Status == "Running" ? TagColor.Blue :
+                             TaskDetail.Status == "Succeeded" ? TagColor.Success :
+                             TaskDetail.Status == "Failed" ? TagColor.Error :
+                             TaskDetail.Status == "Cancelled" ? TagColor.Warning : TagColor.Default)">
+                    @GetStatusDisplayText(TaskDetail.Status)
+                </Tag>
             </DescriptionsItem>
             <DescriptionsItem Title="当前阶段">@TaskDetail.Phase</DescriptionsItem>
             <DescriptionsItem Title="进度">
@@ -148,7 +164,11 @@
                     <div style="margin-bottom: 8px;">
                         <Space Size="@("small")">
                             <SpaceItem>
-                                <Tag Color="@GetLogTagColor(log.Category)">@log.Category</Tag>
+                                <Tag Color="@(log.Category == "Error" ? TagColor.Error :
+                                             log.Category == "Warning" ? TagColor.Warning :
+                                             log.Category == "Information" ? TagColor.Processing : TagColor.Default)">
+                                    @log.Category
+                                </Tag>
                             </SpaceItem>
                             <SpaceItem>
                                 <Text Strong>@log.Title</Text>

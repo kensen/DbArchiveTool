@@ -314,32 +314,20 @@ public partial class MonitorBase : ComponentBase, IDisposable
     #region UI 辅助方法
 
     /// <summary>
-    /// 渲染状态标签
+    /// 获取状态显示文本
     /// </summary>
-    protected RenderFragment RenderStatusTag(string status) => builder =>
-    {
-        var (color, text) = GetStatusDisplay(status);
-        builder.OpenComponent<Tag>(0);
-        builder.AddAttribute(1, "Color", color);
-        builder.AddContent(2, text);
-        builder.CloseComponent();
-    };
-
-    /// <summary>
-    /// 获取状态显示信息
-    /// </summary>
-    private (string Color, string Text) GetStatusDisplay(string status)
+    protected string GetStatusDisplayText(string status)
     {
         return status switch
         {
-            "PendingValidation" => ("default", "待校验"),
-            "Validating" => ("processing", "校验中"),
-            "Queued" => ("cyan", "已排队"),
-            "Running" => ("blue", "执行中"),
-            "Succeeded" => ("success", "已成功"),
-            "Failed" => ("error", "已失败"),
-            "Cancelled" => ("warning", "已取消"),
-            _ => ("default", status)
+            "PendingValidation" => "待校验",
+            "Validating" => "校验中",
+            "Queued" => "已排队",
+            "Running" => "执行中",
+            "Succeeded" => "已成功",
+            "Failed" => "已失败",
+            "Cancelled" => "已取消",
+            _ => status
         };
     }
 
@@ -354,20 +342,6 @@ public partial class MonitorBase : ComponentBase, IDisposable
             "Warning" => "orange",
             "Information" => "blue",
             _ => "gray"
-        };
-    }
-
-    /// <summary>
-    /// 获取日志标签颜色
-    /// </summary>
-    protected string GetLogTagColor(string category)
-    {
-        return category switch
-        {
-            "Error" => "error",
-            "Warning" => "warning",
-            "Information" => "processing",
-            _ => "default"
         };
     }
 

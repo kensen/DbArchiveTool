@@ -63,6 +63,16 @@ public sealed class PartitionConfigurationSummaryModel
     public DateTime? UpdatedAtUtc { get; set; }
     public string? Remarks { get; set; }
     public bool IsCommitted { get; set; }
+    
+    /// <summary>
+    /// 执行阶段(Queued/Running/Completed/Failed等)
+    /// </summary>
+    public string? ExecutionStage { get; set; }
+    
+    /// <summary>
+    /// 最后一次执行任务ID
+    /// </summary>
+    public Guid? LastExecutionTaskId { get; set; }
 }
 
 /// <summary>

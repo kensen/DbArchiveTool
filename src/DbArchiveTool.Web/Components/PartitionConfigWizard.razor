@@ -72,7 +72,7 @@
                             </Select>
                         </FormItem>
                         <FormItem Label="列可空">
-                            <Tag Color="@(_configWizard.SelectedColumnIsNullable ? "orange" : "green")">@(_configWizard.SelectedColumnIsNullable ? "可为空" : "NOT NULL")</Tag>
+                            <Tag Color="@(_configWizard.SelectedColumnIsNullable ? TagColor.Orange : TagColor.Green)">@(_configWizard.SelectedColumnIsNullable ? "可为空" : "NOT NULL")</Tag>
                         </FormItem>
                         @if (_configWizard.SelectedColumnIsNullable)
                         {

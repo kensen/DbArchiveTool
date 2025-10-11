@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Application.Partitions.Dtos;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Extensions.Logging;
@@ -18,6 +20,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
     private readonly IPartitionExecutionTaskRepository taskRepository;
     private readonly IPartitionExecutionLogRepository logRepository;
     private readonly IPartitionExecutionDispatcher dispatcher;
+    private readonly IDataSourceRepository dataSourceRepository;
     private readonly ILogger<PartitionExecutionAppService> logger;
 
     public PartitionExecutionAppService(
@@ -25,12 +28,14 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         IPartitionExecutionTaskRepository taskRepository,
         IPartitionExecutionLogRepository logRepository,
         IPartitionExecutionDispatcher dispatcher,
+        IDataSourceRepository dataSourceRepository,
         ILogger<PartitionExecutionAppService> logger)
     {
         this.configurationRepository = configurationRepository;
         this.taskRepository = taskRepository;
         this.logRepository = logRepository;
         this.dispatcher = dispatcher;
+        this.dataSourceRepository = dataSourceRepository;
         this.logger = logger;
     }
 
@@ -287,6 +292,59 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         logger.LogInformation("执行任务取消完成: ExecutionTaskId={ExecutionTaskId}", executionTaskId);
 
         return Result.Success();
+    }
+
+    public async Task<Result<ExecutionWizardContextDto>> GetExecutionContextAsync(
+        Guid configurationId, 
+        CancellationToken cancellationToken = default)
+    {
+        logger.LogInformation("开始获取执行向导上下文: ConfigurationId={ConfigurationId}", configurationId);
+
+        // 1. 加载分区配置
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            logger.LogWarning("未找到分区配置: ConfigurationId={ConfigurationId}", configurationId);
+            return Result<ExecutionWizardContextDto>.Failure("未找到指定的分区配置");
+        }
+
+        // 2. 加载数据源信息
+        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
+        var dataSourceName = dataSource != null 
+            ? $"{dataSource.ServerAddress}\\{dataSource.DatabaseName}"
+            : "未知数据源";
+
+        // 3. 构建上下文DTO
+        var context = new ExecutionWizardContextDto
+        {
+            ConfigurationId = configuration.Id,
+            DataSourceId = configuration.ArchiveDataSourceId,
+            DataSourceName = dataSourceName,
+            SchemaName = configuration.SchemaName,
+            TableName = configuration.TableName,
+            FullTableName = $"{configuration.SchemaName}.{configuration.TableName}",
+            PartitionFunctionName = configuration.PartitionFunctionName,
+            PartitionSchemeName = configuration.PartitionSchemeName,
+            PartitionColumnName = configuration.PartitionColumn.Name,
+            PartitionColumnType = configuration.PartitionColumn.ValueKind.ToString(),
+            IsRangeRight = configuration.IsRangeRight,
+            RequirePartitionColumnNotNull = configuration.RequirePartitionColumnNotNull,
+            PrimaryFilegroup = configuration.FilegroupStrategy.PrimaryFilegroup,
+            AdditionalFilegroups = configuration.FilegroupStrategy.AdditionalFilegroups.ToList(),
+            Boundaries = configuration.Boundaries.Select(b => new PartitionBoundaryDto
+            {
+                SortKey = b.SortKey,
+                RawValue = b.Value.ToInvariantString(),
+                DisplayValue = b.Value.ToInvariantString()
+            }).ToList(),
+            Remarks = configuration.Remarks,
+            ExecutionStage = configuration.ExecutionStage,
+            IsCommitted = configuration.IsCommitted
+        };
+
+        logger.LogInformation("执行向导上下文获取成功: ConfigurationId={ConfigurationId}, DataSource={DataSource}", 
+            configurationId, dataSourceName);
+        return Result<ExecutionWizardContextDto>.Success(context);
     }
 
     /// <summary>

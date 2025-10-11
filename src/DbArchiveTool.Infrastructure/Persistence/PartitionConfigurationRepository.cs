@@ -144,6 +144,8 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
             TargetTableName = configuration.TargetTable?.TableName ?? configuration.TableName,
             TargetRemarks = configuration.TargetTable?.Remarks ?? configuration.Remarks,
             IsCommitted = configuration.IsCommitted,
+            ExecutionStage = configuration.ExecutionStage,
+            LastExecutionTaskId = configuration.LastExecutionTaskId,
             CreatedAtUtc = configuration.CreatedAtUtc,
             CreatedBy = configuration.CreatedBy,
             UpdatedAtUtc = configuration.UpdatedAtUtc,

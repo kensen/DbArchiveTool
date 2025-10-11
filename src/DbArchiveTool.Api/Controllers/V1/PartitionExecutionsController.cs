@@ -220,4 +220,30 @@ public sealed class PartitionExecutionsController : ControllerBase
 
         return Ok(new { message = "任务已成功取消。" });
     }
+
+    /// <summary>
+    /// 获取执行向导上下文。
+    /// </summary>
+    /// <param name="configId">分区配置ID。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>返回向导所需的配置信息、表统计等。</returns>
+    /// <response code="200">成功获取向导上下文。</response>
+    /// <response code="404">配置不存在。</response>
+    [HttpGet("wizard/context/{configId:guid}")]
+    [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetWizardContext(
+        Guid configId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await appService.GetExecutionContextAsync(configId, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            logger.LogWarning("获取执行向导上下文失败: ConfigId={ConfigId}, Error={Error}", configId, result.Error);
+            return NotFound(new { error = result.Error });
+        }
+
+        return Ok(result.Value);
+    }
 }
+

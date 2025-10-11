@@ -36,6 +36,9 @@ public class PartitionConfigurationEntity
 
     public bool IsCommitted { get; set; }
 
+    public string? ExecutionStage { get; set; }
+    public Guid? LastExecutionTaskId { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public string CreatedBy { get; set; } = string.Empty;
     public DateTime UpdatedAtUtc { get; set; }

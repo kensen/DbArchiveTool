@@ -6,7 +6,7 @@
     <PageHeaderExtra>
         <Space>
             <SpaceItem>
-                <Tag Color="@("blue")">演示页面</Tag>
+                <Tag Color="TagColor.Orange">演示页面</Tag>
             </SpaceItem>
             <SpaceItem>
                 <Button Type="@ButtonType.Primary" Icon="@("reload")" OnClick="@RefreshPage">刷新</Button>
@@ -55,7 +55,7 @@
             <PropertyColumn Title="操作时间" Property="c=>c.Timestamp" />
             <PropertyColumn Title="操作用户" Property="c=>c.User" />
             <PropertyColumn Title="操作类型" Property="c=>c.Action">
-                <Tag Color="@GetActionColor(context.Action)">@context.Action</Tag>
+                <Tag Color="TagColor.Cyan">@context.Action</Tag>
             </PropertyColumn>
             <PropertyColumn Title="操作描述" Property="c=>c.Description" />
         </Table>

@@ -74,7 +74,7 @@
                     <PropertyColumn Property="c => c.TotalPartitions" Title="分区数" Sortable />
                     <PropertyColumn Property="c => c.IsRangeRight" Title="分区类型">
                         <Template>
-                            <Tag Color="@(context.IsRangeRight ? "blue" : "green")">@(context.IsRangeRight ? "RIGHT" : "LEFT")</Tag>
+                            <Tag Color="@(context.IsRangeRight ? TagColor.GeekBlue : TagColor.Orange)">@(context.IsRangeRight ? "RIGHT" : "LEFT")</Tag>
                         </Template>
                     </PropertyColumn>
                     <ActionColumn Title="操作">
@@ -105,9 +105,33 @@
                     <PropertyColumn Property="c => c.BoundaryCount" Title="边界值数" Sortable />
                     <PropertyColumn Property="c => c.StorageMode" Title="存储模式">
                         <Template>
-                            <Tag Color="@(context.StorageMode == "DedicatedFilegroupSingleFile" ? "purple" : "blue")">
+                            <Tag Color="@(context.StorageMode == "DedicatedFilegroupSingleFile" ? TagColor.Blue : TagColor.Green)">
                                 @(context.StorageMode == "DedicatedFilegroupSingleFile" ? "专用文件组" : "使用PRIMARY")
                             </Tag>
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn Property="c => c.ExecutionStage" Title="执行状态">
+                        <Template>
+                            @if (string.IsNullOrWhiteSpace(context.ExecutionStage))
+                            {
+                                <Tag Color="TagColor.Default">草稿</Tag>
+                            }
+                            else if (context.ExecutionStage == "Queued" || context.ExecutionStage == "Running")
+                            {
+                                <Tag Color="TagColor.Processing">@context.ExecutionStage</Tag>
+                            }
+                            else if (context.ExecutionStage == "Completed")
+                            {
+                                <Tag Color="TagColor.Success">已完成</Tag>
+                            }
+                            else if (context.ExecutionStage == "Failed")
+                            {
+                                <Tag Color="TagColor.Error">失败</Tag>
+                            }
+                            else
+                            {
+                                <Tag Color="TagColor.Default">@context.ExecutionStage</Tag>
+                            }
                         </Template>
                     </PropertyColumn>
                     <PropertyColumn Property="c => c.CreatedAtUtc" Title="创建时间" Format="yyyy-MM-dd HH:mm" />
@@ -123,15 +147,29 @@
                             <SpaceItem>
                                 <Button Type="@ButtonType.Link"
                                         Size="@ButtonSize.Small"
-                                        Disabled="@(context.IsCommitted || context.IsPartitioned)"
-                                        OnClick="() => ExecutePartitionAsync(context)">执行分区</Button>
+                                        Disabled="@(context.IsCommitted || context.IsPartitioned || context.ExecutionStage == "Running" || context.ExecutionStage == "Queued")"
+                                        OnClick="() => NavigateToExecutionWizard(context.Id)">
+                                    @(string.IsNullOrWhiteSpace(context.ExecutionStage) ? "执行分区" : "重新执行")
+                                </Button>
                             </SpaceItem>
+                            @if (!string.IsNullOrWhiteSpace(context.ExecutionStage) && context.LastExecutionTaskId.HasValue)
+                            {
+                                <SpaceItem>
+                                    <Button Type="@ButtonType.Link"
+                                            Size="@ButtonSize.Small"
+                                            OnClick="() => NavigateToTaskMonitor(context.LastExecutionTaskId.Value)">查看日志</Button>
+                                </SpaceItem>
+                            }
                             <SpaceItem>
                                 <Popconfirm Title="确定要删除此配置草稿吗？"
                                             OnConfirm="() => DeleteConfigurationDraftAsync(context.Id)"
                                             OkText="删除"
-                                            CancelText="取消">
-                                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
+                                            CancelText="取消"
+                                            Disabled="@(!string.IsNullOrWhiteSpace(context.ExecutionStage) && context.ExecutionStage != "Failed" && context.ExecutionStage != "Completed")">
+                                    <Button Type="@ButtonType.Link" 
+                                            Size="@ButtonSize.Small" 
+                                            Danger
+                                            Disabled="@(!string.IsNullOrWhiteSpace(context.ExecutionStage) && context.ExecutionStage != "Failed" && context.ExecutionStage != "Completed")">删除</Button>
                                 </Popconfirm>
                             </SpaceItem>
                         </Space>
@@ -177,7 +215,7 @@
                 <PropertyColumn Property="c => c.BoundaryValue" Title="边界值" />
                 <PropertyColumn Property="c => c.RangeType" Title="范围类型">
                     <Template>
-                        <Tag Color="@(context.RangeType == "RIGHT" ? "blue" : "green")">@context.RangeType</Tag>
+                        <Tag Color="@(context.RangeType == "RIGHT" ? TagColor.GeekBlue : TagColor.Orange)">@context.RangeType</Tag>
                     </Template>
                 </PropertyColumn>
                 <PropertyColumn Property="c => c.FilegroupName" Title="文件组" />
@@ -185,7 +223,7 @@
                 <PropertyColumn Property="c => c.TotalSpaceMB" Title="空间(MB)" Sortable />
                 <PropertyColumn Property="c => c.DataCompression" Title="压缩">
                     <Template>
-                        <Tag Color="@(context.DataCompression == "NONE" ? "default" : "cyan")">@context.DataCompression</Tag>
+                        <Tag Color="@(context.DataCompression == "NONE" ? TagColor.Default : TagColor.Cyan)">@context.DataCompression</Tag>
                     </Template>
                 </PropertyColumn>
                 <PropertyColumn Property="c => c.CreatedDate" Title="创建时间" Format="yyyy-MM-dd HH:mm" />
@@ -201,7 +239,7 @@
         <DescriptionsItem Title="数据库">@_databaseName</DescriptionsItem>
         <DescriptionsItem Title="认证方式">@(_useIntegratedSecurity ? "Windows 集成" : $"SQL 登录 ({_userName})")</DescriptionsItem>
         <DescriptionsItem Title="连接状态">
-            <Tag Color="@(_isConnected ? "success" : "error")">@(_isConnected ? "已连接" : "未连接")</Tag>
+            <Tag Color="@(_isConnected ? TagColor.Success : TagColor.Default)">@(_isConnected ? "已连接" : "未连接")</Tag>
         </DescriptionsItem>
     </Descriptions>
 </Modal>
@@ -397,7 +435,9 @@
                     CreatedBy = d.CreatedBy,
                     Remarks = d.Remarks,
                     IsCommitted = d.IsCommitted,
-                    IsPartitioned = partitionedLookup.Contains($"{d.SchemaName}.{d.TableName}".ToLowerInvariant())
+                    IsPartitioned = partitionedLookup.Contains($"{d.SchemaName}.{d.TableName}".ToLowerInvariant()),
+                    ExecutionStage = d.ExecutionStage,
+                    LastExecutionTaskId = d.LastExecutionTaskId
                 }).ToList();
 
                 if (previousSelectedId.HasValue)
@@ -517,24 +557,28 @@
     }
 
     /// <summary>
-    /// 执行分区(跳转到执行发起页面)
+    /// 导航到执行向导页面
+    /// </summary>
+    private void NavigateToExecutionWizard(Guid configId)
+    {
+        Navigation.NavigateTo($"/partition-executions/wizard/{configId}");
+    }
+
+    /// <summary>
+    /// 导航到任务监控页面
+    /// </summary>
+    private void NavigateToTaskMonitor(Guid taskId)
+    {
+        Navigation.NavigateTo($"/partition-executions/monitor?taskId={taskId}");
+    }
+
+    /// <summary>
+    /// 执行分区(已废弃,保留用于兼容)
     /// </summary>
     private void ExecutePartitionAsync(ConfigurationDraftInfo draft)
     {
-        if (draft.IsCommitted)
-        {
-            Message.Warning("该配置已执行，无需重复执行。");
-            return;
-        }
-
-        if (draft.IsPartitioned)
-        {
-            Message.Warning("目标表已是分区表，无法执行分区创建。");
-            return;
-        }
-
-        // 跳转到执行发起页面,传递配置ID
-        Navigation.NavigateTo($"/partition-executions/start/{draft.Id}");
+        // 现在统一使用向导模式
+        NavigateToExecutionWizard(draft.Id);
     }
 
     private async Task LoadDataSourceInfoAsync()
@@ -869,6 +913,16 @@
         public string? Remarks { get; set; }
         public bool IsCommitted { get; set; }
         public bool IsPartitioned { get; set; }
+        
+        /// <summary>
+        /// 执行阶段(Queued/Running/Completed/Failed等)
+        /// </summary>
+        public string? ExecutionStage { get; set; }
+        
+        /// <summary>
+        /// 最后一次执行任务ID
+        /// </summary>
+        public Guid? LastExecutionTaskId { get; set; }
     }
 
     private class PartitionDetailInfo

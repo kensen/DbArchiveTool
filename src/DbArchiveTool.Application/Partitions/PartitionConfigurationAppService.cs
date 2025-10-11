@@ -321,7 +321,9 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
                 CreatedBy = c.CreatedBy,
                 UpdatedAtUtc = c.UpdatedAtUtc,
                 Remarks = c.Remarks,
-                IsCommitted = c.IsCommitted
+                IsCommitted = c.IsCommitted,
+                ExecutionStage = c.ExecutionStage,
+                LastExecutionTaskId = c.LastExecutionTaskId
             }).ToList();
 
             return Result<List<PartitionConfigurationSummaryDto>>.Success(summaries);

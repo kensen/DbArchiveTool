@@ -84,6 +84,21 @@ public sealed class PartitionExecutionApiClient
         return response.IsSuccessStatusCode;
     }
 
+    /// <summary>
+    /// 获取执行向导上下文。
+    /// </summary>
+    /// <param name="configId">分区配置ID。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>返回向导所需的配置信息。</returns>
+    public Task<ExecutionWizardContextModel?> GetWizardContextAsync(
+        Guid configId,
+        CancellationToken cancellationToken = default)
+    {
+        return httpClient.GetFromJsonAsync<ExecutionWizardContextModel>(
+            $"api/v1/partition-executions/wizard/context/{configId}",
+            cancellationToken);
+    }
+
     private sealed record StartExecutionResponse(Guid TaskId);
 }
 
@@ -144,4 +159,50 @@ public sealed class PartitionExecutionLogModel
     public string Message { get; set; } = string.Empty;
     public long? DurationMs { get; set; }
     public string? ExtraJson { get; set; }
+}
+
+/// <summary>执行向导上下文模型。</summary>
+public sealed class ExecutionWizardContextModel
+{
+    public Guid ConfigurationId { get; set; }
+    public Guid DataSourceId { get; set; }
+    public string DataSourceName { get; set; } = string.Empty;
+    public string FullTableName { get; set; } = string.Empty;
+    public string SchemaName { get; set; } = string.Empty;
+    public string TableName { get; set; } = string.Empty;
+    public string PartitionFunctionName { get; set; } = string.Empty;
+    public string PartitionSchemeName { get; set; } = string.Empty;
+    public string PartitionColumnName { get; set; } = string.Empty;
+    public string PartitionColumnType { get; set; } = string.Empty;
+    public bool IsRangeRight { get; set; }
+    public bool RequirePartitionColumnNotNull { get; set; }
+    public string PrimaryFilegroup { get; set; } = "PRIMARY";
+    public List<string> AdditionalFilegroups { get; set; } = new();
+    public List<PartitionBoundaryModel> Boundaries { get; set; } = new();
+    public TableStatisticsModel? TableStatistics { get; set; }
+    public string? Remarks { get; set; }
+    public string? ExecutionStage { get; set; }
+    public bool IsCommitted { get; set; }
+}
+
+/// <summary>分区边界模型。</summary>
+public sealed class PartitionBoundaryModel
+{
+    public string SortKey { get; set; } = string.Empty;
+    public string RawValue { get; set; } = string.Empty;
+    public string DisplayValue { get; set; } = string.Empty;
+}
+
+/// <summary>表统计信息模型。</summary>
+public sealed class TableStatisticsModel
+{
+    public bool TableExists { get; set; }
+    public long TotalRows { get; set; }
+    public decimal DataSizeMB { get; set; }
+    public decimal IndexSizeMB { get; set; }
+    public decimal TotalSizeMB { get; set; }
+    public int IndexCount { get; set; }
+    public bool IsPartitioned { get; set; }
+    public int PartitionCount { get; set; }
+    public DateTime? LastUpdated { get; set; }
 }

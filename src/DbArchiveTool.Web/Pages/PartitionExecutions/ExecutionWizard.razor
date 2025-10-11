@@ -1,0 +1,151 @@
+﻿@page "/partition-executions/wizard/{ConfigId:guid}"
+@attribute [ReuseTabsPage(Title = "分区执行向导", Closable = true)]
+@using AntDesign
+@using DbArchiveTool.Web.Core
+
+<PageTitle>分区执行向导</PageTitle>
+
+<PageHeader Title="分区执行向导" 
+            OnBack="@NavigateBack">
+    <PageHeaderExtra>
+        <Tag Color="@TagColor.Blue">配置ID: @ConfigId</Tag>
+    </PageHeaderExtra>
+</PageHeader>
+
+<div style="padding: 24px; background: #fff; min-height: 600px;">
+    @if (Loading)
+    {
+        <div style="text-align: center; padding: 100px 0;">
+            <Spin Size="@SpinSize.Large" Tip="正在加载配置信息..." />
+        </div>
+    }
+    else if (Context == null)
+    {
+        <Result Status="@ResultStatus.Info"
+                Title="配置不存在"
+                SubTitle="未找到指定的分区配置草稿">
+            <Extra>
+                <Button Type="@ButtonType.Primary" OnClick="NavigateBack">
+                    返回
+                </Button>
+            </Extra>
+        </Result>
+    }
+    else
+    {
+        <!-- 数据源信息卡片 -->
+        <Alert Type="@AlertType.Info" 
+               ShowIcon="true"
+               Style="margin-bottom: 24px;">
+            <MessageTemplate>
+                <Space Size="@("large")">
+                    <SpaceItem>
+                        <strong>数据源:</strong> @Context.DataSourceName
+                    </SpaceItem>
+                    <SpaceItem>
+                        <strong>目标表:</strong> @Context.FullTableName
+                    </SpaceItem>
+                    @if (Context.TableStatistics?.TableExists == true)
+                    {
+                        <SpaceItem>
+                            <strong>当前行数:</strong> @Context.TableStatistics.TotalRows.ToString("N0")
+                        </SpaceItem>
+                        <SpaceItem>
+                            <strong>表大小:</strong> @Context.TableStatistics.TotalSizeMB.ToString("N2") MB
+                        </SpaceItem>
+                    }
+                </Space>
+            </MessageTemplate>
+        </Alert>
+
+        <Steps Current="@CurrentStep" Style="margin-bottom: 32px;">
+            <Step Title="配置确认" Description="确认分区配置信息" />
+            <Step Title="执行参数" Description="填写执行人和备注" />
+            <Step Title="启动执行" Description="提交执行任务" />
+        </Steps>
+
+        <div style="margin-top: 24px;">
+            @if (CurrentStep == 0)
+            {
+                @RenderConfigReview()
+            }
+            else if (CurrentStep == 1)
+            {
+                @RenderExecutionParams()
+            }
+            else if (CurrentStep == 2)
+            {
+                @RenderConfirmation()
+            }
+        </div>
+
+        <div style="margin-top: 32px; text-align: right; border-top: 1px solid #f0f0f0; padding-top: 24px;">
+            @if (CurrentStep > 0 && CurrentStep < 2)
+            {
+                <Button OnClick="PreviousStep" Style="margin-right: 8px;">
+                    上一步
+                </Button>
+            }
+            
+            @if (CurrentStep < 2)
+            {
+                <Button Type="@ButtonType.Primary" 
+                        OnClick="NextStep"
+                        Disabled="@(!CanProceedToNextStep())">
+                    下一步
+                </Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary" 
+                        Danger
+                        OnClick="StartExecution"
+                        Loading="@Submitting">
+                    <Icon Type="@("rocket")" Theme="@IconThemeType.Outline" />
+                    开始执行
+                </Button>
+            }
+        </div>
+    }
+</div>
+
+<!-- 执行结果对话框 -->
+<Modal Title="@ResultTitle"
+       Visible="@ResultVisible"
+       OnOk="@HandleResultOk"
+       OnCancel="@HandleResultOk"
+       Footer="@null">
+    @if (ExecutionSuccess)
+    {
+        <Result Status="@ResultStatus.Success"
+                Title="执行任务已创建"
+                SubTitle="@($"任务ID: {ExecutionTaskId}")">
+            <Extra>
+                <Space>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="NavigateToMonitor">
+                            查看任务监控
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button OnClick="NavigateBack">
+                            返回列表
+                        </Button>
+                    </SpaceItem>
+                </Space>
+            </Extra>
+        </Result>
+    }
+    else
+    {
+        <Result Status="@ResultStatus.Error"
+                Title="执行失败"
+                SubTitle="@ErrorMessage">
+            <Extra>
+                <Button Type="@ButtonType.Primary" OnClick="@(() => ResultVisible = false)">
+                    关闭
+                </Button>
+            </Extra>
+        </Result>
+    }
+</Modal>

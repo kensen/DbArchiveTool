@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using DbArchiveTool.Application.Partitions.Dtos;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Results;
 
@@ -25,6 +26,9 @@ public interface IPartitionExecutionAppService
 
     /// <summary>取消执行任务。</summary>
     Task<Result> CancelAsync(Guid executionTaskId, string cancelledBy, string? reason = null, CancellationToken cancellationToken = default);
+
+    /// <summary>获取执行向导上下文。</summary>
+    Task<Result<ExecutionWizardContextDto>> GetExecutionContextAsync(Guid configurationId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
