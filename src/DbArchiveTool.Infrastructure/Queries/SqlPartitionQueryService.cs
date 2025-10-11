@@ -220,32 +220,167 @@ ORDER BY c.column_id;";
         string tableName,
         string columnName)
     {
-        const string sql = @"
-DECLARE @stmt NVARCHAR(MAX) =
-N'SELECT 
-    MIN(CONVERT(NVARCHAR(4000), ' + QUOTENAME(@ColumnName) + N')) AS MinValue,
-    MAX(CONVERT(NVARCHAR(4000), ' + QUOTENAME(@ColumnName) + N')) AS MaxValue,
-    COUNT_BIG(*) AS TotalRows,
-    COUNT_BIG(DISTINCT ' + QUOTENAME(@ColumnName) + N') AS DistinctRows
-FROM ' + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N';';
-
-EXEC sp_executesql @stmt;";
+        // 🚀 性能优化：分阶段查询，避免大表全表扫描
+        
+        // 第一步：快速获取行数估算（使用系统表，秒级响应）
+        const string rowCountSql = @"
+SELECT SUM(p.rows) AS EstimatedRows
+FROM sys.partitions p
+INNER JOIN sys.tables t ON p.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName 
+  AND t.name = @TableName
+  AND p.index_id IN (0, 1);";
 
         await using var connection = new SqlConnection(connectionString);
-        var stats = await connection.QuerySingleAsync<ColumnStatsRow>(sql, new
+        var estimatedRows = await connection.ExecuteScalarAsync<long?>(rowCountSql, new
         {
             SchemaName = schemaName,
-            TableName = tableName,
-            ColumnName = columnName
-        });
+            TableName = tableName
+        }) ?? 0;
 
-        return new PartitionColumnStatisticsDto
+        // 第二步：根据表大小选择不同的统计策略
+        if (estimatedRows > 5_000_000)
         {
-            MinValue = stats.MinValue,
-            MaxValue = stats.MaxValue,
-            TotalRows = stats.TotalRows,
-            DistinctRows = stats.DistinctRows
-        };
+            // 🚀 超大表（500万+）：使用采样估算，避免全表扫描
+            // 采样策略：随机采样 10000 行进行边界估算
+            var stmt = $@"
+-- 采样模式：快速估算（适用于超大表）
+SELECT 
+    MIN(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MinValue,
+    MAX(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MaxValue
+FROM (
+    SELECT TOP 10000 {QuoteIdentifier(columnName)}
+    FROM {BuildFullName(schemaName, tableName)} WITH (NOLOCK)
+    WHERE {QuoteIdentifier(columnName)} IS NOT NULL
+    ORDER BY NEWID()  -- 随机采样
+) AS SampleData;";
+
+            try
+            {
+                // 设置 5 秒超时：如果采样也超时，说明表太大或锁太多
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+                
+                var bounds = await connection.QuerySingleAsync<MinMaxResult>(new CommandDefinition(
+                    commandText: stmt,
+                    cancellationToken: cts.Token
+                ));
+
+                return new PartitionColumnStatisticsDto
+                {
+                    MinValue = bounds.MinValue != null ? $"~{bounds.MinValue} (采样)" : "无法计算",
+                    MaxValue = bounds.MaxValue != null ? $"~{bounds.MaxValue} (采样)" : "无法计算",
+                    TotalRows = estimatedRows,
+                    DistinctRows = null
+                };
+            }
+            catch (Exception)
+            {
+                // 采样失败：返回占位符
+                return new PartitionColumnStatisticsDto
+                {
+                    MinValue = "表过大，无法计算",
+                    MaxValue = "表过大，无法计算",
+                    TotalRows = estimatedRows,
+                    DistinctRows = null
+                };
+            }
+        }
+        else if (estimatedRows > 1_000_000)
+        {
+            // 🚀 大表（100万-500万）：尝试索引快速查询，超时则降级
+            var stmt = $@"
+-- 尝试利用索引快速查询
+SELECT 
+    (SELECT TOP 1 CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)}) 
+     FROM {BuildFullName(schemaName, tableName)} WITH (NOLOCK)
+     WHERE {QuoteIdentifier(columnName)} IS NOT NULL 
+     ORDER BY {QuoteIdentifier(columnName)} ASC) AS MinValue,
+    (SELECT TOP 1 CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)}) 
+     FROM {BuildFullName(schemaName, tableName)} WITH (NOLOCK)
+     WHERE {QuoteIdentifier(columnName)} IS NOT NULL 
+     ORDER BY {QuoteIdentifier(columnName)} DESC) AS MaxValue;";
+
+            try
+            {
+                // 设置 10 秒超时：如果没有索引会很慢
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
+                
+                var bounds = await connection.QuerySingleAsync<MinMaxResult>(new CommandDefinition(
+                    commandText: stmt,
+                    cancellationToken: cts.Token
+                ));
+
+                return new PartitionColumnStatisticsDto
+                {
+                    MinValue = bounds.MinValue,
+                    MaxValue = bounds.MaxValue,
+                    TotalRows = estimatedRows,
+                    DistinctRows = null
+                };
+            }
+            catch (Exception)
+            {
+                // 超时或失败：降级到采样模式
+                var fallbackStmt = $@"
+SELECT 
+    MIN(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MinValue,
+    MAX(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MaxValue
+FROM (
+    SELECT TOP 5000 {QuoteIdentifier(columnName)}
+    FROM {BuildFullName(schemaName, tableName)} WITH (NOLOCK)
+    WHERE {QuoteIdentifier(columnName)} IS NOT NULL
+) AS SampleData;";
+
+                try
+                {
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    var bounds = await connection.QuerySingleAsync<MinMaxResult>(new CommandDefinition(
+                        commandText: fallbackStmt,
+                        cancellationToken: cts.Token
+                    ));
+
+                    return new PartitionColumnStatisticsDto
+                    {
+                        MinValue = bounds.MinValue != null ? $"~{bounds.MinValue} (采样)" : "无法计算",
+                        MaxValue = bounds.MaxValue != null ? $"~{bounds.MaxValue} (采样)" : "无法计算",
+                        TotalRows = estimatedRows,
+                        DistinctRows = null
+                    };
+                }
+                catch (Exception)
+                {
+                    return new PartitionColumnStatisticsDto
+                    {
+                        MinValue = "查询超时",
+                        MaxValue = "查询超时",
+                        TotalRows = estimatedRows,
+                        DistinctRows = null
+                    };
+                }
+            }
+        }
+        else
+        {
+            // ✅ 小表/中表（100万以下）：使用精确统计
+            var stmt = $@"
+SELECT 
+    MIN(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MinValue,
+    MAX(CONVERT(NVARCHAR(4000), {QuoteIdentifier(columnName)})) AS MaxValue,
+    COUNT_BIG(*) AS TotalRows,
+    COUNT_BIG(DISTINCT {QuoteIdentifier(columnName)}) AS DistinctRows
+FROM {BuildFullName(schemaName, tableName)} WITH (NOLOCK);";
+
+            var stats = await connection.QuerySingleAsync<ColumnStatsRow>(stmt);
+
+            return new PartitionColumnStatisticsDto
+            {
+                MinValue = stats.MinValue,
+                MaxValue = stats.MaxValue,
+                TotalRows = stats.TotalRows,
+                DistinctRows = stats.DistinctRows
+            };
+        }
     }
 
     /// <summary>
@@ -429,4 +564,10 @@ internal sealed class ColumnStatsRow
     public string? MaxValue { get; set; }
     public long? TotalRows { get; set; }
     public long? DistinctRows { get; set; }
+}
+
+internal sealed class MinMaxResult
+{
+    public string? MinValue { get; set; }
+    public string? MaxValue { get; set; }
 }

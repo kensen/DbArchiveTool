@@ -37,6 +37,23 @@ public sealed partial class PartitionConfigWizard : ComponentBase
     private bool _wasVisible;
     private bool IsEditing => IsEditMode && EditingConfigurationId.HasValue && EditingConfiguration is not null;
 
+    // 🚀 性能优化：缓存基础数据，避免每次打开都重新查询
+    private List<DatabaseTableDto>? _cachedTables;
+    private List<TargetDatabaseDto>? _cachedDatabases;
+    private string? _cachedDefaultPath;
+    private Guid? _cachedDataSourceId;
+
+    /// <summary>
+    /// 清除缓存数据，强制下次打开时重新加载
+    /// </summary>
+    public void ClearCache()
+    {
+        _cachedTables = null;
+        _cachedDatabases = null;
+        _cachedDefaultPath = null;
+        _cachedDataSourceId = null;
+    }
+
     private Task HandleDrawerClose()
     {
         return VisibleChanged.InvokeAsync(false);
@@ -46,36 +63,49 @@ public sealed partial class PartitionConfigWizard : ComponentBase
     {
         if (Visible && !_wasVisible)
         {
+            // 🚀 性能优化：检测是否需要重新加载（数据源变化或首次加载）
+            bool needReload = _cachedDataSourceId != DataSourceId || _cachedTables == null;
+            
             if (IsEditing)
             {
-                await InitializeWizardForEditAsync();
+                await InitializeWizardForEditAsync(forceReload: needReload);
             }
             else
             {
-                await InitializeWizardAsync();
+                await InitializeWizardAsync(forceReload: needReload);
             }
+            
+            _cachedDataSourceId = DataSourceId;
         }
 
         _wasVisible = Visible;
     }
 
-    private async Task InitializeWizardAsync()
+    private async Task InitializeWizardAsync(bool forceReload = false)
     {
         _loadingWizard = true;
         _configWizard = new PartitionConfigWizardState();
 
         try
         {
-            // 🚀 性能优化：并行加载基础数据（表列表、目标数据库、默认路径）
-            var tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
-            var databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
-            var defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
-            
-            await Task.WhenAll(tablesTask, databasesTask, defaultPathTask);
-            
-            var allTables = await tablesTask;
-            var databases = await databasesTask;
-            var defaultPath = await defaultPathTask;
+            // 🚀 性能优化：使用缓存或重新加载基础数据
+            if (forceReload || _cachedTables == null)
+            {
+                var tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+                var databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+                var defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+                
+                await Task.WhenAll(tablesTask, databasesTask, defaultPathTask);
+                
+                _cachedTables = await tablesTask;
+                _cachedDatabases = await databasesTask;
+                _cachedDefaultPath = await defaultPathTask;
+            }
+
+            // ✅ 使用缓存数据
+            var allTables = _cachedTables!;
+            var databases = _cachedDatabases!;
+            var defaultPath = _cachedDefaultPath;
 
             if (allTables.Count == 0)
             {
@@ -135,14 +165,14 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         }
     }
 
-    private async Task InitializeWizardForEditAsync()
+    private async Task InitializeWizardForEditAsync(bool forceReload = false)
     {
         _loadingWizard = true;
         _configWizard = new PartitionConfigWizardState();
 
         if (!IsEditing)
         {
-            await InitializeWizardAsync();
+            await InitializeWizardAsync(forceReload);
             return;
         }
 
@@ -151,17 +181,41 @@ public sealed partial class PartitionConfigWizard : ComponentBase
             var detail = EditingConfiguration!;
             var tableKey = $"{detail.SchemaName}.{detail.TableName}";
 
-            // 🚀 性能优化：并行加载所有基础数据
-            var tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
-            var databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
-            var defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            // 🚀 性能优化：使用缓存或重新加载基础数据，列信息始终重新加载
+            Task<List<DatabaseTableDto>> tablesTask;
+            Task<List<TargetDatabaseDto>> databasesTask;
+            Task<string?> defaultPathTask;
+            
+            if (forceReload || _cachedTables == null)
+            {
+                tablesTask = PartitionInfoApi.GetDatabaseTablesAsync(DataSourceId);
+                databasesTask = PartitionInfoApi.GetTargetDatabasesAsync(DataSourceId);
+                defaultPathTask = PartitionInfoApi.GetDefaultFilePathAsync(DataSourceId);
+            }
+            else
+            {
+                // ✅ 使用缓存，创建已完成的 Task
+                tablesTask = Task.FromResult(_cachedTables);
+                databasesTask = Task.FromResult(_cachedDatabases!);
+                defaultPathTask = Task.FromResult(_cachedDefaultPath);
+            }
+            
+            // 列信息必须重新查询（因为依赖具体表）
             var columnsTask = PartitionInfoApi.GetTableColumnsAsync(DataSourceId, detail.SchemaName, detail.TableName);
             
             await Task.WhenAll(tablesTask, databasesTask, defaultPathTask, columnsTask);
             
-            var allTables = await tablesTask;
-            var databases = await databasesTask;
-            var defaultPath = await defaultPathTask;
+            // 更新缓存
+            if (forceReload || _cachedTables == null)
+            {
+                _cachedTables = await tablesTask;
+                _cachedDatabases = await databasesTask;
+                _cachedDefaultPath = await defaultPathTask;
+            }
+            
+            var allTables = _cachedTables!;
+            var databases = _cachedDatabases!;
+            var defaultPath = _cachedDefaultPath;
             var columns = await columnsTask;
 
             // 处理表选项
@@ -223,8 +277,11 @@ public sealed partial class PartitionConfigWizard : ComponentBase
                 throw new InvalidOperationException("未能读取分区列信息。");
             }
 
-            // � 性能优化：异步后台加载列统计信息（不阻塞主流程，加载完成后自动更新UI）
-            _ = LoadColumnStatisticsAsync(detail.PartitionColumnName);
+            // 🚀 性能优化：异步后台加载列统计信息（不阻塞主流程，加载完成后自动更新UI）
+            _ = Task.Run(async () =>
+            {
+                await LoadColumnStatisticsAsync(detail.PartitionColumnName);
+            });
 
             _configWizard.Form.PartitionColumn = detail.PartitionColumnName;
             _configWizard.Form.PartitionFunctionName = detail.PartitionFunctionName;
@@ -298,6 +355,12 @@ public sealed partial class PartitionConfigWizard : ComponentBase
 
     private async Task LoadColumnsAsync(string schemaName, string tableName, string? preferredColumn)
     {
+        // 🚀 优化：立即显示加载状态，然后异步加载列
+        _configWizard.Columns.Clear();
+        _configWizard.ColumnMinValue = null;
+        _configWizard.ColumnMaxValue = null;
+        await InvokeAsync(StateHasChanged); // 立即刷新 UI，显示空状态
+        
         var columns = await PartitionInfoApi.GetTableColumnsAsync(DataSourceId, schemaName, tableName);
         if (columns.Count == 0)
         {
@@ -305,6 +368,8 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         }
 
         _configWizard.Columns = columns;
+        await InvokeAsync(StateHasChanged); // 列列表加载完成，立即显示
+        
         var defaultColumn = columns.FirstOrDefault(c => string.Equals(c.ColumnName, preferredColumn, StringComparison.OrdinalIgnoreCase))
                             ?? columns.FirstOrDefault();
         if (defaultColumn is null)
@@ -316,7 +381,12 @@ public sealed partial class PartitionConfigWizard : ComponentBase
         _configWizard.SelectedColumnIsNullable = defaultColumn.IsNullable;
         _configWizard.Form.RequirePartitionColumnNotNull = defaultColumn.IsNullable;
         _configWizard.ColumnKind = ResolveValueKind(defaultColumn);
-        await LoadColumnStatisticsAsync(defaultColumn.ColumnName);
+        
+        // 🚀 优化：列统计异步后台加载（不阻塞列下拉框显示）
+        _ = Task.Run(async () =>
+        {
+            await LoadColumnStatisticsAsync(defaultColumn.ColumnName);
+        });
     }
 
     private async Task HandleSourceTableChanged(string value)
@@ -366,17 +436,22 @@ public sealed partial class PartitionConfigWizard : ComponentBase
     {
         try
         {
+            // 🔧 优化：添加加载状态指示
+            _configWizard.ColumnMinValue = "加载中...";
+            _configWizard.ColumnMaxValue = "加载中...";
+            await InvokeAsync(StateHasChanged);
+            
             var stats = await PartitionInfoApi.GetColumnStatisticsAsync(DataSourceId, _configWizard.Form.SchemaName, _configWizard.Form.TableName, columnName);
-            _configWizard.ColumnMinValue = stats?.MinValue;
-            _configWizard.ColumnMaxValue = stats?.MaxValue;
+            _configWizard.ColumnMinValue = stats?.MinValue ?? "-";
+            _configWizard.ColumnMaxValue = stats?.MaxValue ?? "-";
             
             // 🔔 通知 UI 更新：统计数据已加载完成
             await InvokeAsync(StateHasChanged);
         }
-        catch
+        catch (Exception ex)
         {
-            _configWizard.ColumnMinValue = null;
-            _configWizard.ColumnMaxValue = null;
+            _configWizard.ColumnMinValue = $"加载失败: {ex.Message}";
+            _configWizard.ColumnMaxValue = "-";
             await InvokeAsync(StateHasChanged);
         }
     }
