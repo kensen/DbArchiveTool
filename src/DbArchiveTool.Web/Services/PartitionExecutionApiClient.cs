@@ -40,15 +40,48 @@ public sealed class PartitionExecutionApiClient
         return httpClient.GetFromJsonAsync<List<PartitionExecutionTaskSummaryModel>>($"api/v1/partition-executions{query}", cancellationToken);
     }
 
-    public Task<List<PartitionExecutionLogModel>?> GetLogsAsync(Guid taskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 获取任务日志（分页）。
+    /// </summary>
+    /// <param name="taskId">任务标识。</param>
+    /// <param name="pageIndex">页码（从 1 开始），默认 1。</param>
+    /// <param name="pageSize">每页记录数，默认 20。</param>
+    /// <param name="category">可选的日志分类过滤（Info、Warning、Error、Step、Cancel 等）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>返回分页后的日志响应，包含总数和日志列表。</returns>
+    public Task<GetLogsPagedResponse?> GetLogsAsync(
+        Guid taskId,
+        int pageIndex = 1,
+        int pageSize = 20,
+        string? category = null,
+        CancellationToken cancellationToken = default)
     {
-        var query = $"?take={take}";
-        if (sinceUtc.HasValue)
+        var query = $"?pageIndex={pageIndex}&pageSize={pageSize}";
+        if (!string.IsNullOrWhiteSpace(category))
         {
-            query += $"&sinceUtc={sinceUtc.Value:O}";
+            query += $"&category={Uri.EscapeDataString(category)}";
         }
 
-        return httpClient.GetFromJsonAsync<List<PartitionExecutionLogModel>>($"api/v1/partition-executions/{taskId}/logs{query}", cancellationToken);
+        return httpClient.GetFromJsonAsync<GetLogsPagedResponse>($"api/v1/partition-executions/{taskId}/logs{query}", cancellationToken);
+    }
+
+    /// <summary>
+    /// 取消分区执行任务。
+    /// </summary>
+    /// <param name="taskId">任务标识。</param>
+    /// <param name="cancelledBy">取消人。</param>
+    /// <param name="reason">取消原因（可选）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>成功时返回 true，失败时返回 false。</returns>
+    public async Task<bool> CancelTaskAsync(
+        Guid taskId,
+        string cancelledBy,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        var request = new CancelPartitionExecutionRequestModel(cancelledBy, reason);
+        var response = await httpClient.PostAsJsonAsync($"api/v1/partition-executions/{taskId}/cancel", request, cancellationToken);
+        return response.IsSuccessStatusCode;
     }
 
     private sealed record StartExecutionResponse(Guid TaskId);
@@ -64,6 +97,20 @@ public sealed record StartPartitionExecutionRequestModel(
     string? Notes,
     bool ForceWhenWarnings,
     int Priority = 0);
+
+/// <summary>取消执行的请求模型。</summary>
+public sealed record CancelPartitionExecutionRequestModel(
+    string CancelledBy,
+    string? Reason = null);
+
+/// <summary>日志分页响应模型。</summary>
+public sealed class GetLogsPagedResponse
+{
+    public int PageIndex { get; set; }
+    public int PageSize { get; set; }
+    public int TotalCount { get; set; }
+    public List<PartitionExecutionLogModel> Items { get; set; } = new();
+}
 
 public class PartitionExecutionTaskSummaryModel
 {

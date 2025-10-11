@@ -1,0 +1,172 @@
+﻿@page "/partition-executions/monitor"
+@page "/partition-executions/monitor/{DataSourceId:guid}"
+@attribute [ReuseTabsPage(Title = "任务调度", Closable = true)]
+@inherits MonitorBase
+
+<PageContainer Title="任务调度监控">
+    <Extra>
+        <Space>
+            <SpaceItem>
+                <Button Type="@ButtonType.Primary" Icon="reload" Loading="@Loading" OnClick="RefreshAsync">刷新</Button>
+            </SpaceItem>
+            <SpaceItem>
+                <Switch @bind-Checked="@AutoRefresh" CheckedChildren="自动刷新" UnCheckedChildren="手动刷新" />
+            </SpaceItem>
+        </Space>
+    </Extra>
+    <ChildContent>
+        <div style="padding: 16px;">
+            <!-- 筛选条件区域 -->
+            <Card Size="@CardSize.Small" Style="margin-bottom: 16px;">
+                <Space>
+                    <SpaceItem>
+                        <Select TItem="string"
+                                TItemValue="string"
+                                @bind-Value="@SelectedStatus"
+                                Placeholder="全部状态"
+                                AllowClear
+                                Style="width: 150px;">
+                            <SelectOptions>
+                                <SelectOption TItem="string" TItemValue="string" Value="@("PendingValidation")" Label="待校验" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Validating")" Label="校验中" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Queued")" Label="已排队" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Running")" Label="执行中" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Succeeded")" Label="已成功" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Failed")" Label="已失败" />
+                                <SelectOption TItem="string" TItemValue="string" Value="@("Cancelled")" Label="已取消" />
+                            </SelectOptions>
+                        </Select>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="ApplyFilterAsync">查询</Button>
+                    </SpaceItem>
+                </Space>
+            </Card>
+
+            <!-- 任务列表表格 -->
+            <Card Title="任务列表" Size="@CardSize.Small">
+                <Table TItem="PartitionExecutionTaskSummaryModel"
+                       DataSource="@FilteredTasks"
+                       Loading="@Loading"
+                       Size="@TableSize.Small"
+                       Bordered>
+                    <PropertyColumn Property="@(t => t.Id)" Title="任务ID">
+                        <Template>
+                            <Text Code>@context.Id.ToString("N")[..16]...</Text>
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn Property="@(t => t.Status)" Title="状态">
+                        <Template>
+                            @RenderStatusTag(context.Status)
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn Property="@(t => t.Phase)" Title="当前阶段" />
+                    <PropertyColumn Property="@(t => t.Progress)" Title="进度">
+                        <Template>
+                            <Progress Percent="@((int)(context.Progress * 100))" Size="@ProgressSize.Small" />
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn Property="@(t => t.RequestedBy)" Title="执行人" />
+                    <PropertyColumn Property="@(t => t.CreatedAtUtc)" Title="创建时间" Format="yyyy-MM-dd HH:mm:ss" />
+                    <ActionColumn Title="操作">
+                        <Space Size="@("small")">
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ShowDetailAsync(context.Id))">详情</Button>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ShowLogsAsync(context.Id))">日志</Button>
+                            </SpaceItem>
+                            @if (IsTaskCancellable(context.Status))
+                            {
+                                <SpaceItem>
+                                    <Popconfirm Title="确定要取消此任务吗?"
+                                                OnConfirm="@(() => CancelTaskAsync(context.Id))"
+                                                OkText="确定"
+                                                CancelText="取消">
+                                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>取消</Button>
+                                    </Popconfirm>
+                                </SpaceItem>
+                            }
+                        </Space>
+                    </ActionColumn>
+                </Table>
+            </Card>
+        </div>
+    </ChildContent>
+</PageContainer>
+
+<!-- 任务详情抽屉 - 简化版本 -->
+<Drawer Closable
+        Width="720"
+        Visible="@DetailDrawerVisible"
+        Title="@("任务详情")"
+        OnClose="@(() => DetailDrawerVisible = false)">
+    @if (TaskDetail != null)
+    {
+        <Descriptions Bordered Column="2" Size="@DescriptionsSize.Small">
+            <DescriptionsItem Title="任务ID" Span="2">
+                <Text Code>@TaskDetail.Id</Text>
+            </DescriptionsItem>
+            <DescriptionsItem Title="状态">
+                @RenderStatusTag(TaskDetail.Status)
+            </DescriptionsItem>
+            <DescriptionsItem Title="当前阶段">@TaskDetail.Phase</DescriptionsItem>
+            <DescriptionsItem Title="进度">
+                <Progress Percent="@((int)(TaskDetail.Progress * 100))" Size="@ProgressSize.Small" />
+            </DescriptionsItem>
+            <DescriptionsItem Title="执行人">@TaskDetail.RequestedBy</DescriptionsItem>
+            <DescriptionsItem Title="创建时间">@TaskDetail.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</DescriptionsItem>
+            <DescriptionsItem Title="备份参考" Span="2">@(TaskDetail.BackupReference ?? "-")</DescriptionsItem>
+            @if (!string.IsNullOrWhiteSpace(TaskDetail.FailureReason))
+            {
+                <DescriptionsItem Title="失败原因" Span="2">
+                    <Alert Type="@AlertType.Error" Message="@TaskDetail.FailureReason" ShowIcon="true" />
+                </DescriptionsItem>
+            }
+        </Descriptions>
+    }
+    else
+    {
+        <div style="text-align: center; padding: 40px;">
+            <Spin />
+        </div>
+    }
+</Drawer>
+
+<!-- 日志查看抽屉 - 简化版本 -->
+<Drawer Closable
+        Width="960"
+        Visible="@LogDrawerVisible"
+        Title="@("执行日志")"
+        OnClose="@(() => LogDrawerVisible = false)">
+    @if (Logs != null && Logs.Items.Count > 0)
+    {
+        <Timeline>
+            @foreach (var log in Logs.Items)
+            {
+                <TimelineItem Color="@GetLogColor(log.Category)">
+                    <div style="margin-bottom: 8px;">
+                        <Space Size="@("small")">
+                            <SpaceItem>
+                                <Tag Color="@GetLogTagColor(log.Category)">@log.Category</Tag>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Text Strong>@log.Title</Text>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Text Type="@TextElementType.Secondary">@log.LogTimeUtc.ToLocalTime().ToString("HH:mm:ss")</Text>
+                            </SpaceItem>
+                        </Space>
+                    </div>
+                    <div>@log.Message</div>
+                </TimelineItem>
+            }
+        </Timeline>
+    }
+    else
+    {
+        <div style="text-align: center; padding: 40px;">
+            <Empty Description="@("暂无日志")" />
+        </div>
+    }
+</Drawer>

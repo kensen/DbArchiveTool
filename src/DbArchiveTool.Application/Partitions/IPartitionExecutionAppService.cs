@@ -22,6 +22,9 @@ public interface IPartitionExecutionAppService
 
     /// <summary>获取任务日志。</summary>
     Task<Result<List<PartitionExecutionLogDto>>> GetLogsAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default);
+
+    /// <summary>取消执行任务。</summary>
+    Task<Result> CancelAsync(Guid executionTaskId, string cancelledBy, string? reason = null, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

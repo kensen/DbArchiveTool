@@ -1,0 +1,375 @@
+﻿using AntDesign;
+using DbArchiveTool.Web.Services;
+using Microsoft.AspNetCore.Components;
+
+namespace DbArchiveTool.Web.Pages.PartitionExecutions;
+
+/// <summary>
+/// 任务调度监控页面 - 代码逻辑部分
+/// </summary>
+public partial class MonitorBase : ComponentBase, IDisposable
+{
+    #region 依赖注入
+
+    [Inject] private PartitionExecutionApiClient ExecutionApi { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private ILogger<MonitorBase> Logger { get; set; } = default!;
+
+    #endregion
+
+    #region 页面参数
+
+    /// <summary>
+    /// 数据源ID路由参数 (可选,用于过滤特定数据源的任务)
+    /// </summary>
+    [Parameter]
+    public Guid? DataSourceId { get; set; }
+
+    #endregion
+
+    #region 状态字段
+
+    /// <summary>
+    /// 是否正在加载
+    /// </summary>
+    protected bool Loading { get; set; }
+
+    /// <summary>
+    /// 是否启用自动刷新
+    /// </summary>
+    protected bool AutoRefresh { get; set; } = true;
+
+    /// <summary>
+    /// 选中的状态筛选
+    /// </summary>
+    protected string? SelectedStatus { get; set; }
+
+    /// <summary>
+    /// 所有任务列表
+    /// </summary>
+    protected List<PartitionExecutionTaskSummaryModel> AllTasks { get; set; } = new();
+
+    /// <summary>
+    /// 过滤后的任务列表
+    /// </summary>
+    protected List<PartitionExecutionTaskSummaryModel> FilteredTasks { get; set; } = new();
+
+    /// <summary>
+    /// 任务详情抽屉是否可见
+    /// </summary>
+    protected bool DetailDrawerVisible { get; set; }
+
+    /// <summary>
+    /// 当前查看的任务详情
+    /// </summary>
+    protected PartitionExecutionTaskDetailModel? TaskDetail { get; set; }
+
+    /// <summary>
+    /// 日志查看抽屉是否可见
+    /// </summary>
+    protected bool LogDrawerVisible { get; set; }
+
+    /// <summary>
+    /// 当前查看的任务日志
+    /// </summary>
+    protected GetLogsPagedResponse? Logs { get; set; }
+
+    /// <summary>
+    /// 自动刷新定时器
+    /// </summary>
+    private System.Threading.Timer? _refreshTimer;
+
+    /// <summary>
+    /// 刷新间隔(毫秒)
+    /// </summary>
+    private const int RefreshIntervalMs = 5000;
+
+    #endregion
+
+    #region 生命周期
+
+    /// <summary>
+    /// 组件初始化时加载任务列表并启动定时器
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTasksAsync();
+        StartAutoRefresh();
+    }
+
+    /// <summary>
+    /// 组件释放时停止定时器
+    /// </summary>
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+
+    #endregion
+
+    #region 数据加载
+
+    /// <summary>
+    /// 加载任务列表
+    /// </summary>
+    private async Task LoadTasksAsync()
+    {
+        try
+        {
+            Loading = true;
+            StateHasChanged();
+
+            // 调用 API 获取任务列表 (默认获取最近 100 条)
+            var tasks = await ExecutionApi.ListAsync(DataSourceId, maxCount: 100);
+            AllTasks = tasks?.ToList() ?? new List<PartitionExecutionTaskSummaryModel>();
+
+            // 应用筛选
+            ApplyFilter();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载任务列表失败");
+            Message.Error("加载任务列表失败,请稍后重试");
+        }
+        finally
+        {
+            Loading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// 刷新按钮点击事件
+    /// </summary>
+    protected async Task RefreshAsync()
+    {
+        await LoadTasksAsync();
+        Message.Success("刷新成功");
+    }
+
+    /// <summary>
+    /// 应用筛选条件按钮点击事件
+    /// </summary>
+    protected Task ApplyFilterAsync()
+    {
+        ApplyFilter();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 应用筛选逻辑
+    /// </summary>
+    private void ApplyFilter()
+    {
+        if (string.IsNullOrWhiteSpace(SelectedStatus))
+        {
+            FilteredTasks = AllTasks;
+        }
+        else
+        {
+            FilteredTasks = AllTasks
+                .Where(t => t.Status.Equals(SelectedStatus, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    #endregion
+
+    #region 任务详情
+
+    /// <summary>
+    /// 显示任务详情
+    /// </summary>
+    protected async Task ShowDetailAsync(Guid taskId)
+    {
+        try
+        {
+            Loading = true;
+            StateHasChanged();
+
+            // 调用 API 获取任务详情
+            TaskDetail = await ExecutionApi.GetAsync(taskId);
+            DetailDrawerVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载任务详情失败: {TaskId}", taskId);
+            Message.Error("加载任务详情失败,请稍后重试");
+        }
+        finally
+        {
+            Loading = false;
+            StateHasChanged();
+        }
+    }
+
+    #endregion
+
+    #region 任务日志
+
+    /// <summary>
+    /// 显示任务日志
+    /// </summary>
+    protected async Task ShowLogsAsync(Guid taskId)
+    {
+        try
+        {
+            Loading = true;
+            StateHasChanged();
+
+            // 调用 API 获取任务日志 (默认第一页,每页50条)
+            Logs = await ExecutionApi.GetLogsAsync(taskId, pageIndex: 1, pageSize: 50);
+            LogDrawerVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "加载任务日志失败: {TaskId}", taskId);
+            Message.Error("加载任务日志失败,请稍后重试");
+        }
+        finally
+        {
+            Loading = false;
+            StateHasChanged();
+        }
+    }
+
+    #endregion
+
+    #region 任务取消
+
+    /// <summary>
+    /// 取消任务
+    /// </summary>
+    protected async Task CancelTaskAsync(Guid taskId)
+    {
+        try
+        {
+            Loading = true;
+            StateHasChanged();
+
+            // 调用 API 取消任务 (需要提供取消人信息,这里暂时硬编码,后续可从用户上下文获取)
+            var success = await ExecutionApi.CancelTaskAsync(taskId, cancelledBy: "当前用户", reason: "用户手动取消");
+
+            if (success)
+            {
+                Message.Success("任务已取消");
+                // 重新加载任务列表
+                await LoadTasksAsync();
+            }
+            else
+            {
+                Message.Error("取消任务失败");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "取消任务失败: {TaskId}", taskId);
+            Message.Error($"取消任务失败: {ex.Message}");
+        }
+        finally
+        {
+            Loading = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// 判断任务是否可取消
+    /// </summary>
+    protected bool IsTaskCancellable(string status)
+    {
+        return status is "PendingValidation" or "Validating" or "Queued" or "Running";
+    }
+
+    #endregion
+
+    #region 自动刷新
+
+    /// <summary>
+    /// 启动自动刷新定时器
+    /// </summary>
+    private void StartAutoRefresh()
+    {
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            if (!AutoRefresh) return;
+
+            try
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadTasksAsync();
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.LogWarning(ex, "自动刷新失败");
+            }
+        }, null, RefreshIntervalMs, RefreshIntervalMs);
+    }
+
+    #endregion
+
+    #region UI 辅助方法
+
+    /// <summary>
+    /// 渲染状态标签
+    /// </summary>
+    protected RenderFragment RenderStatusTag(string status) => builder =>
+    {
+        var (color, text) = GetStatusDisplay(status);
+        builder.OpenComponent<Tag>(0);
+        builder.AddAttribute(1, "Color", color);
+        builder.AddContent(2, text);
+        builder.CloseComponent();
+    };
+
+    /// <summary>
+    /// 获取状态显示信息
+    /// </summary>
+    private (string Color, string Text) GetStatusDisplay(string status)
+    {
+        return status switch
+        {
+            "PendingValidation" => ("default", "待校验"),
+            "Validating" => ("processing", "校验中"),
+            "Queued" => ("cyan", "已排队"),
+            "Running" => ("blue", "执行中"),
+            "Succeeded" => ("success", "已成功"),
+            "Failed" => ("error", "已失败"),
+            "Cancelled" => ("warning", "已取消"),
+            _ => ("default", status)
+        };
+    }
+
+    /// <summary>
+    /// 获取日志时间线颜色
+    /// </summary>
+    protected string GetLogColor(string category)
+    {
+        return category switch
+        {
+            "Error" => "red",
+            "Warning" => "orange",
+            "Information" => "blue",
+            _ => "gray"
+        };
+    }
+
+    /// <summary>
+    /// 获取日志标签颜色
+    /// </summary>
+    protected string GetLogTagColor(string category)
+    {
+        return category switch
+        {
+            "Error" => "error",
+            "Warning" => "warning",
+            "Information" => "processing",
+            _ => "default"
+        };
+    }
+
+    #endregion
+}

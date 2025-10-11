@@ -121,6 +121,12 @@
                                         OnClick="() => EditConfigurationDraftAsync(context)">编辑</Button>
                             </SpaceItem>
                             <SpaceItem>
+                                <Button Type="@ButtonType.Link"
+                                        Size="@ButtonSize.Small"
+                                        Disabled="@(context.IsCommitted || context.IsPartitioned)"
+                                        OnClick="() => ExecutePartitionAsync(context)">执行分区</Button>
+                            </SpaceItem>
+                            <SpaceItem>
                                 <Popconfirm Title="确定要删除此配置草稿吗？"
                                             OnConfirm="() => DeleteConfigurationDraftAsync(context.Id)"
                                             OkText="删除"
@@ -508,6 +514,27 @@
         {
             Message.Error($"加载配置详情失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 执行分区(跳转到执行发起页面)
+    /// </summary>
+    private void ExecutePartitionAsync(ConfigurationDraftInfo draft)
+    {
+        if (draft.IsCommitted)
+        {
+            Message.Warning("该配置已执行，无需重复执行。");
+            return;
+        }
+
+        if (draft.IsPartitioned)
+        {
+            Message.Warning("目标表已是分区表，无法执行分区创建。");
+            return;
+        }
+
+        // 跳转到执行发起页面,传递配置ID
+        Navigation.NavigateTo($"/partition-executions/start/{draft.Id}");
     }
 
     private async Task LoadDataSourceInfoAsync()

@@ -1,0 +1,195 @@
+﻿@page "/partition-executions/start"
+@page "/partition-executions/start/{PartitionConfigId:guid}"
+@attribute [ReuseTabsPage(Title = "发起执行", Closable = true)]
+@inherits StartBase
+
+<PageContainer Title="分区执行发起">
+    <Extra>
+        <Space>
+            <SpaceItem>
+                <Button Type="@ButtonType.Default" Icon="rollback" OnClick="NavigateToMonitor">返回监控</Button>
+            </SpaceItem>
+        </Space>
+    </Extra>
+    <ChildContent>
+        <div style="padding: 16px; max-width: 800px; margin: 0 auto;">
+            <Card Title="执行参数配置" Size="@CardSize.Default">
+                <Form Model="@FormModel" 
+                      LabelColSpan="6" 
+                      WrapperColSpan="18"
+                      OnFinish="OnSubmitAsync">
+                    
+                    <!-- 分区配置选择 -->
+                    <FormItem Label="分区配置">
+                        <Select TItem="PartitionConfigOption"
+                                TItemValue="Guid?"
+                                @bind-Value="@FormModel.PartitionConfigurationId"
+                                DataSource="@PartitionConfigs"
+                                LabelName="@nameof(PartitionConfigOption.Label)"
+                                ValueName="@nameof(PartitionConfigOption.Value)"
+                                Placeholder="请选择分区配置"
+                                AllowClear
+                                Loading="@LoadingConfigs"
+                                OnSelectedItemChanged="OnPartitionConfigChanged">
+                        </Select>
+                    </FormItem>
+
+                    <!-- 数据源选择 -->
+                    <FormItem Label="数据源">
+                        <Select TItem="DataSourceOption"
+                                TItemValue="Guid?"
+                                @bind-Value="@FormModel.DataSourceId"
+                                DataSource="@DataSources"
+                                LabelName="@nameof(DataSourceOption.Label)"
+                                ValueName="@nameof(DataSourceOption.Value)"
+                                Placeholder="请选择数据源"
+                                AllowClear
+                                Loading="@LoadingDataSources">
+                        </Select>
+                    </FormItem>
+
+                    <!-- 备份确认 -->
+                    <FormItem Label="备份确认">
+                        <Checkbox @bind-Checked="@FormModel.BackupConfirmed">
+                            我已确认数据库已备份或无需备份
+                        </Checkbox>
+                        @if (!FormModel.BackupConfirmed)
+                        {
+                            <Alert Type="@AlertType.Warning" 
+                                   Message="执行分区操作前请务必确认数据已备份" 
+                                   ShowIcon="true" 
+                                   Style="margin-top: 8px;" />
+                        }
+                    </FormItem>
+
+                    <!-- 备份参考 -->
+                    <FormItem Label="备份参考">
+                        <Input @bind-Value="@FormModel.BackupReference" 
+                               Placeholder="请输入备份文件名或备份任务ID(可选)"
+                               MaxLength="200" />
+                        <Text Type="@TextElementType.Secondary" Style="font-size: 12px;">
+                            示例:backup_20251011_143000.bak
+                        </Text>
+                    </FormItem>
+
+                    <!-- 执行备注 -->
+                    <FormItem Label="执行备注">
+                        <TextArea @bind-Value="@FormModel.Notes" 
+                                  Placeholder="请输入执行备注(可选)"
+                                  MaxLength="500"
+                                  Rows="3"
+                                  ShowCount />
+                    </FormItem>
+
+                    <!-- 优先级 -->
+                    <FormItem Label="优先级">
+                        <Slider @bind-Value="@FormModel.PriorityDouble" 
+                                Min="0" 
+                                Max="10"
+                                Step="1" />
+                        <Text Type="@TextElementType.Secondary" Style="font-size: 12px;">
+                            优先级越高越优先执行(0-10,默认 0)。0=低优先级, 5=中等优先级, 10=高优先级
+                        </Text>
+                    </FormItem>
+
+                    <!-- 强制执行 -->
+                    <FormItem Label="高级选项">
+                        <Checkbox @bind-Checked="@FormModel.ForceWhenWarnings">
+                            强制执行(忽略警告信息)
+                        </Checkbox>
+                        @if (FormModel.ForceWhenWarnings)
+                        {
+                            <Alert Type="@AlertType.Error" 
+                                   Message="强制执行将忽略所有警告,请谨慎使用" 
+                                   ShowIcon="true" 
+                                   Style="margin-top: 8px;" />
+                        }
+                    </FormItem>
+
+                    <!-- 执行人 -->
+                    <FormItem Label="执行人">
+                        <Input @bind-Value="@FormModel.RequestedBy" 
+                               Placeholder="请输入执行人姓名或工号"
+                               MaxLength="100" />
+                    </FormItem>
+
+                    <!-- 操作按钮 -->
+                    <FormItem WrapperColOffset="6" WrapperColSpan="18">
+                        <Space>
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Primary" 
+                                        HtmlType="submit"
+                                        Loading="@Submitting"
+                                        Disabled="@(!IsFormValid())">
+                                    发起执行
+                                </Button>
+                            </SpaceItem>
+                            <SpaceItem>
+                                <Button Type="@ButtonType.Default" OnClick="ResetForm">
+                                    重置
+                                </Button>
+                            </SpaceItem>
+                        </Space>
+                    </FormItem>
+                </Form>
+            </Card>
+
+            <!-- 配置详情预览 -->
+            @if (SelectedConfigDetail != null)
+            {
+                <Card Title="配置详情预览" Size="@CardSize.Small" Style="margin-top: 16px;">
+                    <Descriptions Bordered Column="2" Size="@DescriptionsSize.Small">
+                        <DescriptionsItem Title="目标表">@SelectedConfigDetail.TargetTable</DescriptionsItem>
+                        <DescriptionsItem Title="分区键">@SelectedConfigDetail.PartitionKey</DescriptionsItem>
+                        <DescriptionsItem Title="分区粒度">@SelectedConfigDetail.PartitionGranularity</DescriptionsItem>
+                        <DescriptionsItem Title="保留期限">@SelectedConfigDetail.RetentionMonths 个月</DescriptionsItem>
+                        <DescriptionsItem Title="创建时间" Span="2">
+                            @SelectedConfigDetail.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                        </DescriptionsItem>
+                    </Descriptions>
+                </Card>
+            }
+        </div>
+    </ChildContent>
+</PageContainer>
+
+<!-- 执行结果对话框 -->
+<Modal Title="@ResultModalTitle"
+       Visible="@ResultModalVisible"
+       OnOk="@(() => ResultModalVisible = false)"
+       OnCancel="@(() => ResultModalVisible = false)"
+       Footer="@null">
+    @if (ExecutionTaskId.HasValue)
+    {
+        <Result Status="@ResultStatus.Success"
+                Title="执行任务已创建"
+                SubTitle="@($"任务ID: {ExecutionTaskId.Value}")">
+            <Extra>
+                <Space Direction="@SpaceDirection.Vertical" Style="width: 100%;">
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Primary" OnClick="NavigateToMonitorWithTask">
+                            查看任务详情
+                        </Button>
+                    </SpaceItem>
+                    <SpaceItem>
+                        <Button Type="@ButtonType.Default" OnClick="CreateNewTask">
+                            继续创建任务
+                        </Button>
+                    </SpaceItem>
+                </Space>
+            </Extra>
+        </Result>
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <Result Status="@ResultStatus.Error"
+                Title="创建任务失败"
+                SubTitle="@ErrorMessage">
+            <Extra>
+                <Button Type="@ButtonType.Primary" OnClick="@(() => ResultModalVisible = false)">
+                    关闭
+                </Button>
+            </Extra>
+        </Result>
+    }
+</Modal>

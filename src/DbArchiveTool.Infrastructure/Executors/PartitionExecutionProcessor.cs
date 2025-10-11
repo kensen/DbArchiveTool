@@ -4,19 +4,21 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using Microsoft.Extensions.Logging;
 
 namespace DbArchiveTool.Infrastructure.Executors;
 
 /// <summary>
-/// 承担分区执行任务校验与脚本生成的占位处理器。
+/// 承担分区执行任务校验、脚本生成与实际执行的处理器。
 /// </summary>
 internal sealed class PartitionExecutionProcessor
 {
     private readonly IPartitionExecutionTaskRepository taskRepository;
     private readonly IPartitionExecutionLogRepository logRepository;
     private readonly IPartitionConfigurationRepository configurationRepository;
+    private readonly IDataSourceRepository dataSourceRepository;
     private readonly SqlPartitionCommandExecutor commandExecutor;
     private readonly ILogger<PartitionExecutionProcessor> logger;
 
@@ -24,12 +26,14 @@ internal sealed class PartitionExecutionProcessor
         IPartitionExecutionTaskRepository taskRepository,
         IPartitionExecutionLogRepository logRepository,
         IPartitionConfigurationRepository configurationRepository,
+        IDataSourceRepository dataSourceRepository,
         SqlPartitionCommandExecutor commandExecutor,
         ILogger<PartitionExecutionProcessor> logger)
     {
         this.taskRepository = taskRepository;
         this.logRepository = logRepository;
         this.configurationRepository = configurationRepository;
+        this.dataSourceRepository = dataSourceRepository;
         this.commandExecutor = commandExecutor;
         this.logger = logger;
     }
@@ -43,111 +47,300 @@ internal sealed class PartitionExecutionProcessor
             return;
         }
 
-        var stopwatch = Stopwatch.StartNew();
+        var overallStopwatch = Stopwatch.StartNew();
+        PartitionConfiguration? configuration = null;
+        ArchiveDataSource? dataSource = null;
+
         try
         {
-            await AppendLogAsync(task.Id, "Info", "任务入队", $"任务由 {task.RequestedBy} 发起，开始校验。", cancellationToken);
+            // ============== 阶段 1: 任务入队与基础校验 ==============
+            await AppendLogAsync(task.Id, "Info", "任务启动", $"任务由 {task.RequestedBy} 发起，开始执行。", cancellationToken);
 
             task.MarkValidating("SYSTEM");
             task.UpdatePhase(PartitionExecutionPhases.Validation, "SYSTEM");
             task.UpdateProgress(0.05, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            await AppendLogAsync(task.Id, "Step", "校验配置", "正在检查配置草稿是否完整。", cancellationToken);
+            // ============== 阶段 2: 加载配置与数据源 ==============
+            var stepWatch = Stopwatch.StartNew();
+            await AppendLogAsync(task.Id, "Step", "加载配置", "正在加载分区配置草稿...", cancellationToken);
 
-            var configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId, cancellationToken);
+            configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId, cancellationToken);
             if (configuration is null)
             {
                 await HandleValidationFailureAsync(task, "未找到分区配置草稿。", cancellationToken);
                 return;
             }
 
-            if (configuration.Boundaries.Count == 0)
+            dataSource = await dataSourceRepository.GetAsync(task.DataSourceId, cancellationToken);
+            if (dataSource is null)
             {
-                await HandleValidationFailureAsync(task, "分区配置中未提供任何边界。", cancellationToken);
+                await HandleValidationFailureAsync(task, "未找到归档数据源配置。", cancellationToken);
                 return;
             }
 
-            await AppendLogAsync(task.Id, "Info", "校验通过", $"检测到 {configuration.Boundaries.Count} 个目标边界，准备生成脚本。", cancellationToken);
+            if (configuration.Boundaries.Count == 0)
+            {
+                await HandleValidationFailureAsync(task, "分区配置中未提供任何边界值。", cancellationToken);
+                return;
+            }
 
-            task.UpdateProgress(0.2, "SYSTEM");
+            stepWatch.Stop();
+            await AppendLogAsync(
+                task.Id,
+                "Info",
+                "配置加载完成",
+                $"目标表：{configuration.SchemaName}.{configuration.TableName}，分区边界数量：{configuration.Boundaries.Count}",
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.15, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
+            // ============== 阶段 3: 权限校验 ==============
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "权限校验", "正在检查数据库权限...", cancellationToken);
+
+            var permissionResult = await commandExecutor.CheckPermissionsAsync(
+                task.DataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                cancellationToken);
+
+            stepWatch.Stop();
+
+            if (!permissionResult.IsAuthorized)
+            {
+                var missingPerms = string.Join(", ", permissionResult.MissingPermissions);
+                await AppendLogAsync(
+                    task.Id,
+                    "Error",
+                    "权限不足",
+                    $"缺少必要权限：{missingPerms}。当前权限：{string.Join(", ", permissionResult.Permissions)}",
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                await HandleValidationFailureAsync(
+                    task,
+                    $"权限校验失败：缺少 {missingPerms}",
+                    cancellationToken);
+                return;
+            }
+
+            await AppendLogAsync(
+                task.Id,
+                "Info",
+                "权限校验通过",
+                $"已授权权限：{string.Join(", ", permissionResult.Permissions)}",
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.25, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 4: 进入队列 ==============
             task.MarkQueued("SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
+            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成，任务进入执行队列。", cancellationToken);
 
-            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成，任务进入执行阶段。", cancellationToken);
-
+            // ============== 阶段 5: 开始执行 ==============
             task.MarkRunning("SYSTEM");
+            task.UpdatePhase(PartitionExecutionPhases.Executing, "SYSTEM");
             task.UpdateProgress(0.35, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
+            // ============== 阶段 6: 文件组准备（如果需要） ==============
+            if (configuration.FilegroupStrategy is not null &&
+                !string.IsNullOrWhiteSpace(configuration.FilegroupStrategy.PrimaryFilegroup) &&
+                configuration.FilegroupStrategy.PrimaryFilegroup != "PRIMARY")
+            {
+                stepWatch.Restart();
+                await AppendLogAsync(
+                    task.Id,
+                    "Step",
+                    "文件组准备",
+                    $"检查文件组 {configuration.FilegroupStrategy.PrimaryFilegroup} 是否存在...",
+                    cancellationToken);
+
+                var created = await commandExecutor.CreateFilegroupIfNeededAsync(
+                    task.DataSourceId,
+                    dataSource.DatabaseName,
+                    configuration.FilegroupStrategy.PrimaryFilegroup,
+                    cancellationToken);
+
+                stepWatch.Stop();
+
+                if (created)
+                {
+                    await AppendLogAsync(
+                        task.Id,
+                        "Info",
+                        "文件组已创建",
+                        $"成功创建文件组：{configuration.FilegroupStrategy.PrimaryFilegroup}",
+                        cancellationToken,
+                        durationMs: stepWatch.ElapsedMilliseconds);
+                }
+                else
+                {
+                    await AppendLogAsync(
+                        task.Id,
+                        "Info",
+                        "文件组已存在",
+                        $"文件组 {configuration.FilegroupStrategy.PrimaryFilegroup} 已存在，跳过创建。",
+                        cancellationToken,
+                        durationMs: stepWatch.ElapsedMilliseconds);
+                }
+
+                task.UpdateProgress(0.45, "SYSTEM");
+                await taskRepository.UpdateAsync(task, cancellationToken);
+            }
+
+            // ============== 阶段 7: 执行分区拆分 ==============
+            stepWatch.Restart();
             var boundaryValues = configuration.Boundaries
                 .OrderBy(b => b.SortKey, StringComparer.Ordinal)
                 .Select(b => b.Value)
                 .ToList();
 
-            var script = commandExecutor.RenderSplitScript(configuration, boundaryValues);
-            var scriptMeta = new { boundaryCount = boundaryValues.Count, scriptLength = script.Length, simulated = true };
-
             await AppendLogAsync(
                 task.Id,
                 "Step",
-                "生成脚本",
-                $"已根据配置生成 {boundaryValues.Count} 条 SPLIT 指令。目前仅记录脚本文本，尚未执行。",
-                cancellationToken,
-                extraJson: JsonSerializer.Serialize(scriptMeta));
+                "执行分区拆分",
+                $"准备拆分 {boundaryValues.Count} 个分区边界...",
+                cancellationToken);
 
-            task.UpdateProgress(0.55, "SYSTEM");
-            await taskRepository.UpdateAsync(task, cancellationToken);
+            var executionResult = await commandExecutor.ExecuteSplitWithTransactionAsync(
+                task.DataSourceId,
+                configuration,
+                boundaryValues,
+                cancellationToken);
+
+            stepWatch.Stop();
+
+            if (!executionResult.IsSuccess)
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Error",
+                    "分区拆分失败",
+                    executionResult.Message,
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds,
+                    extraJson: JsonSerializer.Serialize(new { errorDetail = executionResult.ErrorDetail }));
+
+                task.MarkFailed("SYSTEM", executionResult.Message);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
 
             await AppendLogAsync(
                 task.Id,
                 "Info",
-                "执行脚本(占位)",
-                "当前实现尚未执行实际 SQL，仅记录脚本生成情况。",
-                cancellationToken);
+                "分区拆分完成",
+                executionResult.Message,
+                cancellationToken,
+                durationMs: executionResult.ElapsedMilliseconds,
+                extraJson: JsonSerializer.Serialize(new
+                {
+                    boundaryCount = boundaryValues.Count,
+                    affectedPartitions = executionResult.AffectedCount
+                }));
 
-            task.UpdateProgress(0.8, "SYSTEM");
+            task.UpdateProgress(0.75, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 8: 标记配置已提交 ==============
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "更新配置状态", "标记分区配置为已提交...", cancellationToken);
+
+            configuration.MarkCommitted("SYSTEM");
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+
+            stepWatch.Stop();
+            await AppendLogAsync(
+                task.Id,
+                "Info",
+                "配置已提交",
+                "分区配置已标记为已提交状态。",
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.9, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 9: 任务完成 ==============
+            task.UpdatePhase(PartitionExecutionPhases.Finalizing, "SYSTEM");
 
             var summary = JsonSerializer.Serialize(new
             {
+                schema = configuration.SchemaName,
+                table = configuration.TableName,
                 boundaryCount = boundaryValues.Count,
-                generatedScriptLength = script.Length,
-                simulated = true,
+                affectedPartitions = executionResult.AffectedCount,
+                totalDurationMs = overallStopwatch.ElapsedMilliseconds,
+                splitDurationMs = executionResult.ElapsedMilliseconds,
+                requestedBy = task.RequestedBy,
+                backupReference = task.BackupReference,
                 completedAt = DateTime.UtcNow
             });
 
             task.MarkSucceeded("SYSTEM", summary);
             await taskRepository.UpdateAsync(task, cancellationToken);
 
+            overallStopwatch.Stop();
+
             await AppendLogAsync(
                 task.Id,
                 "Info",
                 "任务完成",
-                $"处理完成，耗时 {stopwatch.Elapsed:g}。当前阶段仅完成配置校验与脚本生成。",
-                cancellationToken);
+                $"分区执行成功完成，总耗时 {overallStopwatch.Elapsed:g}。",
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds);
+
+            logger.LogInformation(
+                "Partition execution task {TaskId} completed successfully in {Elapsed}",
+                task.Id, overallStopwatch.Elapsed);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Partition execution task {TaskId} failed.", task.Id);
-            await AppendLogAsync(task.Id, "Error", "执行异常", ex.ToString(), cancellationToken);
+            overallStopwatch.Stop();
 
+            logger.LogError(ex, "Partition execution task {TaskId} failed.", task.Id);
+
+            await AppendLogAsync(
+                task.Id,
+                "Error",
+                "执行异常",
+                $"发生未预期的错误：{ex.Message}",
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds,
+                extraJson: JsonSerializer.Serialize(new
+                {
+                    exceptionType = ex.GetType().Name,
+                    stackTrace = ex.StackTrace
+                }));
+
+            // 根据当前状态决定是取消还是标记失败
             if (task.Status is PartitionExecutionStatus.PendingValidation or PartitionExecutionStatus.Validating or PartitionExecutionStatus.Queued)
             {
                 task.Cancel("SYSTEM", ex.Message);
             }
             else
             {
-                task.MarkFailed("SYSTEM", ex.Message ?? "执行失败");
+                var errorSummary = JsonSerializer.Serialize(new
+                {
+                    error = ex.Message,
+                    exceptionType = ex.GetType().Name,
+                    failedAt = DateTime.UtcNow,
+                    totalDurationMs = overallStopwatch.ElapsedMilliseconds,
+                    schema = configuration?.SchemaName,
+                    table = configuration?.TableName
+                });
+
+                task.MarkFailed("SYSTEM", ex.Message ?? "执行失败", errorSummary);
             }
 
             await taskRepository.UpdateAsync(task, cancellationToken);
-        }
-        finally
-        {
-            stopwatch.Stop();
         }
     }
 
