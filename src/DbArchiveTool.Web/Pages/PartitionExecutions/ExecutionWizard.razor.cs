@@ -16,6 +16,7 @@ public partial class ExecutionWizard
     [Inject] private PartitionExecutionApiClient ApiClient { get; set; } = default!;
     [Inject] private NavigationManager Navigation { get; set; } = default!;
     [Inject] private IMessageService Message { get; set; } = default!;
+    [Inject] private ReuseTabsService ReuseTabsService { get; set; } = default!;
 
     private bool Loading { get; set; } = true;
     private bool Submitting { get; set; }
@@ -386,25 +387,92 @@ public partial class ExecutionWizard
         }
     }
 
-    private void NavigateBack()
+    private async void NavigateBack()
     {
-        Navigation.NavigateTo("/partitions");
+        // 关闭Modal
+        ResultVisible = false;
+        
+        // 触发UI更新，确保Modal和遮罩层完全移除
+        StateHasChanged();
+        
+        // 等待Modal关闭动画完成
+        await Task.Delay(300);
+        
+        try
+        {
+            // 关闭当前向导标签页（这会自动激活前一个标签）
+            var currentPath = $"/partition-executions/wizard/{ConfigId}";
+            ReuseTabsService.ClosePage(currentPath);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+        }
     }
 
     private void NavigateToMonitor()
     {
-        Navigation.NavigateTo("/partition-executions/monitor");
+        // 先导航到监控页面
+        var targetUrl = ExecutionTaskId.HasValue 
+            ? $"/partition-executions/monitor?taskId={ExecutionTaskId.Value}" 
+            : "/partition-executions/monitor";
+        
+        Navigation.NavigateTo(targetUrl);
+        
+        // 关闭Modal
+        ResultVisible = false;
+        
+        // 延迟关闭当前向导标签页，避免用户返回时重复操作
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100); // 等待导航完成
+            await InvokeAsync(() =>
+            {
+                try
+                {
+                    // 关闭当前向导标签页
+                    var currentPath = $"/partition-executions/wizard/{ConfigId}";
+                    ReuseTabsService.ClosePage(currentPath);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+                }
+            });
+        });
     }
 
-    private void HandleResultOk()
+    private void CloseModal()
     {
-        if (ExecutionSuccess)
+        ResultVisible = false;
+    }
+
+    /// <summary>
+    /// Modal可见性变化事件处理
+    /// </summary>
+    private async void OnModalVisibleChanged(bool visible)
+    {
+        ResultVisible = visible;
+        
+        // 当Modal关闭时（visible = false），自动关闭向导标签页
+        if (!visible)
         {
-            NavigateToMonitor();
-        }
-        else
-        {
-            ResultVisible = false;
+            // 触发UI更新
+            StateHasChanged();
+            
+            // 等待Modal关闭动画完成
+            await Task.Delay(300);
+            
+            try
+            {
+                // 关闭当前向导标签页
+                var currentPath = $"/partition-executions/wizard/{ConfigId}";
+                ReuseTabsService.ClosePage(currentPath);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+            }
         }
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -27,8 +28,28 @@ public sealed class PartitionExecutionApiClient
             return null;
         }
 
-        var payload = await response.Content.ReadFromJsonAsync<StartExecutionResponse>(cancellationToken: cancellationToken);
-        return payload?.TaskId;
+        try
+        {
+            // API返回的是小写的 taskId: { "taskId": "guid-value" }
+            var content = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(content);
+            
+            if (doc.RootElement.TryGetProperty("taskId", out var taskIdElement))
+            {
+                var taskIdStr = taskIdElement.GetString();
+                if (!string.IsNullOrEmpty(taskIdStr) && Guid.TryParse(taskIdStr, out var taskId))
+                {
+                    return taskId;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // JSON解析失败
+            return null;
+        }
+        
+        return null;
     }
 
     public Task<PartitionExecutionTaskDetailModel?> GetAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -98,8 +119,6 @@ public sealed class PartitionExecutionApiClient
             $"api/v1/partition-executions/wizard/context/{configId}",
             cancellationToken);
     }
-
-    private sealed record StartExecutionResponse(Guid TaskId);
 }
 
 /// <summary>发起执行的请求模型。</summary>
