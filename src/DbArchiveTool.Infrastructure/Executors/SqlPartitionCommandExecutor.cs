@@ -85,64 +85,6 @@ internal sealed class SqlPartitionCommandExecutor
     }
 
     /// <summary>
-    /// 检查当前连接用户是否具备必要的权限。
-    /// </summary>
-    /// <param name="dataSourceId">数据源标识</param>
-    /// <param name="schemaName">架构名称</param>
-    /// <param name="tableName">表名称</param>
-    /// <param name="cancellationToken">取消令牌</param>
-    /// <returns>权限检查结果，包含权限名称列表</returns>
-    public async Task<PermissionCheckResult> CheckPermissionsAsync(
-        Guid dataSourceId,
-        string schemaName,
-        string tableName,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
-            var objectName = $"'{schemaName}.{tableName}'";
-            var template = templateProvider.GetTemplate("PermissionCheck.sql");
-            var sql = template.Replace("{ObjectName}", objectName);
-
-            var permissions = (await sqlExecutor.QueryAsync<string>(connection.ConnectionString, sql, timeoutSeconds: 10))
-                .ToList();
-
-            var hasAlter = permissions.Contains("ALTER", StringComparer.OrdinalIgnoreCase);
-            var hasControl = permissions.Contains("CONTROL", StringComparer.OrdinalIgnoreCase);
-            var hasViewDefinition = permissions.Contains("VIEW DEFINITION", StringComparer.OrdinalIgnoreCase);
-
-            var isAuthorized = (hasAlter || hasControl) && hasViewDefinition;
-
-            logger.LogInformation(
-                "权限检查 {Schema}.{Table}: ALTER={Alter}, CONTROL={Control}, VIEW DEFINITION={ViewDef}, 授权={Auth}",
-                schemaName, tableName, hasAlter, hasControl, hasViewDefinition, isAuthorized);
-
-            return new PermissionCheckResult
-            {
-                IsAuthorized = isAuthorized,
-                Permissions = permissions,
-                MissingPermissions = isAuthorized
-                    ? new List<string>()
-                    : new List<string> { hasAlter || hasControl ? "" : "ALTER或CONTROL", hasViewDefinition ? "" : "VIEW DEFINITION" }
-                        .Where(x => !string.IsNullOrEmpty(x))
-                        .ToList()
-            };
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "权限检查失败：{Schema}.{Table}", schemaName, tableName);
-            return new PermissionCheckResult
-            {
-                IsAuthorized = false,
-                Permissions = new List<string>(),
-                MissingPermissions = new List<string> { "检查失败" },
-                ErrorMessage = ex.Message
-            };
-        }
-    }
-
-    /// <summary>
     /// 如果指定文件组不存在则创建。
     /// </summary>
     /// <param name="dataSourceId">数据源标识</param>
@@ -167,7 +109,7 @@ internal sealed class SqlPartitionCommandExecutor
                 WHERE name = @FilegroupName";
 
             var exists = await sqlExecutor.QuerySingleAsync<int>(
-                connection.ConnectionString,
+                connection,
                 checkSql,
                 new { FilegroupName = filegroupName });
 
@@ -183,7 +125,7 @@ internal sealed class SqlPartitionCommandExecutor
                 .Replace("{DatabaseName}", databaseName)
                 .Replace("{FilegroupName}", filegroupName);
 
-            await sqlExecutor.ExecuteAsync(connection.ConnectionString, createSql, timeoutSeconds: 60);
+            await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 60);
 
             logger.LogInformation("成功创建文件组：{Filegroup}", filegroupName);
             return true;
@@ -221,7 +163,7 @@ internal sealed class SqlPartitionCommandExecutor
                 .Replace("{GrowthSizeMB}", growthSizeMB.ToString())
                 .Replace("{FilegroupName}", filegroupName);
 
-            await sqlExecutor.ExecuteAsync(connection.ConnectionString, sql, timeoutSeconds: 120);
+            await sqlExecutor.ExecuteAsync(connection, sql, timeoutSeconds: 120);
 
             logger.LogInformation(
                 "成功添加数据文件：{FileName} ({FilePath}) 到文件组 {Filegroup}",
@@ -254,14 +196,15 @@ internal sealed class SqlPartitionCommandExecutor
             try
             {
                 // 启用 XACT_ABORT
-                await sqlExecutor.ExecuteAsync(connection.ConnectionString, "SET XACT_ABORT ON;", timeoutSeconds: 5);
+                await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
 
                 var script = RenderSplitScript(configuration, newBoundaries);
 
                 // 执行分区拆分
                 affectedPartitions = await sqlExecutor.ExecuteAsync(
-                    connection.ConnectionString,
+                    connection,
                     script,
+                    transaction: transaction,
                     timeoutSeconds: 600); // 10分钟超时
 
                 await transaction.CommitAsync(cancellationToken);
@@ -313,11 +256,11 @@ internal sealed class SqlPartitionCommandExecutor
 
             try
             {
-                await sqlExecutor.ExecuteAsync(connection.ConnectionString, "SET XACT_ABORT ON;", timeoutSeconds: 5);
+                await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
 
                 var script = RenderMergeScript(configuration, boundaryKey);
 
-                await sqlExecutor.ExecuteAsync(connection.ConnectionString, script, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connection, script, transaction: transaction, timeoutSeconds: 300);
 
                 await transaction.CommitAsync(cancellationToken);
 
@@ -349,24 +292,6 @@ internal sealed class SqlPartitionCommandExecutor
                 ex.ToString());
         }
     }
-}
-
-/// <summary>
-/// 权限检查结果。
-/// </summary>
-public sealed class PermissionCheckResult
-{
-    /// <summary>是否已授权（具备必要权限）。</summary>
-    public bool IsAuthorized { get; init; }
-
-    /// <summary>已授予的权限列表。</summary>
-    public List<string> Permissions { get; init; } = new();
-
-    /// <summary>缺失的权限列表。</summary>
-    public List<string> MissingPermissions { get; init; } = new();
-
-    /// <summary>检查过程中的错误信息（如果有）。</summary>
-    public string? ErrorMessage { get; init; }
 }
 
 /// <summary>

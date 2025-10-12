@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionExecutionTaskRepository, PartitionExecutionTaskRepository>();
         services.AddScoped<IPartitionExecutionLogRepository, PartitionExecutionLogRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
+        services.AddScoped<IPermissionInspectionRepository, SqlServerPermissionInspectionRepository>();
         services.AddScoped<SqlPartitionQueryService>();
         services.AddScoped<SqlPartitionCommandExecutor>();
         services.AddScoped<PartitionExecutionProcessor>();

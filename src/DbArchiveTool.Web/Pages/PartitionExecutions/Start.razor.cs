@@ -248,18 +248,18 @@ public partial class StartBase : ComponentBase
             );
 
             // 调用 API 发起执行
-            var taskId = await ExecutionApi.StartAsync(request);
+            var startResponse = await ExecutionApi.StartAsync(request);
 
-            if (taskId.HasValue)
+            if (startResponse.Success && startResponse.TaskId.HasValue)
             {
-                ExecutionTaskId = taskId;
+                ExecutionTaskId = startResponse.TaskId;
                 ErrorMessage = null;
                 Message.Success("执行任务已创建");
             }
             else
             {
                 ExecutionTaskId = null;
-                ErrorMessage = "API 返回结果为空,请检查后端日志";
+                ErrorMessage = startResponse.Error ?? "API 返回结果为空,请检查后端日志";
                 Message.Error(ErrorMessage);
             }
 

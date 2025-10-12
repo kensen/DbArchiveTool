@@ -19,6 +19,7 @@ internal sealed class PartitionExecutionProcessor
     private readonly IPartitionExecutionLogRepository logRepository;
     private readonly IPartitionConfigurationRepository configurationRepository;
     private readonly IDataSourceRepository dataSourceRepository;
+    private readonly IPermissionInspectionRepository permissionInspectionRepository;
     private readonly SqlPartitionCommandExecutor commandExecutor;
     private readonly ILogger<PartitionExecutionProcessor> logger;
 
@@ -27,6 +28,7 @@ internal sealed class PartitionExecutionProcessor
         IPartitionExecutionLogRepository logRepository,
         IPartitionConfigurationRepository configurationRepository,
         IDataSourceRepository dataSourceRepository,
+        IPermissionInspectionRepository permissionInspectionRepository,
         SqlPartitionCommandExecutor commandExecutor,
         ILogger<PartitionExecutionProcessor> logger)
     {
@@ -34,6 +36,7 @@ internal sealed class PartitionExecutionProcessor
         this.logRepository = logRepository;
         this.configurationRepository = configurationRepository;
         this.dataSourceRepository = dataSourceRepository;
+        this.permissionInspectionRepository = permissionInspectionRepository;
         this.commandExecutor = commandExecutor;
         this.logger = logger;
     }
@@ -99,9 +102,15 @@ internal sealed class PartitionExecutionProcessor
 
             // ============== 阶段 3: 权限校验 ==============
             stepWatch.Restart();
-            await AppendLogAsync(task.Id, "Step", "权限校验", "正在检查数据库权限...", cancellationToken);
+            var permissionContext = BuildPermissionContext(dataSource, configuration);
+            await AppendLogAsync(
+                task.Id,
+                "Step",
+                "权限校验",
+                $"正在检查数据库权限...\n{permissionContext}",
+                cancellationToken);
 
-            var permissionResult = await commandExecutor.CheckPermissionsAsync(
+            var permissionResults = await permissionInspectionRepository.CheckObjectPermissionsAsync(
                 task.DataSourceId,
                 configuration.SchemaName,
                 configuration.TableName,
@@ -109,29 +118,66 @@ internal sealed class PartitionExecutionProcessor
 
             stepWatch.Stop();
 
-            if (!permissionResult.IsAuthorized)
+            if (permissionResults.Count == 0)
             {
-                var missingPerms = string.Join(", ", permissionResult.MissingPermissions);
                 await AppendLogAsync(
                     task.Id,
                     "Error",
-                    "权限不足",
-                    $"缺少必要权限：{missingPerms}。当前权限：{string.Join(", ", permissionResult.Permissions)}",
+                    "权限校验异常",
+                    $"未能获取到当前数据库用户的权限信息，请检查连接账号配置。\n{permissionContext}",
                     cancellationToken,
                     durationMs: stepWatch.ElapsedMilliseconds);
 
                 await HandleValidationFailureAsync(
                     task,
-                    $"权限校验失败：缺少 {missingPerms}",
+                    $"权限校验失败：无法确认数据库权限（{permissionContext}）",
                     cancellationToken);
                 return;
             }
+
+            var missingPermissions = permissionResults
+                .Where(result => !result.Granted)
+                .Select(result => result.PermissionName)
+                .ToList();
+
+            var grantedPermissions = permissionResults
+                .Where(result => result.Granted)
+                .Select(result => string.IsNullOrWhiteSpace(result.ScopeDisplayName)
+                    ? result.PermissionName
+                    : $"{result.PermissionName}({result.ScopeDisplayName})")
+                .ToList();
+
+            if (missingPermissions.Count > 0)
+            {
+                var missingDisplay = string.Join("、", missingPermissions);
+                var grantedDisplay = grantedPermissions.Count > 0
+                    ? string.Join("、", grantedPermissions)
+                    : "无";
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Error",
+                    "权限不足",
+                    $"缺少必要权限：{missingDisplay}。当前权限：{grantedDisplay}\n{permissionContext}",
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                await HandleValidationFailureAsync(
+                    task,
+                    $"权限校验失败：缺少 {missingDisplay}（{permissionContext}）",
+                    cancellationToken);
+                return;
+            }
+
+            var grantedSummary = grantedPermissions.Count > 0
+                ? string.Join("、", grantedPermissions)
+                : "无";
 
             await AppendLogAsync(
                 task.Id,
                 "Info",
                 "权限校验通过",
-                $"已授权权限：{string.Join(", ", permissionResult.Permissions)}",
+                $"已授权权限：{grantedSummary}\n{permissionContext}",
                 cancellationToken,
                 durationMs: stepWatch.ElapsedMilliseconds);
 
@@ -362,5 +408,17 @@ internal sealed class PartitionExecutionProcessor
     {
         var entry = PartitionExecutionLogEntry.Create(taskId, category, title, message, durationMs, extraJson);
         return logRepository.AddAsync(entry, cancellationToken);
+    }
+
+    private static string BuildPermissionContext(ArchiveDataSource dataSource, PartitionConfiguration configuration)
+    {
+        return $"目标服务器：{BuildServerDisplay(dataSource)}，目标数据库：{dataSource.DatabaseName}，目标对象：{configuration.SchemaName}.{configuration.TableName}";
+    }
+
+    private static string BuildServerDisplay(ArchiveDataSource dataSource)
+    {
+        return dataSource.ServerPort == 1433
+            ? dataSource.ServerAddress
+            : $"{dataSource.ServerAddress}:{dataSource.ServerPort}";
     }
 }

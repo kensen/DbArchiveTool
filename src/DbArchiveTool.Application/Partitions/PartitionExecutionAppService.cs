@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions.Dtos;
@@ -21,6 +22,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
     private readonly IPartitionExecutionLogRepository logRepository;
     private readonly IPartitionExecutionDispatcher dispatcher;
     private readonly IDataSourceRepository dataSourceRepository;
+    private readonly IPermissionInspectionRepository permissionInspectionRepository;
     private readonly ILogger<PartitionExecutionAppService> logger;
 
     public PartitionExecutionAppService(
@@ -29,6 +31,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         IPartitionExecutionLogRepository logRepository,
         IPartitionExecutionDispatcher dispatcher,
         IDataSourceRepository dataSourceRepository,
+        IPermissionInspectionRepository permissionInspectionRepository,
         ILogger<PartitionExecutionAppService> logger)
     {
         this.configurationRepository = configurationRepository;
@@ -36,6 +39,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         this.logRepository = logRepository;
         this.dispatcher = dispatcher;
         this.dataSourceRepository = dataSourceRepository;
+        this.permissionInspectionRepository = permissionInspectionRepository;
         this.logger = logger;
     }
 
@@ -124,7 +128,39 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             // 不阻止执行，但记录警告日志
         }
 
-        // 7. 创建执行任务
+        // 7. 权限检查，确保具备必要权限
+        var dataSource = await dataSourceRepository.GetAsync(request.DataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            logger.LogWarning("未找到归档数据源配置: DataSourceId={DataSourceId}", request.DataSourceId);
+            return Result<Guid>.Failure("未找到归档数据源配置，请刷新后重试。");
+        }
+
+        var permissionResults = await CheckPermissionsAsync(
+            request.DataSourceId,
+            configuration.SchemaName,
+            configuration.TableName,
+            cancellationToken);
+
+        if (permissionResults.Count == 0)
+        {
+            logger.LogWarning("权限检查未返回结果，可能无法确认当前登录用户权限。");
+            return Result<Guid>.Failure("无法确认当前数据库用户的权限，请联系管理员协助检查。");
+        }
+
+        var missingPermissions = permissionResults
+            .Where(x => !x.Granted)
+            .Select(x => x.PermissionName)
+            .ToList();
+
+        if (missingPermissions.Count > 0)
+        {
+            var message = string.Join("、", missingPermissions);
+            logger.LogWarning("权限检查失败，缺少权限：{Permissions}", message);
+            return Result<Guid>.Failure($"当前数据库用户缺少以下权限：{message}。请联系 DBA 授予所需权限后再试。");
+        }
+
+        // 8. 创建执行任务
         var task = PartitionExecutionTask.Create(
             configuration.Id,
             configuration.ArchiveDataSourceId,
@@ -138,7 +174,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         {
             await taskRepository.AddAsync(task, cancellationToken);
 
-            // 8. 记录初始日志
+            // 9. 记录初始日志
             var initialLog = PartitionExecutionLogEntry.Create(
                 task.Id,
                 "Info",
@@ -151,7 +187,16 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
 
             await logRepository.AddAsync(initialLog, cancellationToken);
 
-            // 9. 派发到执行队列
+            // 10. 写入权限检查日志
+            var permissionLog = BuildPermissionLog(
+                task.Id,
+                dataSource,
+                configuration.SchemaName,
+                configuration.TableName,
+                permissionResults);
+            await logRepository.AddAsync(permissionLog, cancellationToken);
+
+            // 11. 派发到执行队列
             await dispatcher.DispatchAsync(task.Id, task.DataSourceId, cancellationToken);
 
             logger.LogInformation(
@@ -414,6 +459,22 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         };
     }
 
+    /// <summary>
+    /// 执行权限检查并返回详细结果。
+    /// </summary>
+    private Task<IReadOnlyList<PermissionCheckResult>> CheckPermissionsAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        return permissionInspectionRepository.CheckObjectPermissionsAsync(
+            dataSourceId,
+            schemaName,
+            tableName,
+            cancellationToken);
+    }
+
     private static PartitionExecutionTaskDetailDto MapToDetail(PartitionExecutionTask task)
     {
         var summary = MapToSummary(task);
@@ -434,5 +495,45 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             SummaryJson = task.SummaryJson,
             Notes = task.Notes
         };
+    }
+
+    /// <summary>
+    /// 构造权限检查日志，便于在监控页面展示详细权限信息。
+    /// </summary>
+    private static PartitionExecutionLogEntry BuildPermissionLog(
+        Guid taskId,
+        ArchiveDataSource dataSource,
+        string schemaName,
+        string tableName,
+        IReadOnlyCollection<PermissionCheckResult> results)
+    {
+        var stringBuilder = new StringBuilder();
+        stringBuilder.AppendLine($"目标服务器：{BuildServerDisplay(dataSource)}");
+        stringBuilder.AppendLine($"目标数据库：{dataSource.DatabaseName}");
+        stringBuilder.AppendLine($"目标对象：{schemaName}.{tableName}");
+        stringBuilder.AppendLine("权限明细：");
+        foreach (var result in results)
+        {
+            var status = result.Granted ? "✅" : "❌";
+            var scope = string.IsNullOrWhiteSpace(result.ScopeDisplayName) ? "未授予" : result.ScopeDisplayName;
+            stringBuilder.AppendLine($"{status} {result.PermissionName} ({scope}) - {result.Detail ?? ""}");
+        }
+
+        var allGranted = results.All(x => x.Granted);
+        var category = allGranted ? "Info" : "Error";
+        var title = allGranted ? "权限检查通过" : "权限检查失败";
+
+        return PartitionExecutionLogEntry.Create(
+            taskId,
+            category,
+            title,
+            stringBuilder.ToString().TrimEnd());
+    }
+
+    private static string BuildServerDisplay(ArchiveDataSource dataSource)
+    {
+        return dataSource.ServerPort == 1433
+            ? dataSource.ServerAddress
+            : $"{dataSource.ServerAddress}:{dataSource.ServerPort}";
     }
 }

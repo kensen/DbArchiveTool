@@ -1,3 +1,1 @@
-SELECT permission_name
-FROM fn_my_permissions({ObjectName}, 'OBJECT')
-WHERE permission_name IN ('ALTER', 'CONTROL', 'VIEW DEFINITION');
+-- 该文件已于 2025-10-12 弃用，权限检查改由 SqlServerPermissionInspectionRepository 统一实现。

@@ -39,6 +39,29 @@ internal sealed class SqlExecutor : ISqlExecutor
         return await dbConnection.QuerySingleOrDefaultAsync<T>(sql, param);
     }
 
+    public async Task<int> ExecuteAsync(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null, int? timeoutSeconds = null)
+    {
+        EnsureOpen(connection);
+        logger.LogDebug("Executing SQL command: {Sql}", sql);
+        var definition = new CommandDefinition(sql, param, transaction, commandTimeout: timeoutSeconds);
+        return await connection.ExecuteAsync(definition);
+    }
+
+    public async Task<IEnumerable<T>> QueryAsync<T>(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null, int? timeoutSeconds = null)
+    {
+        EnsureOpen(connection);
+        logger.LogDebug("Querying SQL: {Sql}", sql);
+        var definition = new CommandDefinition(sql, param, transaction, commandTimeout: timeoutSeconds);
+        return await connection.QueryAsync<T>(definition);
+    }
+
+    public async Task<T?> QuerySingleAsync<T>(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null)
+    {
+        EnsureOpen(connection);
+        logger.LogDebug("Querying single SQL: {Sql}", sql);
+        return await connection.QuerySingleOrDefaultAsync<T>(sql, param, transaction: transaction);
+    }
+
     private IDbConnection CreateOpenConnection(string connectionString)
     {
         var connection = connectionFactory.CreateConnection(connectionString);
@@ -48,5 +71,13 @@ internal sealed class SqlExecutor : ISqlExecutor
         }
 
         return connection;
+    }
+
+    private static void EnsureOpen(IDbConnection connection)
+    {
+        if (connection.State != ConnectionState.Open)
+        {
+            connection.Open();
+        }
     }
 }

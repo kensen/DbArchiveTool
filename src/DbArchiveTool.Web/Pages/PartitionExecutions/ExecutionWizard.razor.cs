@@ -353,12 +353,12 @@ public partial class ExecutionWizard
                 Priority: 0
             );
 
-            var taskId = await ApiClient.StartAsync(request);
+            var startResponse = await ApiClient.StartAsync(request);
 
-            if (taskId.HasValue)
+            if (startResponse.Success && startResponse.TaskId.HasValue)
             {
                 ExecutionSuccess = true;
-                ExecutionTaskId = taskId.Value;
+                ExecutionTaskId = startResponse.TaskId.Value;
                 ResultTitle = "执行成功";
                 // Ignore returned task
                 Message.Success("分区执行任务已创建");
@@ -366,8 +366,9 @@ public partial class ExecutionWizard
             else
             {
                 ExecutionSuccess = false;
-                ErrorMessage = "创建任务失败,请查看API日志";
+                ErrorMessage = startResponse.Error ?? "创建任务失败,请查看API日志";
                 ResultTitle = "执行失败";
+                Message.Error($"执行失败: {ErrorMessage}");
             }
 
             ResultVisible = true;

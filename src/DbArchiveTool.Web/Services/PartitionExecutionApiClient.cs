@@ -20,36 +20,35 @@ public sealed class PartitionExecutionApiClient
         this.httpClient = httpClient;
     }
 
-    public async Task<Guid?> StartAsync(StartPartitionExecutionRequestModel request, CancellationToken cancellationToken = default)
+    public async Task<StartPartitionExecutionResponse> StartAsync(StartPartitionExecutionRequestModel request, CancellationToken cancellationToken = default)
     {
         var response = await httpClient.PostAsJsonAsync("api/v1/partition-executions", request, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            return null;
-        }
-
         try
         {
-            // API返回的是小写的 taskId: { "taskId": "guid-value" }
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
             using var doc = JsonDocument.Parse(content);
-            
-            if (doc.RootElement.TryGetProperty("taskId", out var taskIdElement))
+
+            if (!response.IsSuccessStatusCode)
             {
-                var taskIdStr = taskIdElement.GetString();
-                if (!string.IsNullOrEmpty(taskIdStr) && Guid.TryParse(taskIdStr, out var taskId))
-                {
-                    return taskId;
-                }
+                var errorMessage = TryGetStringProperty(doc.RootElement, "error")
+                    ?? $"创建分区执行任务失败（HTTP {(int)response.StatusCode}）。";
+                return StartPartitionExecutionResponse.FromFailure(errorMessage);
             }
+
+            // API 返回的是小写的 taskId: { "taskId": "guid-value" }
+            if (TryGetStringProperty(doc.RootElement, "taskId") is { Length: > 0 } taskIdStr
+                && Guid.TryParse(taskIdStr, out var taskId))
+            {
+                return StartPartitionExecutionResponse.FromSuccess(taskId);
+            }
+
+            return StartPartitionExecutionResponse.FromFailure("API 返回的任务标识缺失或格式无效。");
         }
         catch (JsonException)
         {
             // JSON解析失败
-            return null;
+            return StartPartitionExecutionResponse.FromFailure("无法解析 API 返回内容，请检查后端日志。");
         }
-        
-        return null;
     }
 
     public Task<PartitionExecutionTaskDetailModel?> GetAsync(Guid taskId, CancellationToken cancellationToken = default)
@@ -119,6 +118,16 @@ public sealed class PartitionExecutionApiClient
             $"api/v1/partition-executions/wizard/context/{configId}",
             cancellationToken);
     }
+
+    private static string? TryGetStringProperty(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var property) || property.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return property.GetString();
+    }
 }
 
 /// <summary>发起执行的请求模型。</summary>
@@ -136,6 +145,14 @@ public sealed record StartPartitionExecutionRequestModel(
 public sealed record CancelPartitionExecutionRequestModel(
     string CancelledBy,
     string? Reason = null);
+
+/// <summary>分区执行任务发起响应。</summary>
+public sealed record StartPartitionExecutionResponse(bool Success, Guid? TaskId, string? Error)
+{
+    public static StartPartitionExecutionResponse FromSuccess(Guid taskId) => new(true, taskId, null);
+
+    public static StartPartitionExecutionResponse FromFailure(string? error) => new(false, null, error);
+}
 
 /// <summary>日志分页响应模型。</summary>
 public sealed class GetLogsPagedResponse
