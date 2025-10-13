@@ -77,13 +77,14 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         const string sql = @"WITH PartitionInfo AS (
                         SELECT
                             p.partition_number,
-                            TYPE_NAME(pf.system_type_id) AS ValueType,
+                            TYPE_NAME(pp.system_type_id) AS ValueType,
                             ROW_NUMBER() OVER (ORDER BY p.partition_number) AS SortKey,
                             prv.value AS BoundaryValue
                         FROM sys.partitions p
                         INNER JOIN sys.indexes i ON p.object_id = i.object_id AND p.index_id = i.index_id
                         INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
                         INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
+                        INNER JOIN sys.partition_parameters pp ON pf.function_id = pp.function_id
                         OUTER APPLY (
                             SELECT prv_inner.value
                             FROM sys.partition_range_values prv_inner

@@ -29,10 +29,12 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         var builder = new StringBuilder();
         builder.AppendLine("-- 请确保已执行备份并确认无长事务占用目标表");
 
+        var defaultFilegroup = ResolveDefaultFilegroup(configuration);
+
         foreach (var boundary in newBoundaries)
         {
             var literal = boundary.ToLiteral();
-            var filegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
+            var filegroup = defaultFilegroup;
 
             builder.AppendLine("BEGIN TRY");
             builder.AppendLine("    BEGIN TRANSACTION");
@@ -157,5 +159,16 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         }
 
         return ascending || descending;
+    }
+
+    private static string ResolveDefaultFilegroup(PartitionConfiguration configuration)
+    {
+        if (configuration.StorageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile &&
+            !string.IsNullOrWhiteSpace(configuration.StorageSettings.FilegroupName))
+        {
+            return configuration.StorageSettings.FilegroupName;
+        }
+
+        return configuration.FilegroupStrategy.PrimaryFilegroup;
     }
 }

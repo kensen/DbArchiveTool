@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -21,6 +23,7 @@ internal sealed class PartitionExecutionProcessor
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly IPermissionInspectionRepository permissionInspectionRepository;
     private readonly SqlPartitionCommandExecutor commandExecutor;
+    private readonly IPartitionMetadataRepository metadataRepository;
     private readonly ILogger<PartitionExecutionProcessor> logger;
 
     public PartitionExecutionProcessor(
@@ -30,6 +33,7 @@ internal sealed class PartitionExecutionProcessor
         IDataSourceRepository dataSourceRepository,
         IPermissionInspectionRepository permissionInspectionRepository,
         SqlPartitionCommandExecutor commandExecutor,
+        IPartitionMetadataRepository metadataRepository,
         ILogger<PartitionExecutionProcessor> logger)
     {
         this.taskRepository = taskRepository;
@@ -38,6 +42,7 @@ internal sealed class PartitionExecutionProcessor
         this.dataSourceRepository = dataSourceRepository;
         this.permissionInspectionRepository = permissionInspectionRepository;
         this.commandExecutor = commandExecutor;
+        this.metadataRepository = metadataRepository;
         this.logger = logger;
     }
 
@@ -51,8 +56,10 @@ internal sealed class PartitionExecutionProcessor
         }
 
         var overallStopwatch = Stopwatch.StartNew();
-        PartitionConfiguration? configuration = null;
-        ArchiveDataSource? dataSource = null;
+    PartitionConfiguration? configuration = null;
+    ArchiveDataSource? dataSource = null;
+    List<PartitionValue> pendingBoundaryValues = new();
+    SqlExecutionResult? splitExecutionResult = null;
 
         try
         {
@@ -195,23 +202,35 @@ internal sealed class PartitionExecutionProcessor
             task.UpdateProgress(0.35, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            // ============== 阶段 6: 文件组准备（如果需要） ==============
-            if (configuration.FilegroupStrategy is not null &&
-                !string.IsNullOrWhiteSpace(configuration.FilegroupStrategy.PrimaryFilegroup) &&
-                configuration.FilegroupStrategy.PrimaryFilegroup != "PRIMARY")
+            // ============== 阶段 6: 文件组与分区对象准备 ==============
+            var storageSettings = configuration.StorageSettings;
+            var defaultFilegroup = storageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile
+                ? storageSettings.FilegroupName
+                : configuration.FilegroupStrategy.PrimaryFilegroup;
+
+            if (string.IsNullOrWhiteSpace(defaultFilegroup))
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "文件组准备",
+                    "未配置文件组名称，将使用 PRIMARY 文件组。",
+                    cancellationToken);
+            }
+            else if (!defaultFilegroup.Equals("PRIMARY", StringComparison.OrdinalIgnoreCase))
             {
                 stepWatch.Restart();
                 await AppendLogAsync(
                     task.Id,
                     "Step",
                     "文件组准备",
-                    $"检查文件组 {configuration.FilegroupStrategy.PrimaryFilegroup} 是否存在...",
+                    $"检查文件组 {defaultFilegroup} 是否存在...",
                     cancellationToken);
 
                 var created = await commandExecutor.CreateFilegroupIfNeededAsync(
                     task.DataSourceId,
                     dataSource.DatabaseName,
-                    configuration.FilegroupStrategy.PrimaryFilegroup,
+                    defaultFilegroup!,
                     cancellationToken);
 
                 stepWatch.Stop();
@@ -222,7 +241,7 @@ internal sealed class PartitionExecutionProcessor
                         task.Id,
                         "Info",
                         "文件组已创建",
-                        $"成功创建文件组：{configuration.FilegroupStrategy.PrimaryFilegroup}",
+                        $"成功创建文件组：{defaultFilegroup}",
                         cancellationToken,
                         durationMs: stepWatch.ElapsedMilliseconds);
                 }
@@ -232,14 +251,148 @@ internal sealed class PartitionExecutionProcessor
                         task.Id,
                         "Info",
                         "文件组已存在",
-                        $"文件组 {configuration.FilegroupStrategy.PrimaryFilegroup} 已存在，跳过创建。",
+                        $"文件组 {defaultFilegroup} 已存在，跳过创建。",
                         cancellationToken,
                         durationMs: stepWatch.ElapsedMilliseconds);
                 }
-
-                task.UpdateProgress(0.45, "SYSTEM");
-                await taskRepository.UpdateAsync(task, cancellationToken);
             }
+            else
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "文件组准备",
+                    "使用 PRIMARY 文件组，无需额外创建。",
+                    cancellationToken);
+            }
+
+            if (storageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile &&
+                !string.IsNullOrWhiteSpace(storageSettings.DataFileDirectory) &&
+                !string.IsNullOrWhiteSpace(storageSettings.DataFileName))
+            {
+                var dataFilePath = Path.Combine(storageSettings.DataFileDirectory, storageSettings.DataFileName);
+                stepWatch.Restart();
+                await AppendLogAsync(
+                    task.Id,
+                    "Step",
+                    "数据文件准备",
+                    $"检查数据文件 {storageSettings.DataFileName} 是否存在...",
+                    cancellationToken);
+
+                var dataFileCreated = await commandExecutor.CreateDataFileIfNeededAsync(
+                    task.DataSourceId,
+                    dataSource.DatabaseName,
+                    storageSettings,
+                    cancellationToken);
+
+                stepWatch.Stop();
+
+                if (dataFileCreated)
+                {
+                    await AppendLogAsync(
+                        task.Id,
+                        "Info",
+                        "数据文件已创建",
+                        $"成功创建数据文件：{storageSettings.DataFileName}（{dataFilePath}）",
+                        cancellationToken,
+                        durationMs: stepWatch.ElapsedMilliseconds);
+                }
+                else
+                {
+                    await AppendLogAsync(
+                        task.Id,
+                        "Info",
+                        "数据文件已存在",
+                        $"数据文件 {storageSettings.DataFileName} 已存在，跳过创建。",
+                        cancellationToken,
+                        durationMs: stepWatch.ElapsedMilliseconds);
+                }
+            }
+
+            await AppendLogAsync(
+                task.Id,
+                "Step",
+                "分区对象准备",
+                $"检查分区函数 {configuration.PartitionFunctionName} 与分区方案 {configuration.PartitionSchemeName} 是否存在...",
+                cancellationToken);
+
+            var functionCheckWatch = Stopwatch.StartNew();
+            var partitionFunctionExists = await commandExecutor.CheckPartitionFunctionExistsAsync(
+                task.DataSourceId,
+                configuration.PartitionFunctionName,
+                cancellationToken);
+            functionCheckWatch.Stop();
+
+            if (!partitionFunctionExists)
+            {
+                var seedBoundaries = configuration.Boundaries.Count > 0
+                    ? configuration.Boundaries.Select(b => b.Value).ToList()
+                    : null;
+
+                var createFunctionWatch = Stopwatch.StartNew();
+                await commandExecutor.CreatePartitionFunctionAsync(
+                    task.DataSourceId,
+                    configuration,
+                    seedBoundaries,
+                    cancellationToken);
+                createFunctionWatch.Stop();
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区函数已创建",
+                    $"成功创建分区函数：{configuration.PartitionFunctionName}",
+                    cancellationToken,
+                    durationMs: createFunctionWatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区函数已存在",
+                    $"分区函数 {configuration.PartitionFunctionName} 已存在，跳过创建。",
+                    cancellationToken,
+                    durationMs: functionCheckWatch.ElapsedMilliseconds);
+            }
+
+            var schemeCheckWatch = Stopwatch.StartNew();
+            var partitionSchemeExists = await commandExecutor.CheckPartitionSchemeExistsAsync(
+                task.DataSourceId,
+                configuration.PartitionSchemeName,
+                cancellationToken);
+            schemeCheckWatch.Stop();
+
+            if (!partitionSchemeExists)
+            {
+                var createSchemeWatch = Stopwatch.StartNew();
+                await commandExecutor.CreatePartitionSchemeAsync(
+                    task.DataSourceId,
+                    configuration,
+                    cancellationToken);
+                createSchemeWatch.Stop();
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区方案已创建",
+                    $"成功创建分区方案：{configuration.PartitionSchemeName}",
+                    cancellationToken,
+                    durationMs: createSchemeWatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区方案已存在",
+                    $"分区方案 {configuration.PartitionSchemeName} 已存在，跳过创建。",
+                    cancellationToken,
+                    durationMs: schemeCheckWatch.ElapsedMilliseconds);
+            }
+
+            task.UpdateProgress(0.5, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
 
             // ============== 阶段 6.5: 转换表为分区表 ==============
             stepWatch.Restart();
@@ -283,54 +436,98 @@ internal sealed class PartitionExecutionProcessor
 
             // ============== 阶段 7: 执行分区拆分 ==============
             stepWatch.Restart();
-            var boundaryValues = configuration.Boundaries
-                .OrderBy(b => b.SortKey, StringComparer.Ordinal)
-                .Select(b => b.Value)
-                .ToList();
-
             await AppendLogAsync(
                 task.Id,
                 "Step",
-                "执行分区拆分",
-                $"准备拆分 {boundaryValues.Count} 个分区边界...",
+                "同步分区边界",
+                "正在读取数据库现有分区边界并识别需要新增的边界...",
                 cancellationToken);
 
-            var executionResult = await commandExecutor.ExecuteSplitWithTransactionAsync(
+            var databaseBoundaries = await metadataRepository.ListBoundariesAsync(
                 task.DataSourceId,
-                configuration,
-                boundaryValues,
+                configuration.SchemaName,
+                configuration.TableName,
                 cancellationToken);
+
+            var existingBoundarySet = new HashSet<string>(
+                databaseBoundaries.Select(b => b.Value.ToInvariantString()),
+                StringComparer.Ordinal);
+
+            pendingBoundaryValues = configuration.Boundaries
+                .Where(b => !existingBoundarySet.Contains(b.Value.ToInvariantString()))
+                .Select(b => b.Value)
+                .ToList();
 
             stepWatch.Stop();
-
-            if (!executionResult.IsSuccess)
-            {
-                await AppendLogAsync(
-                    task.Id,
-                    "Error",
-                    "分区拆分失败",
-                    executionResult.Message,
-                    cancellationToken,
-                    durationMs: stepWatch.ElapsedMilliseconds,
-                    extraJson: JsonSerializer.Serialize(new { errorDetail = executionResult.ErrorDetail }));
-
-                task.MarkFailed("SYSTEM", executionResult.Message);
-                await taskRepository.UpdateAsync(task, cancellationToken);
-                return;
-            }
 
             await AppendLogAsync(
                 task.Id,
                 "Info",
-                "分区拆分完成",
-                executionResult.Message,
+                "边界同步结果",
+                $"数据库当前边界数：{databaseBoundaries.Count}，草稿目标边界数：{configuration.Boundaries.Count}，待新增边界数：{pendingBoundaryValues.Count}",
                 cancellationToken,
-                durationMs: executionResult.ElapsedMilliseconds,
-                extraJson: JsonSerializer.Serialize(new
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            if (pendingBoundaryValues.Count == 0)
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区拆分跳过",
+                    "数据库分区边界已与草稿配置一致，无需执行拆分。",
+                    cancellationToken);
+
+                splitExecutionResult = SqlExecutionResult.Success(0, 0, "已与数据库边界同步，无需拆分。");
+            }
+            else
+            {
+                stepWatch.Restart();
+                await AppendLogAsync(
+                    task.Id,
+                    "Step",
+                    "执行分区拆分",
+                    $"准备拆分 {pendingBoundaryValues.Count} 个新的分区边界...",
+                    cancellationToken);
+
+                var executionResult = await commandExecutor.ExecuteSplitWithTransactionAsync(
+                    task.DataSourceId,
+                    configuration,
+                    pendingBoundaryValues,
+                    cancellationToken);
+
+                stepWatch.Stop();
+
+                if (!executionResult.IsSuccess)
                 {
-                    boundaryCount = boundaryValues.Count,
-                    affectedPartitions = executionResult.AffectedCount
-                }));
+                    await AppendLogAsync(
+                        task.Id,
+                        "Error",
+                        "分区拆分失败",
+                        executionResult.Message,
+                        cancellationToken,
+                        durationMs: stepWatch.ElapsedMilliseconds,
+                        extraJson: JsonSerializer.Serialize(new { errorDetail = executionResult.ErrorDetail }));
+
+                    task.MarkFailed("SYSTEM", executionResult.Message);
+                    await taskRepository.UpdateAsync(task, cancellationToken);
+                    return;
+                }
+
+                splitExecutionResult = executionResult;
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "分区拆分完成",
+                    executionResult.Message,
+                    cancellationToken,
+                    durationMs: executionResult.ElapsedMilliseconds,
+                    extraJson: JsonSerializer.Serialize(new
+                    {
+                        boundaryCount = pendingBoundaryValues.Count,
+                        affectedPartitions = executionResult.AffectedCount
+                    }));
+            }
 
             task.UpdateProgress(0.75, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
@@ -361,10 +558,10 @@ internal sealed class PartitionExecutionProcessor
             {
                 schema = configuration.SchemaName,
                 table = configuration.TableName,
-                boundaryCount = boundaryValues.Count,
-                affectedPartitions = executionResult.AffectedCount,
+                boundaryCount = pendingBoundaryValues.Count,
+                affectedPartitions = splitExecutionResult?.AffectedCount ?? 0,
                 totalDurationMs = overallStopwatch.ElapsedMilliseconds,
-                splitDurationMs = executionResult.ElapsedMilliseconds,
+                splitDurationMs = splitExecutionResult?.ElapsedMilliseconds ?? 0,
                 requestedBy = task.RequestedBy,
                 backupReference = task.BackupReference,
                 completedAt = DateTime.UtcNow

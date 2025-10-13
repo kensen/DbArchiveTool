@@ -5,6 +5,8 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -38,7 +40,7 @@ internal sealed class SqlPartitionCommandExecutor
     {
         var template = templateProvider.GetTemplate("SplitRange.sql");
         var builder = new StringBuilder();
-        var filegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
+        var filegroup = ResolveDefaultFilegroup(configuration);
 
         builder.AppendLine("-- 分区拆分脚本");
         builder.AppendLine($"-- 目标表: {configuration.SchemaName}.{configuration.TableName}");
@@ -133,7 +135,7 @@ internal sealed class SqlPartitionCommandExecutor
             var template = templateProvider.GetTemplate("CreateFilegroup.sql");
             var createSql = template
                 .Replace("{DatabaseName}", databaseName)
-                .Replace("{FilegroupName}", filegroupName);
+                .Replace("{FilegroupName}", $"[{filegroupName}]");
 
             await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 60);
 
@@ -164,14 +166,17 @@ internal sealed class SqlPartitionCommandExecutor
         {
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
 
+            var sanitizedFileName = fileName.Replace("'", "''", StringComparison.Ordinal);
+            var sanitizedFilePath = filePath.Replace("'", "''", StringComparison.Ordinal);
+
             var template = templateProvider.GetTemplate("AddDataFile.sql");
             var sql = template
                 .Replace("{DatabaseName}", databaseName)
-                .Replace("{FileName}", fileName)
-                .Replace("{FilePath}", filePath)
+                .Replace("{FileName}", sanitizedFileName)
+                .Replace("{FilePath}", sanitizedFilePath)
                 .Replace("{InitialSizeMB}", initialSizeMB.ToString())
                 .Replace("{GrowthSizeMB}", growthSizeMB.ToString())
-                .Replace("{FilegroupName}", filegroupName);
+                .Replace("{FilegroupName}", $"[{filegroupName}]");
 
             await sqlExecutor.ExecuteAsync(connection, sql, timeoutSeconds: 120);
 
@@ -182,6 +187,84 @@ internal sealed class SqlPartitionCommandExecutor
         catch (Exception ex)
         {
             logger.LogError(ex, "添加数据文件 {FileName} 到文件组 {Filegroup} 失败。", fileName, filegroupName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 确保为单文件组策略创建数据文件。
+    /// </summary>
+    /// <param name="dataSourceId">数据源标识。</param>
+    /// <param name="databaseName">数据库名称。</param>
+    /// <param name="storageSettings">分区存储设置。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>返回 true 表示已新建数据文件。</returns>
+    public async Task<bool> CreateDataFileIfNeededAsync(
+        Guid dataSourceId,
+        string databaseName,
+        PartitionStorageSettings storageSettings,
+        CancellationToken cancellationToken = default)
+    {
+        if (storageSettings.Mode != PartitionStorageMode.DedicatedFilegroupSingleFile)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(storageSettings.DataFileDirectory) ||
+            string.IsNullOrWhiteSpace(storageSettings.DataFileName))
+        {
+            throw new InvalidOperationException("分区配置缺少数据文件目录或文件名，无法创建文件。");
+        }
+
+        var initialSize = storageSettings.InitialSizeMb ?? throw new InvalidOperationException("分区配置缺少数据文件初始大小。");
+        var autoGrowth = storageSettings.AutoGrowthMb ?? throw new InvalidOperationException("分区配置缺少数据文件自动增长设置。");
+
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            const string checkSql = @"
+                SELECT COUNT(1)
+                FROM sys.database_files
+                WHERE name = @FileName";
+
+            var exists = await sqlExecutor.QuerySingleAsync<int>(
+                connection,
+                checkSql,
+                new { FileName = storageSettings.DataFileName });
+
+            if (exists > 0)
+            {
+                logger.LogDebug("数据文件 {FileName} 已存在，跳过创建。", storageSettings.DataFileName);
+                return false;
+            }
+
+            var fullPath = Path.Combine(storageSettings.DataFileDirectory, storageSettings.DataFileName);
+            var sanitizedFileName = storageSettings.DataFileName.Replace("'", "''", StringComparison.Ordinal);
+            var sanitizedFilePath = fullPath.Replace("'", "''", StringComparison.Ordinal);
+
+            var template = templateProvider.GetTemplate("AddDataFile.sql");
+            var sql = template
+                .Replace("{DatabaseName}", databaseName)
+                .Replace("{FileName}", sanitizedFileName)
+                .Replace("{FilePath}", sanitizedFilePath)
+                .Replace("{InitialSizeMB}", initialSize.ToString(CultureInfo.InvariantCulture))
+                .Replace("{GrowthSizeMB}", autoGrowth.ToString(CultureInfo.InvariantCulture))
+                .Replace("{FilegroupName}", $"[{storageSettings.FilegroupName}]");
+
+            await sqlExecutor.ExecuteAsync(connection, sql, timeoutSeconds: 180);
+
+            logger.LogInformation(
+                "成功创建数据文件：{FileName} ({FilePath})，归属文件组 {Filegroup}",
+                storageSettings.DataFileName,
+                fullPath,
+                storageSettings.FilegroupName);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "创建数据文件 {FileName} 到文件组 {Filegroup} 失败。", storageSettings.DataFileName, storageSettings.FilegroupName);
             throw;
         }
     }
@@ -343,9 +426,9 @@ internal sealed class SqlPartitionCommandExecutor
             }
             else
             {
-                // 默认全部映射到主文件组
-                var primaryFilegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
-                filegroupMapping = $"ALL TO ([{primaryFilegroup}])";
+                // 默认全部映射到存储配置指定的文件组
+                var defaultFilegroup = ResolveDefaultFilegroup(configuration);
+                filegroupMapping = $"ALL TO ([{defaultFilegroup}])";
             }
 
             var sql = template
@@ -558,6 +641,19 @@ internal sealed class SqlPartitionCommandExecutor
         IReadOnlyList<PartitionValue> newBoundaries,
         CancellationToken cancellationToken = default)
     {
+        if (newBoundaries.Count == 0)
+        {
+            logger.LogInformation(
+                "No new partition boundaries detected for {Schema}.{Table}, skip split execution.",
+                configuration.SchemaName,
+                configuration.TableName);
+
+            return SqlExecutionResult.Success(
+                0,
+                0,
+                "数据库分区边界已与草稿配置一致，无需拆分。");
+        }
+
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var affectedPartitions = 0;
 
@@ -687,6 +783,17 @@ internal sealed class SqlPartitionCommandExecutor
                 stopwatch.ElapsedMilliseconds,
                 ex.ToString());
         }
+    }
+
+    private static string ResolveDefaultFilegroup(PartitionConfiguration configuration)
+    {
+        if (configuration.StorageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile &&
+            !string.IsNullOrWhiteSpace(configuration.StorageSettings.FilegroupName))
+        {
+            return configuration.StorageSettings.FilegroupName;
+        }
+
+        return configuration.FilegroupStrategy.PrimaryFilegroup;
     }
 }
 
