@@ -44,8 +44,9 @@ internal sealed class PartitionConfigurationRepository : IPartitionConfiguration
 
     public async Task<List<PartitionConfiguration>> GetByDataSourceAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
     {
+        // 只返回草稿配置（未提交的配置），已提交的配置不应出现在草稿列表中
         var entities = await Query()
-            .Where(x => x.ArchiveDataSourceId == dataSourceId && !x.IsDeleted)
+            .Where(x => x.ArchiveDataSourceId == dataSourceId && !x.IsDeleted && !x.IsCommitted)
             .ToListAsync(cancellationToken);
 
         return entities.Select(MapToDomain).ToList();

@@ -40,13 +40,23 @@ internal sealed class SqlPartitionCommandExecutor
         var builder = new StringBuilder();
         var filegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
 
-        foreach (var boundary in newBoundaries)
+        builder.AppendLine("-- 分区拆分脚本");
+        builder.AppendLine($"-- 目标表: {configuration.SchemaName}.{configuration.TableName}");
+        builder.AppendLine($"-- 分区函数: {configuration.PartitionFunctionName}");
+        builder.AppendLine($"-- 分区方案: {configuration.PartitionSchemeName}");
+        builder.AppendLine($"-- 新增边界数量: {newBoundaries.Count}");
+        builder.AppendLine($"-- 生成时间: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+        builder.AppendLine();
+
+        foreach (var boundary in newBoundaries.Select((value, index) => new { value, index }))
         {
+            builder.AppendLine($"-- 边界 #{boundary.index + 1}: {boundary.value.ToLiteral()}");
             builder.AppendLine(template
                 .Replace("{PartitionScheme}", configuration.PartitionSchemeName)
                 .Replace("{FilegroupName}", filegroup)
                 .Replace("{PartitionFunction}", configuration.PartitionFunctionName)
-                .Replace("{BoundaryLiteral}", boundary.ToLiteral()));
+                .Replace("{BoundaryLiteral}", boundary.value.ToLiteral()));
+            builder.AppendLine();
         }
 
         logger.LogDebug("Split script generated for {Schema}.{Table} with {Count} boundaries", configuration.SchemaName, configuration.TableName, newBoundaries.Count);
@@ -177,7 +187,370 @@ internal sealed class SqlPartitionCommandExecutor
     }
 
     /// <summary>
-    /// 在事务中执行分区拆分脚本。
+    /// 检查分区函数是否存在。
+    /// </summary>
+    public async Task<bool> CheckPartitionFunctionExistsAsync(
+        Guid dataSourceId,
+        string partitionFunctionName,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            var checkSql = @"
+                SELECT COUNT(1) 
+                FROM sys.partition_functions 
+                WHERE name = @FunctionName";
+
+            var exists = await sqlExecutor.QuerySingleAsync<int>(
+                connection,
+                checkSql,
+                new { FunctionName = partitionFunctionName });
+
+            return exists > 0;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "检查分区函数 {Function} 是否存在失败。", partitionFunctionName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 检查分区方案是否存在。
+    /// </summary>
+    public async Task<bool> CheckPartitionSchemeExistsAsync(
+        Guid dataSourceId,
+        string partitionSchemeName,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            var checkSql = @"
+                SELECT COUNT(1) 
+                FROM sys.partition_schemes 
+                WHERE name = @SchemeName";
+
+            var exists = await sqlExecutor.QuerySingleAsync<int>(
+                connection,
+                checkSql,
+                new { SchemeName = partitionSchemeName });
+
+            return exists > 0;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "检查分区方案 {Scheme} 是否存在失败。", partitionSchemeName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 创建分区函数（带初始边界值）。
+    /// </summary>
+    public async Task<bool> CreatePartitionFunctionAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        IReadOnlyList<PartitionValue>? initialBoundaries = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            // 检查是否已存在
+            if (await CheckPartitionFunctionExistsAsync(dataSourceId, configuration.PartitionFunctionName, cancellationToken))
+            {
+                logger.LogInformation("分区函数 {Function} 已存在，跳过创建。", configuration.PartitionFunctionName);
+                return false;
+            }
+
+            var template = templateProvider.GetTemplate("CreatePartitionFunction.sql");
+            
+            // 确定数据类型和范围类型（从 PartitionColumn.ValueKind 推导 SQL 数据类型）
+            var dataType = configuration.PartitionColumn.ValueKind switch
+            {
+                Domain.Partitions.PartitionValueKind.Int => "int",
+                Domain.Partitions.PartitionValueKind.BigInt => "bigint",
+                Domain.Partitions.PartitionValueKind.Date => "date",
+                Domain.Partitions.PartitionValueKind.DateTime => "datetime",
+                Domain.Partitions.PartitionValueKind.DateTime2 => "datetime2",
+                Domain.Partitions.PartitionValueKind.Guid => "uniqueidentifier",
+                Domain.Partitions.PartitionValueKind.String => "nvarchar(50)",
+                _ => "datetime2" // 默认使用 datetime2
+            };
+            var rangeType = configuration.IsRangeRight ? "RIGHT" : "LEFT";
+            
+            // 构建初始边界值列表（如果提供）
+            var boundariesStr = initialBoundaries != null && initialBoundaries.Count > 0
+                ? string.Join(", ", initialBoundaries.Select(b => b.ToLiteral()))
+                : string.Empty;
+
+            var sql = template
+                .Replace("{PartitionFunction}", configuration.PartitionFunctionName)
+                .Replace("{DataType}", dataType)
+                .Replace("{RangeType}", rangeType)
+                .Replace("{InitialBoundaries}", boundariesStr);
+
+            await sqlExecutor.ExecuteAsync(connection, sql, timeoutSeconds: 60);
+
+            logger.LogInformation(
+                "成功创建分区函数：{Function}，数据类型：{DataType}，范围：{Range}，初始边界数：{Count}",
+                configuration.PartitionFunctionName, dataType, rangeType, initialBoundaries?.Count ?? 0);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "创建分区函数 {Function} 失败。", configuration.PartitionFunctionName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 创建分区方案（映射分区函数到文件组）。
+    /// </summary>
+    public async Task<bool> CreatePartitionSchemeAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            // 检查是否已存在
+            if (await CheckPartitionSchemeExistsAsync(dataSourceId, configuration.PartitionSchemeName, cancellationToken))
+            {
+                logger.LogInformation("分区方案 {Scheme} 已存在，跳过创建。", configuration.PartitionSchemeName);
+                return false;
+            }
+
+            var template = templateProvider.GetTemplate("CreatePartitionScheme.sql");
+            
+            // 构建文件组映射（ALL TO 或指定映射）
+            string filegroupMapping;
+            if (configuration.FilegroupMappings.Count > 0)
+            {
+                // 使用用户定义的映射
+                var mappings = configuration.FilegroupMappings
+                    .OrderBy(m => m.BoundaryKey)
+                    .Select(m => $"[{m.FilegroupName}]");
+                filegroupMapping = $"TO ({string.Join(", ", mappings)})";
+            }
+            else
+            {
+                // 默认全部映射到主文件组
+                var primaryFilegroup = configuration.FilegroupStrategy.PrimaryFilegroup;
+                filegroupMapping = $"ALL TO ([{primaryFilegroup}])";
+            }
+
+            var sql = template
+                .Replace("{PartitionScheme}", configuration.PartitionSchemeName)
+                .Replace("{PartitionFunction}", configuration.PartitionFunctionName)
+                .Replace("{FilegroupMapping}", filegroupMapping);
+
+            await sqlExecutor.ExecuteAsync(connection, sql, timeoutSeconds: 60);
+
+            logger.LogInformation(
+                "成功创建分区方案：{Scheme}，映射到分区函数：{Function}",
+                configuration.PartitionSchemeName, configuration.PartitionFunctionName);
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "创建分区方案 {Scheme} 失败。", configuration.PartitionSchemeName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 检查表是否已经是分区表。
+    /// </summary>
+    public async Task<bool> CheckTableIsPartitionedAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            var checkSql = @"
+                SELECT COUNT(1)
+                FROM sys.tables t
+                INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+                WHERE SCHEMA_NAME(t.schema_id) = @SchemaName
+                  AND t.name = @TableName
+                  AND i.index_id IN (0, 1)"; // 堆或聚集索引
+
+            var isPartitioned = await sqlExecutor.QuerySingleAsync<int>(
+                connection,
+                checkSql,
+                new { SchemaName = schemaName, TableName = tableName });
+
+            return isPartitioned > 0;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "检查表 {Schema}.{Table} 是否分区失败。", schemaName, tableName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 将普通表转换为分区表（保存所有索引定义，删除所有索引，然后在分区方案上重建所有索引）。
+    /// <para>执行顺序（严格遵循 SQL Server 分区最佳实践）：</para>
+    /// <para>1. 查询并保存所有索引定义</para>
+    /// <para>2. 删除所有非聚集索引（保留聚集索引）</para>
+    /// <para>3. 重建聚集索引到分区方案（此时表变为分区表）</para>
+    /// <para>4. 重建所有非聚集索引</para>
+    /// </summary>
+    public async Task<bool> ConvertToPartitionedTableAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // 检查是否已经是分区表
+            if (await CheckTableIsPartitionedAsync(dataSourceId, configuration.SchemaName, configuration.TableName, cancellationToken))
+            {
+                logger.LogInformation("表 {Schema}.{Table} 已经是分区表，跳过转换。", configuration.SchemaName, configuration.TableName);
+                return false;
+            }
+
+            // 双保险：确保分区函数与方案存在
+            if (!await CheckPartitionFunctionExistsAsync(dataSourceId, configuration.PartitionFunctionName, cancellationToken))
+            {
+                logger.LogInformation("分区函数 {Function} 不存在，自动创建（转换前校验）。", configuration.PartitionFunctionName);
+                await CreatePartitionFunctionAsync(dataSourceId, configuration, null, cancellationToken);
+            }
+
+            if (!await CheckPartitionSchemeExistsAsync(dataSourceId, configuration.PartitionSchemeName, cancellationToken))
+            {
+                logger.LogInformation("分区方案 {Scheme} 不存在，自动创建（转换前校验）。", configuration.PartitionSchemeName);
+                await CreatePartitionSchemeAsync(dataSourceId, configuration, cancellationToken);
+            }
+
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+            logger.LogInformation(
+                "开始将表 {Schema}.{Table} 转换为分区表（遵循 SQL Server 分区最佳实践）...",
+                configuration.SchemaName, configuration.TableName);
+
+            await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
+
+            // ============== 步骤 1: 查询并保存所有索引定义 ==============
+            logger.LogInformation("步骤 1/4: 查询表的所有索引定义...");
+            var queryIndexesSql = templateProvider.GetTemplate("QueryTableIndexes.sql");
+            var indexes = (await sqlExecutor.QueryAsync<Models.TableIndexDefinition>(
+                connection,
+                queryIndexesSql,
+                new
+                {
+                    SchemaName = configuration.SchemaName,
+                    TableName = configuration.TableName,
+                    PartitionColumn = configuration.PartitionColumn.Name
+                },
+                transaction: transaction)).ToList();
+
+            if (!indexes.Any())
+            {
+                throw new InvalidOperationException($"表 {configuration.SchemaName}.{configuration.TableName} 没有任何索引，无法转换为分区表。");
+            }
+
+            logger.LogInformation(
+                "发现 {Count} 个索引：{Indexes}",
+                indexes.Count,
+                string.Join(", ", indexes.Select(i => $"{i.IndexName} ({i.GetDescription()})")));
+
+            var clusteredIndex = indexes.FirstOrDefault(i => i.IsClustered);
+            var nonClusteredIndexes = indexes.Where(i => !i.IsClustered).OrderByDescending(i => i.IndexId).ToList();
+
+            if (clusteredIndex is null)
+            {
+                throw new InvalidOperationException($"表 {configuration.SchemaName}.{configuration.TableName} 没有聚集索引，无法转换为分区表。");
+            }
+
+            // ============== 步骤 2: 删除所有非聚集索引（保留聚集索引） ==============
+            logger.LogInformation("步骤 2/4: 删除所有非聚集索引（保留聚集索引 {ClusteredIndex}）...", clusteredIndex.IndexName);
+            foreach (var index in nonClusteredIndexes)
+            {
+                var dropSql = index.GetDropSql(configuration.SchemaName, configuration.TableName);
+                logger.LogInformation("  删除非聚集索引：{IndexName} ({Type})", index.IndexName, index.GetDescription());
+                logger.LogDebug("  执行 SQL: {Sql}", dropSql);
+
+                await sqlExecutor.ExecuteAsync(connection, dropSql, transaction: transaction, timeoutSeconds: 300);
+                logger.LogInformation("  ✓ 已删除索引 {IndexName}", index.IndexName);
+            }
+
+            logger.LogInformation("已删除 {Count} 个非聚集索引。", nonClusteredIndexes.Count);
+
+            // ============== 步骤 3: 重建聚集索引到分区方案（关键步骤：表变为分区表） ==============
+            logger.LogInformation("步骤 3/4: 重建聚集索引到分区方案（表将变为分区表）...");
+            var clusteredDropSql = clusteredIndex.GetDropSql(configuration.SchemaName, configuration.TableName);
+            logger.LogInformation("  删除聚集索引：{IndexName} ({Type})", clusteredIndex.IndexName, clusteredIndex.GetDescription());
+            logger.LogDebug("  执行 SQL: {Sql}", clusteredDropSql);
+
+            await sqlExecutor.ExecuteAsync(connection, clusteredDropSql, transaction: transaction, timeoutSeconds: 300);
+            logger.LogInformation("  ✓ 已删除聚集索引 {IndexName}", clusteredIndex.IndexName);
+
+            var clusteredCreateSql = clusteredIndex.GetCreateSql(
+                configuration.SchemaName,
+                configuration.TableName,
+                configuration.PartitionSchemeName,
+                configuration.PartitionColumn.Name);
+
+            logger.LogInformation("  重建聚集索引到分区方案：{IndexName} ON {Scheme}({Column})",
+                clusteredIndex.IndexName, configuration.PartitionSchemeName, configuration.PartitionColumn.Name);
+            logger.LogDebug("  执行 SQL: {Sql}", clusteredCreateSql);
+
+            await sqlExecutor.ExecuteAsync(connection, clusteredCreateSql, transaction: transaction, timeoutSeconds: 1800);
+            logger.LogInformation("  ✓ 已重建聚集索引 {IndexName}，表已变为分区表", clusteredIndex.IndexName);
+
+            // ============== 步骤 4: 重建所有非聚集索引 ==============
+            logger.LogInformation("步骤 4/4: 重建所有非聚集索引（按 IndexId 正序）...");
+            var indexesToCreate = nonClusteredIndexes.OrderBy(i => i.IndexId).ToList();
+            foreach (var index in indexesToCreate)
+            {
+                var createSql = index.GetCreateSql(
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    configuration.PartitionSchemeName,
+                    configuration.PartitionColumn.Name);
+
+                logger.LogInformation("  重建非聚集索引：{IndexName} ({Type})", index.IndexName, index.GetDescription());
+                logger.LogDebug("  执行 SQL: {Sql}", createSql);
+
+                await sqlExecutor.ExecuteAsync(connection, createSql, transaction: transaction, timeoutSeconds: 1800);
+                logger.LogInformation("  ✓ 已重建索引 {IndexName}", index.IndexName);
+            }
+
+            logger.LogInformation(
+                "✓ 成功将表 {Schema}.{Table} 转换为分区表，重建了 {TotalCount} 个索引（1个聚集 + {NonClusteredCount} 个非聚集）。",
+                configuration.SchemaName, configuration.TableName,
+                indexes.Count, nonClusteredIndexes.Count);
+
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "❌ 将表 {Schema}.{Table} 转换为分区表失败。", configuration.SchemaName, configuration.TableName);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 在事务中执行分区拆分脚本（执行前会检查并创建分区函数和方案，并将表转换为分区表）。
     /// </summary>
     public async Task<SqlExecutionResult> ExecuteSplitWithTransactionAsync(
         Guid dataSourceId,
@@ -190,6 +563,29 @@ internal sealed class SqlPartitionCommandExecutor
 
         try
         {
+            // 前置检查：确保分区函数和方案存在
+            var functionExists = await CheckPartitionFunctionExistsAsync(dataSourceId, configuration.PartitionFunctionName, cancellationToken);
+            var schemeExists = await CheckPartitionSchemeExistsAsync(dataSourceId, configuration.PartitionSchemeName, cancellationToken);
+
+            if (!functionExists)
+            {
+                logger.LogWarning("分区函数 {Function} 不存在，准备创建（不带初始边界）。", configuration.PartitionFunctionName);
+                await CreatePartitionFunctionAsync(dataSourceId, configuration, null, cancellationToken);
+            }
+
+            if (!schemeExists)
+            {
+                logger.LogWarning("分区方案 {Scheme} 不存在，准备创建。", configuration.PartitionSchemeName);
+                await CreatePartitionSchemeAsync(dataSourceId, configuration, cancellationToken);
+            }
+
+            // 检查并转换表为分区表
+            var tableConverted = await ConvertToPartitionedTableAsync(dataSourceId, configuration, cancellationToken);
+            if (tableConverted)
+            {
+                logger.LogInformation("表 {Schema}.{Table} 已转换为分区表。", configuration.SchemaName, configuration.TableName);
+            }
+
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 

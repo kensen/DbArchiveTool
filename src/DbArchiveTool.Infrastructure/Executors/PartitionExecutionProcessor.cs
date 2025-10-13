@@ -241,6 +241,46 @@ internal sealed class PartitionExecutionProcessor
                 await taskRepository.UpdateAsync(task, cancellationToken);
             }
 
+            // ============== 阶段 6.5: 转换表为分区表 ==============
+            stepWatch.Restart();
+            await AppendLogAsync(
+                task.Id,
+                "Step",
+                "转换表为分区表",
+                $"准备将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表（保存并重建所有索引到分区方案）...",
+                cancellationToken);
+
+            var tableConverted = await commandExecutor.ConvertToPartitionedTableAsync(
+                task.DataSourceId,
+                configuration,
+                cancellationToken);
+
+            stepWatch.Stop();
+
+            if (tableConverted)
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "表已转换为分区表",
+                    $"成功将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表，所有索引已在分区方案上重建。",
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+            }
+            else
+            {
+                await AppendLogAsync(
+                    task.Id,
+                    "Info",
+                    "表已是分区表",
+                    $"表 {configuration.SchemaName}.{configuration.TableName} 已经是分区表，跳过转换。",
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+            }
+
+            task.UpdateProgress(0.6, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
             // ============== 阶段 7: 执行分区拆分 ==============
             stepWatch.Restart();
             var boundaryValues = configuration.Boundaries

@@ -155,7 +155,9 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.BackupReference).HasMaxLength(256);
             builder.Property(x => x.Notes).HasMaxLength(512);
             builder.Property(x => x.FailureReason).HasMaxLength(512);
-            builder.Property(x => x.SummaryJson);
+            builder.Property(x => x.SummaryJson).HasColumnType("nvarchar(max)");
+            builder.Property(x => x.ConfigurationSnapshot).HasColumnType("nvarchar(max)");
+            builder.Property(x => x.LastCheckpoint).HasColumnType("nvarchar(max)");
             builder.Property(x => x.Priority).HasDefaultValue(0);
             builder.Property(x => x.LastHeartbeatUtc).IsRequired();
 
@@ -172,8 +174,8 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.LogTimeUtc).IsRequired();
             builder.Property(x => x.Category).IsRequired().HasMaxLength(32);
             builder.Property(x => x.Title).IsRequired().HasMaxLength(256);
-            builder.Property(x => x.Message).IsRequired();
-            builder.Property(x => x.ExtraJson);
+            builder.Property(x => x.Message).IsRequired().HasColumnType("nvarchar(max)");
+            builder.Property(x => x.ExtraJson).HasColumnType("nvarchar(max)");
 
             builder.HasIndex(x => new { x.ExecutionTaskId, x.LogTimeUtc });
         });
