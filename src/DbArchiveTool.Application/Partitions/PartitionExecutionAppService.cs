@@ -23,6 +23,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
     private readonly IPartitionExecutionDispatcher dispatcher;
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly IPermissionInspectionRepository permissionInspectionRepository;
+    private readonly IPartitionMetadataRepository metadataRepository;
     private readonly ILogger<PartitionExecutionAppService> logger;
 
     public PartitionExecutionAppService(
@@ -32,6 +33,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         IPartitionExecutionDispatcher dispatcher,
         IDataSourceRepository dataSourceRepository,
         IPermissionInspectionRepository permissionInspectionRepository,
+        IPartitionMetadataRepository metadataRepository,
         ILogger<PartitionExecutionAppService> logger)
     {
         this.configurationRepository = configurationRepository;
@@ -40,6 +42,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         this.dispatcher = dispatcher;
         this.dataSourceRepository = dataSourceRepository;
         this.permissionInspectionRepository = permissionInspectionRepository;
+        this.metadataRepository = metadataRepository;
         this.logger = logger;
     }
 
@@ -359,6 +362,54 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             ? $"{dataSource.ServerAddress}\\{dataSource.DatabaseName}"
             : "未知数据源";
 
+        // 3. 索引/外键检查
+        IndexInspectionDto indexInspectionDto;
+        try
+        {
+            var indexInspection = await metadataRepository.GetIndexInspectionAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                configuration.PartitionColumn.Name,
+                cancellationToken);
+
+            var indexesNeedingAlignment = indexInspection.IndexesMissingPartitionColumn.ToList();
+            indexInspectionDto = new IndexInspectionDto
+            {
+                HasClusteredIndex = indexInspection.HasClusteredIndex,
+                ClusteredIndexName = indexInspection.ClusteredIndex?.IndexName,
+                ClusteredIndexContainsPartitionColumn = indexInspection.ClusteredIndex?.ContainsPartitionColumn ?? false,
+                ClusteredIndexKeyColumns = indexInspection.ClusteredIndex?.KeyColumns.ToList() ?? new List<string>(),
+                UniqueIndexes = indexInspection.UniqueIndexes
+                    .Select(MapAlignmentItem)
+                    .ToList(),
+                IndexesNeedingAlignment = indexesNeedingAlignment
+                    .Select(MapAlignmentItem)
+                    .ToList(),
+                HasExternalForeignKeys = indexInspection.HasExternalForeignKeys,
+                ExternalForeignKeys = indexInspection.ExternalForeignKeys.ToList()
+            };
+
+            var blockingReason = DetermineBlockingReason(indexInspection, indexesNeedingAlignment);
+            indexInspectionDto.BlockingReason = blockingReason;
+            indexInspectionDto.CanAutoAlign = string.IsNullOrEmpty(blockingReason);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "索引检查失败，将在向导中展示警告: Schema={Schema}, Table={Table}",
+                configuration.SchemaName,
+                configuration.TableName);
+
+            indexInspectionDto = new IndexInspectionDto
+            {
+                HasClusteredIndex = false,
+                ClusteredIndexContainsPartitionColumn = false,
+                CanAutoAlign = false,
+                BlockingReason = $"索引检查失败：{ex.Message}"
+            };
+        }
+
         // 3. 构建上下文DTO
         var context = new ExecutionWizardContextDto
         {
@@ -382,6 +433,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
                 RawValue = b.Value.ToInvariantString(),
                 DisplayValue = b.Value.ToInvariantString()
             }).ToList(),
+            IndexInspection = indexInspectionDto,
             Remarks = configuration.Remarks,
             ExecutionStage = configuration.ExecutionStage,
             IsCommitted = configuration.IsCommitted
@@ -408,6 +460,35 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             PartitionExecutionStatus.Cancelled => "已取消",
             _ => status.ToString()
         };
+    }
+
+    private static IndexAlignmentItemDto MapAlignmentItem(IndexAlignmentInfo info)
+    {
+        return new IndexAlignmentItemDto
+        {
+            IndexName = info.IndexName,
+            IsClustered = info.IsClustered,
+            IsPrimaryKey = info.IsPrimaryKey,
+            IsUniqueConstraint = info.IsUniqueConstraint,
+            IsUnique = info.IsUnique,
+            ContainsPartitionColumn = info.ContainsPartitionColumn,
+            KeyColumns = info.KeyColumns.ToList()
+        };
+    }
+
+    private static string? DetermineBlockingReason(PartitionIndexInspection inspection, IReadOnlyList<IndexAlignmentInfo> indexesNeedingAlignment)
+    {
+        if (!inspection.HasClusteredIndex)
+        {
+            return "目标表尚未创建聚集索引，无法自动对齐分区索引。";
+        }
+
+        if (inspection.HasExternalForeignKeys && indexesNeedingAlignment.Count > 0)
+        {
+            return "目标表的主键或唯一约束存在外部外键引用，无法自动调整索引。";
+        }
+
+        return null;
     }
 
     private static Result ValidateStartRequest(StartPartitionExecutionRequest request)

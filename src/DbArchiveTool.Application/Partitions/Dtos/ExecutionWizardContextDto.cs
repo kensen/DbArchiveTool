@@ -53,6 +53,9 @@ public sealed class ExecutionWizardContextDto
     /// <summary>分区边界值列表</summary>
     public List<PartitionBoundaryDto> Boundaries { get; set; } = new();
 
+    /// <summary>索引对齐检查结果</summary>
+    public IndexInspectionDto IndexInspection { get; set; } = new();
+
     /// <summary>表统计信息</summary>
     public TableStatisticsDto? TableStatistics { get; set; }
 
@@ -196,4 +199,67 @@ public sealed class SafetyCheckItemDto
 
     /// <summary>处理建议</summary>
     public string? Recommendation { get; set; }
+}
+
+/// <summary>
+/// 索引对齐检查结果 DTO。
+/// </summary>
+public sealed class IndexInspectionDto
+{
+    /// <summary>是否存在聚集索引。</summary>
+    public bool HasClusteredIndex { get; set; }
+
+    /// <summary>聚集索引名称。</summary>
+    public string? ClusteredIndexName { get; set; }
+
+    /// <summary>聚集索引是否包含分区列。</summary>
+    public bool ClusteredIndexContainsPartitionColumn { get; set; }
+
+    /// <summary>聚集索引键列列表。</summary>
+    public List<string> ClusteredIndexKeyColumns { get; set; } = new();
+
+    /// <summary>唯一索引/约束列表。</summary>
+    public List<IndexAlignmentItemDto> UniqueIndexes { get; set; } = new();
+
+    /// <summary>需要补齐分区列的索引列表。</summary>
+    public List<IndexAlignmentItemDto> IndexesNeedingAlignment { get; set; } = new();
+
+    /// <summary>是否存在外部外键引用。</summary>
+    public bool HasExternalForeignKeys { get; set; }
+
+    /// <summary>外部外键名称列表。</summary>
+    public List<string> ExternalForeignKeys { get; set; } = new();
+
+    /// <summary>是否可以在执行阶段自动对齐。</summary>
+    public bool CanAutoAlign { get; set; }
+
+    /// <summary>阻断原因（若存在）。</summary>
+    public string? BlockingReason { get; set; }
+}
+
+/// <summary>
+/// 单个索引对齐项 DTO。
+/// </summary>
+public sealed class IndexAlignmentItemDto
+{
+    /// <summary>索引名称。</summary>
+    public string IndexName { get; set; } = string.Empty;
+
+    /// <summary>是否聚集索引。</summary>
+    public bool IsClustered { get; set; }
+
+    /// <summary>是否主键。</summary>
+    public bool IsPrimaryKey { get; set; }
+
+    /// <summary>是否唯一约束。</summary>
+    public bool IsUniqueConstraint { get; set; }
+
+    /// <summary>是否唯一索引。</summary>
+    public bool IsUnique { get; set; }
+
+    /// <summary>是否包含分区列。</summary>
+    public bool ContainsPartitionColumn { get; set; }
+
+    /// <summary>索引键列。</summary>
+    public List<string> KeyColumns { get; set; } = new();
 }

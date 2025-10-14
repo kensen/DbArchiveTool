@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Dapper;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.SqlExecution;
+using DbArchiveTool.Infrastructure.Models;
 
 namespace DbArchiveTool.Infrastructure.Partitions;
 
@@ -180,14 +181,136 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
             }
         }
 
-        return new PartitionSafetySnapshot(boundaryKey, 0, false, false, "未找到分区信息，可能已被合并或表未分区。");
-    }
+            return new PartitionSafetySnapshot(boundaryKey, 0, false, false, "未找到分区信息，可能已被合并或表未分区。");
+        }
 
-    private static PartitionValueKind MapToValueKind(string sqlType)
-    {
-        return sqlType.ToLowerInvariant() switch
+        /// <inheritdoc />
+        public async Task<PartitionIndexInspection> GetIndexInspectionAsync(
+            Guid dataSourceId,
+            string schemaName,
+            string tableName,
+            string partitionColumn,
+            CancellationToken cancellationToken = default)
         {
-            "int" => PartitionValueKind.Int,
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+            const string indexSql = @"
+SELECT 
+    i.index_id AS IndexId,
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    i.is_unique_constraint AS IsUniqueConstraint,
+    kc.name AS ConstraintName,
+    kc.type_desc AS ConstraintType,
+    STUFF((
+        SELECT ', ' + QUOTENAME(c.name) + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id 
+          AND ic.index_id = i.index_id 
+          AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS KeyColumns,
+    STUFF((
+        SELECT ', ' + QUOTENAME(c.name)
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id 
+          AND ic.index_id = i.index_id 
+          AND ic.is_included_column = 1
+        FOR XML PATH(''), TYPE
+    ).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS IncludedColumns,
+    i.filter_definition AS FilterDefinition,
+    CASE WHEN EXISTS (
+        SELECT 1 FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id 
+          AND ic.index_id = i.index_id 
+          AND c.name = @PartitionColumn
+          AND ic.is_included_column = 0
+    ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ContainsPartitionColumn
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+LEFT JOIN sys.key_constraints kc ON i.object_id = kc.parent_object_id 
+    AND i.index_id = kc.unique_index_id
+WHERE SCHEMA_NAME(t.schema_id) = @SchemaName
+  AND t.name = @TableName
+  AND i.type IN (1, 2)
+ORDER BY 
+    CASE WHEN i.is_primary_key = 1 THEN 1 
+         WHEN i.type_desc = 'CLUSTERED' THEN 2
+         WHEN i.is_unique = 1 THEN 3 
+         ELSE 4 END,
+    i.index_id;";
+
+            var indexes = (await connection.QueryAsync<TableIndexDefinition>(
+                indexSql,
+                new
+                {
+                    SchemaName = schemaName,
+                    TableName = tableName,
+                    PartitionColumn = partitionColumn
+                })).ToList();
+
+            var clusteredIndexDefinition = indexes.FirstOrDefault(i => i.IsClustered);
+
+            IndexAlignmentInfo? clusteredIndex = null;
+            if (clusteredIndexDefinition is not null)
+            {
+                clusteredIndex = MapToAlignmentInfo(clusteredIndexDefinition);
+            }
+
+            var uniqueIndexes = indexes
+                .Where(i => i.IsPrimaryKey || i.IsUniqueConstraint || i.IsUnique)
+                .Select(MapToAlignmentInfo)
+                .ToList();
+
+            const string foreignKeySql = @"
+SELECT fk.name
+FROM sys.foreign_keys fk
+WHERE fk.referenced_object_id = OBJECT_ID(@FullName)
+  AND fk.parent_object_id <> fk.referenced_object_id
+  AND fk.is_disabled = 0;";
+
+            var foreignKeys = (await connection.QueryAsync<string>(
+                foreignKeySql,
+                new { FullName = $"[{schemaName}].[{tableName}]" }))
+                .ToList();
+
+            return new PartitionIndexInspection(
+                clusteredIndexDefinition is not null,
+                clusteredIndex,
+                uniqueIndexes,
+                foreignKeys);
+        }
+
+        private static IndexAlignmentInfo MapToAlignmentInfo(TableIndexDefinition definition)
+        {
+            var keyColumns = string.IsNullOrWhiteSpace(definition.KeyColumns)
+                ? new List<string>()
+                : definition.KeyColumns
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(column => column.Trim())
+                    .ToList();
+
+            return new IndexAlignmentInfo(
+                definition.IndexName,
+                definition.IsClustered,
+                definition.IsPrimaryKey,
+                definition.IsUniqueConstraint,
+                definition.IsUnique,
+                definition.ContainsPartitionColumn,
+                keyColumns);
+        }
+
+        private static PartitionValueKind MapToValueKind(string sqlType)
+        {
+            return sqlType.ToLowerInvariant() switch
+            {
+                "int" => PartitionValueKind.Int,
             "bigint" => PartitionValueKind.BigInt,
             "date" => PartitionValueKind.Date,
             "datetime" => PartitionValueKind.DateTime,

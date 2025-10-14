@@ -216,6 +216,7 @@ public sealed class ExecutionWizardContextModel
     public List<string> AdditionalFilegroups { get; set; } = new();
     public List<PartitionBoundaryModel> Boundaries { get; set; } = new();
     public TableStatisticsModel? TableStatistics { get; set; }
+    public IndexInspectionModel IndexInspection { get; set; } = new();
     public string? Remarks { get; set; }
     public string? ExecutionStage { get; set; }
     public bool IsCommitted { get; set; }
@@ -241,4 +242,29 @@ public sealed class TableStatisticsModel
     public bool IsPartitioned { get; set; }
     public int PartitionCount { get; set; }
     public DateTime? LastUpdated { get; set; }
+}
+
+public sealed class IndexInspectionModel
+{
+    public bool HasClusteredIndex { get; set; }
+    public string? ClusteredIndexName { get; set; }
+    public bool ClusteredIndexContainsPartitionColumn { get; set; }
+    public List<string> ClusteredIndexKeyColumns { get; set; } = new();
+    public List<IndexAlignmentItemModel> UniqueIndexes { get; set; } = new();
+    public List<IndexAlignmentItemModel> IndexesNeedingAlignment { get; set; } = new();
+    public bool HasExternalForeignKeys { get; set; }
+    public List<string> ExternalForeignKeys { get; set; } = new();
+    public bool CanAutoAlign { get; set; }
+    public string? BlockingReason { get; set; }
+}
+
+public sealed class IndexAlignmentItemModel
+{
+    public string IndexName { get; set; } = string.Empty;
+    public bool IsClustered { get; set; }
+    public bool IsPrimaryKey { get; set; }
+    public bool IsUniqueConstraint { get; set; }
+    public bool IsUnique { get; set; }
+    public bool ContainsPartitionColumn { get; set; }
+    public List<string> KeyColumns { get; set; } = new();
 }

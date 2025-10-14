@@ -13,7 +13,7 @@ GO
 
 CREATE TABLE dbo.IndexTestTable (
     -- 主键列
-    OrderId INT NOT NULL,
+    OrderId INT IDENTITY(1,1) NOT NULL,
     -- 普通列
     CustomerId INT NOT NULL,
     OrderDate DATETIME NOT NULL,
@@ -59,13 +59,28 @@ INCLUDE (Amount, Discount);
 GO
 
 -- 插入测试数据
-INSERT INTO dbo.IndexTestTable (OrderId, CustomerId, OrderDate, Amount, Status, ProductId, Quantity, Discount)
-VALUES 
-    (1, 101, '2025-01-01', 100.00, 'Active', 1001, 5, 0.1),
-    (2, 102, '2025-01-02', 200.00, 'Completed', 1002, 3, 0.05),
-    (3, 103, '2025-01-03', 150.00, 'Active', 1003, 2, 0.15),
-    (4, 104, '2025-01-04', 300.00, 'Pending', 1001, 10, 0.2),
-    (5, 105, '2025-01-05', 250.00, 'Active', 1004, 7, 0.1);
+WITH Numbers AS (
+    SELECT TOP (500000)
+           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+    FROM sys.all_objects a
+    CROSS JOIN sys.all_objects b
+)
+INSERT INTO dbo.IndexTestTable (CustomerId, OrderDate, Amount, Status, ProductId, Quantity, Discount, Notes)
+SELECT
+    100 + (RowNum % 1000) AS CustomerId,
+    DATEADD(second, RowNum - 1, '2023-01-01') AS OrderDate,
+    CAST(ROUND(50 + (RowNum % 5000) * 0.13, 2) AS DECIMAL(18,2)) AS Amount,
+    CASE RowNum % 4
+        WHEN 0 THEN 'Active'
+        WHEN 1 THEN 'Completed'
+        WHEN 2 THEN 'Pending'
+        ELSE 'Archived'
+    END AS Status,
+    1000 + (RowNum % 500) AS ProductId,
+    1 + (RowNum % 50) AS Quantity,
+    CAST(((RowNum % 10) * 0.05) AS DECIMAL(5,2)) AS Discount,
+    CONCAT(N'测试订单 #', RowNum) AS Notes
+FROM Numbers;
 GO
 
 -- ============================================================

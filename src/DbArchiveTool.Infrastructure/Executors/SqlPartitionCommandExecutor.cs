@@ -1,4 +1,5 @@
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Infrastructure.Models;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -99,6 +100,7 @@ internal sealed class SqlPartitionCommandExecutor
     /// <summary>
     /// 如果指定文件组不存在则创建。
     /// </summary>
+    /// <returns><see cref="PartitionConversionResult"/>，包含是否执行转换及索引操作明细。</returns>
     /// <param name="dataSourceId">数据源标识</param>
     /// <param name="databaseName">数据库名称</param>
     /// <param name="filegroupName">文件组名称</param>
@@ -498,6 +500,7 @@ internal sealed class SqlPartitionCommandExecutor
     public async Task<PartitionConversionResult> ConvertToPartitionedTableAsync(
         Guid dataSourceId,
         PartitionConfiguration configuration,
+        PartitionIndexInspection indexInspection,
         CancellationToken cancellationToken = default)
     {
         try
@@ -506,7 +509,7 @@ internal sealed class SqlPartitionCommandExecutor
             if (await CheckTableIsPartitionedAsync(dataSourceId, configuration.SchemaName, configuration.TableName, cancellationToken))
             {
                 logger.LogInformation("表 {Schema}.{Table} 已经是分区表，跳过转换。", configuration.SchemaName, configuration.TableName);
-                return false;
+                return PartitionConversionResult.Skipped();
             }
 
             // 双保险：确保分区函数与方案存在
@@ -555,13 +558,52 @@ internal sealed class SqlPartitionCommandExecutor
                 indexes.Count,
                 string.Join(", ", indexes.Select(i => $"{i.IndexName} ({i.GetDescription()})")));
 
-            var clusteredIndex = indexes.FirstOrDefault(i => i.IsClustered);
-            var nonClusteredIndexes = indexes.Where(i => !i.IsClustered).OrderByDescending(i => i.IndexId).ToList();
+            var indicesToAlign = new HashSet<string>(
+                indexInspection.IndexesMissingPartitionColumn.Select(i => i.IndexName),
+                StringComparer.OrdinalIgnoreCase);
 
+            if (!indexInspection.HasClusteredIndex)
+            {
+                throw new PartitionConversionException(
+                    $"表 {configuration.SchemaName}.{configuration.TableName} 未检测到聚集索引，无法自动对齐分区列。请先创建包含分区列 [{configuration.PartitionColumn.Name}] 的聚集索引。");
+            }
+
+            if (indexInspection.HasExternalForeignKeys && indicesToAlign.Count > 0)
+            {
+                var fkNames = indexInspection.ExternalForeignKeys.Count > 0
+                    ? string.Join("、", indexInspection.ExternalForeignKeys)
+                    : "存在外部外键引用";
+
+                throw new PartitionConversionException(
+                    $"表 {configuration.SchemaName}.{configuration.TableName} 的主键或唯一约束存在外部外键引用（{fkNames}），无法自动补齐分区列，请手动调整索引结构后重试。");
+            }
+
+            var autoAlignmentChanges = new List<IndexAlignmentChange>();
+
+            if (indicesToAlign.Count > 0)
+            {
+                foreach (var definition in indexes.Where(i => indicesToAlign.Contains(i.IndexName)))
+                {
+                    ApplyPartitionColumn(definition, configuration.PartitionColumn.Name, autoAlignmentChanges);
+                }
+            }
+
+            var clusteredIndex = indexes.FirstOrDefault(i => i.IsClustered);
             if (clusteredIndex is null)
             {
-                throw new InvalidOperationException($"表 {configuration.SchemaName}.{configuration.TableName} 没有聚集索引，无法转换为分区表。");
+                throw new PartitionConversionException(
+                    $"表 {configuration.SchemaName}.{configuration.TableName} 未检测到聚集索引，无法自动对齐分区列。");
             }
+
+            if (!clusteredIndex.ContainsPartitionColumn)
+            {
+                ApplyPartitionColumn(clusteredIndex, configuration.PartitionColumn.Name, autoAlignmentChanges);
+            }
+
+            var nonClusteredIndexes = indexes.Where(i => !i.IsClustered).OrderByDescending(i => i.IndexId).ToList();
+
+            var droppedIndexes = new List<string>();
+            var recreatedIndexes = new List<string>();
 
             // ============== 步骤 2: 删除所有非聚集索引（保留聚集索引） ==============
             logger.LogInformation("步骤 2/4: 删除所有非聚集索引（保留聚集索引 {ClusteredIndex}）...", clusteredIndex.IndexName);
@@ -573,6 +615,7 @@ internal sealed class SqlPartitionCommandExecutor
 
                 await sqlExecutor.ExecuteAsync(connection, dropSql, transaction: transaction, timeoutSeconds: 300);
                 logger.LogInformation("  ✓ 已删除索引 {IndexName}", index.IndexName);
+                droppedIndexes.Add(index.IndexName);
             }
 
             logger.LogInformation("已删除 {Count} 个非聚集索引。", nonClusteredIndexes.Count);
@@ -585,6 +628,7 @@ internal sealed class SqlPartitionCommandExecutor
 
             await sqlExecutor.ExecuteAsync(connection, clusteredDropSql, transaction: transaction, timeoutSeconds: 300);
             logger.LogInformation("  ✓ 已删除聚集索引 {IndexName}", clusteredIndex.IndexName);
+            droppedIndexes.Add(clusteredIndex.IndexName);
 
             var clusteredCreateSql = clusteredIndex.GetCreateSql(
                 configuration.SchemaName,
@@ -598,6 +642,7 @@ internal sealed class SqlPartitionCommandExecutor
 
             await sqlExecutor.ExecuteAsync(connection, clusteredCreateSql, transaction: transaction, timeoutSeconds: 1800);
             logger.LogInformation("  ✓ 已重建聚集索引 {IndexName}，表已变为分区表", clusteredIndex.IndexName);
+            recreatedIndexes.Add(clusteredIndex.IndexName);
 
             // ============== 步骤 4: 重建所有非聚集索引 ==============
             logger.LogInformation("步骤 4/4: 重建所有非聚集索引（按 IndexId 正序）...");
@@ -615,6 +660,7 @@ internal sealed class SqlPartitionCommandExecutor
 
                 await sqlExecutor.ExecuteAsync(connection, createSql, transaction: transaction, timeoutSeconds: 1800);
                 logger.LogInformation("  ✓ 已重建索引 {IndexName}", index.IndexName);
+                recreatedIndexes.Add(index.IndexName);
             }
 
             logger.LogInformation(
@@ -623,7 +669,7 @@ internal sealed class SqlPartitionCommandExecutor
                 indexes.Count, nonClusteredIndexes.Count);
 
             await transaction.CommitAsync(cancellationToken);
-            return true;
+            return PartitionConversionResult.Success(droppedIndexes, recreatedIndexes, autoAlignmentChanges);
         }
         catch (Exception ex)
         {
@@ -639,6 +685,7 @@ internal sealed class SqlPartitionCommandExecutor
         Guid dataSourceId,
         PartitionConfiguration configuration,
         IReadOnlyList<PartitionValue> newBoundaries,
+        PartitionIndexInspection indexInspection,
         CancellationToken cancellationToken = default)
     {
         if (newBoundaries.Count == 0)
@@ -676,10 +723,26 @@ internal sealed class SqlPartitionCommandExecutor
             }
 
             // 检查并转换表为分区表
-            var tableConverted = await ConvertToPartitionedTableAsync(dataSourceId, configuration, cancellationToken);
-            if (tableConverted)
+            var conversionResult = await ConvertToPartitionedTableAsync(dataSourceId, configuration, indexInspection, cancellationToken);
+            if (conversionResult.Converted)
             {
-                logger.LogInformation("表 {Schema}.{Table} 已转换为分区表。", configuration.SchemaName, configuration.TableName);
+                var droppedSummary = conversionResult.DroppedIndexNames.Count > 0
+                    ? string.Join(", ", conversionResult.DroppedIndexNames)
+                    : "无";
+                var recreatedSummary = conversionResult.RecreatedIndexNames.Count > 0
+                    ? string.Join(", ", conversionResult.RecreatedIndexNames)
+                    : "无";
+                var alignmentSummary = conversionResult.AutoAlignedIndexes.Count > 0
+                    ? string.Join(", ", conversionResult.AutoAlignedIndexes.Select(a => $"{a.IndexName}({a.OriginalKeyColumns} -> {a.UpdatedKeyColumns})"))
+                    : "无";
+
+                logger.LogInformation(
+                    "表 {Schema}.{Table} 已转换为分区表。已删除索引：{Dropped}；已重建索引：{Recreated}；自动对齐索引：{Aligned}",
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    droppedSummary,
+                    recreatedSummary,
+                    alignmentSummary);
             }
 
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
@@ -785,6 +848,33 @@ internal sealed class SqlPartitionCommandExecutor
         }
     }
 
+    private static void ApplyPartitionColumn(TableIndexDefinition definition, string partitionColumn, IList<IndexAlignmentChange> alignmentChanges)
+    {
+        var originalKeyColumns = definition.KeyColumns ?? string.Empty;
+
+        var keyTokens = string.IsNullOrWhiteSpace(originalKeyColumns)
+            ? new List<string>()
+            : originalKeyColumns
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(token => token.Trim())
+                .ToList();
+
+        var hasPartitionColumn = keyTokens.Any(token => token.StartsWith($"[{partitionColumn}]", StringComparison.OrdinalIgnoreCase));
+
+        if (!hasPartitionColumn)
+        {
+            keyTokens.Add($"[{partitionColumn}] ASC");
+            var updated = string.Join(", ", keyTokens);
+            definition.KeyColumns = updated;
+            definition.ContainsPartitionColumn = true;
+            alignmentChanges.Add(new IndexAlignmentChange(definition.IndexName, originalKeyColumns, updated));
+        }
+        else if (!definition.ContainsPartitionColumn)
+        {
+            definition.ContainsPartitionColumn = true;
+        }
+    }
+
     private static string ResolveDefaultFilegroup(PartitionConfiguration configuration)
     {
         if (configuration.StorageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile &&
@@ -796,6 +886,27 @@ internal sealed class SqlPartitionCommandExecutor
         return configuration.FilegroupStrategy.PrimaryFilegroup;
     }
 }
+
+internal sealed record PartitionConversionResult(
+    bool Converted,
+    IReadOnlyList<string> DroppedIndexNames,
+    IReadOnlyList<string> RecreatedIndexNames,
+    IReadOnlyList<IndexAlignmentChange> AutoAlignedIndexes)
+{
+    public static PartitionConversionResult Skipped() =>
+        new(false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<IndexAlignmentChange>());
+
+    public static PartitionConversionResult Success(
+        IReadOnlyList<string> droppedIndexNames,
+        IReadOnlyList<string> recreatedIndexNames,
+        IReadOnlyList<IndexAlignmentChange> autoAlignedIndexes) =>
+        new(true, droppedIndexNames, recreatedIndexNames, autoAlignedIndexes);
+}
+
+internal sealed record IndexAlignmentChange(
+    string IndexName,
+    string OriginalKeyColumns,
+    string UpdatedKeyColumns);
 
 /// <summary>
 /// SQL 执行结果。

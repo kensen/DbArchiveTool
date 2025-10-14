@@ -19,4 +19,14 @@ public interface IPartitionMetadataRepository
 
     /// <summary>获取指定边界当前的安全快照。</summary>
     Task<PartitionSafetySnapshot> GetSafetySnapshotAsync(Guid dataSourceId, string schemaName, string tableName, string boundaryKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 检查目标表的索引/约束与分区列的对齐状态。
+    /// </summary>
+    Task<PartitionIndexInspection> GetIndexInspectionAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        string partitionColumn,
+        CancellationToken cancellationToken = default);
 }

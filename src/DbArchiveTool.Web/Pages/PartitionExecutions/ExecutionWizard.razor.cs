@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using AntDesign;
 using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
+using System.Linq;
+using OneOf;
 
 namespace DbArchiveTool.Web.Pages.PartitionExecutions;
 
@@ -22,6 +25,8 @@ public partial class ExecutionWizard
     private bool Submitting { get; set; }
     private ExecutionWizardContextModel? Context { get; set; }
     private int CurrentStep { get; set; }
+
+    private static readonly OneOf<int, Dictionary<string, int>> SingleColumnLayout = 1;
     
     // 表单数据
     private string RequestedBy { get; set; } = string.Empty;
@@ -158,6 +163,132 @@ public partial class ExecutionWizard
             }
         }));
         builder.CloseComponent();
+
+        if (Context is not null)
+        {
+            var inspection = Context.IndexInspection;
+            var statusAlertType = inspection.BlockingReason is not null
+                ? AlertType.Error
+                : (inspection.IndexesNeedingAlignment.Count > 0 ? AlertType.Warning : AlertType.Success);
+            var alertMessage = inspection.BlockingReason ?? (inspection.IndexesNeedingAlignment.Count > 0
+                ? "检测到部分索引尚未包含分区列，执行阶段将自动对齐。"
+                : "当前索引结构已包含分区列，无需调整。");
+            var alertDescription = inspection.HasExternalForeignKeys && inspection.ExternalForeignKeys.Count > 0
+                ? $"外部外键引用：{string.Join("、", inspection.ExternalForeignKeys)}"
+                : null;
+
+            builder.OpenComponent<Card>(180);
+            builder.AddAttribute(181, "Title", "索引对齐检查");
+            builder.AddAttribute(182, "Style", "margin-top: 16px;");
+            builder.AddAttribute(183, "ChildContent", (RenderFragment)(inspectBuilder =>
+            {
+                inspectBuilder.OpenComponent<Alert>(0);
+                inspectBuilder.AddAttribute(1, "Type", statusAlertType);
+                inspectBuilder.AddAttribute(2, "ShowIcon", true);
+                inspectBuilder.AddAttribute(3, "Message", alertMessage);
+                if (!string.IsNullOrWhiteSpace(alertDescription))
+                {
+                    inspectBuilder.AddAttribute(4, "Description", alertDescription);
+                }
+                inspectBuilder.CloseComponent();
+
+                inspectBuilder.OpenComponent<Descriptions>(10);
+                inspectBuilder.AddAttribute(11, "Bordered", true);
+                inspectBuilder.AddAttribute(12, "Column", SingleColumnLayout);
+                inspectBuilder.AddAttribute(13, "Style", "margin-top: 16px;");
+                inspectBuilder.AddAttribute(14, "ChildContent", (RenderFragment)(descBuilder =>
+                {
+                    descBuilder.OpenComponent<DescriptionsItem>(0);
+                    descBuilder.AddAttribute(1, "Title", "聚集索引");
+                    descBuilder.AddAttribute(2, "ChildContent", (RenderFragment)(b =>
+                    {
+                        if (!inspection.HasClusteredIndex)
+                        {
+                            b.AddContent(0, "未检测到聚集索引");
+                        }
+                        else
+                        {
+                            var keyColumns = inspection.ClusteredIndexKeyColumns.Count > 0
+                                ? string.Join(", ", inspection.ClusteredIndexKeyColumns)
+                                : "未读取到键列";
+                            b.AddContent(0, $"{inspection.ClusteredIndexName ?? "(未命名)"} ({keyColumns})");
+                            if (!inspection.ClusteredIndexContainsPartitionColumn)
+                            {
+                                b.OpenElement(10, "div");
+                                b.AddAttribute(11, "style", "margin-top:4px;color:#ff4d4f;");
+                                b.AddContent(12, "⚠ 聚集索引尚未包含分区列");
+                                b.CloseElement();
+                            }
+                        }
+                    }));
+                    descBuilder.CloseComponent();
+
+                    descBuilder.OpenComponent<DescriptionsItem>(20);
+                    descBuilder.AddAttribute(21, "Title", "外部外键");
+                    descBuilder.AddAttribute(22, "ChildContent", (RenderFragment)(b =>
+                    {
+                        if (inspection.HasExternalForeignKeys && inspection.ExternalForeignKeys.Count > 0)
+                        {
+                            b.AddContent(0, string.Join("、", inspection.ExternalForeignKeys));
+                        }
+                        else
+                        {
+                            b.AddContent(0, "无");
+                        }
+                    }));
+                    descBuilder.CloseComponent();
+
+                    descBuilder.OpenComponent<DescriptionsItem>(30);
+                    descBuilder.AddAttribute(31, "Title", "需要对齐的索引");
+                    descBuilder.AddAttribute(32, "ChildContent", (RenderFragment)(b =>
+                    {
+                        if (inspection.IndexesNeedingAlignment.Count == 0)
+                        {
+                            b.AddContent(0, "无");
+                        }
+                        else
+                        {
+                            b.OpenElement(0, "ul");
+                            b.AddAttribute(1, "style", "padding-left: 20px; margin: 0;");
+                            foreach (var item in inspection.IndexesNeedingAlignment)
+                            {
+                                b.OpenElement(10, "li");
+                                var label = item.IsPrimaryKey ? "主键" :
+                                    item.IsUniqueConstraint ? "唯一约束" :
+                                    item.IsClustered ? "聚集索引" :
+                                    item.IsUnique ? "唯一索引" : "索引";
+                                var keyColumns = item.KeyColumns.Count > 0 ? string.Join(", ", item.KeyColumns) : "未读取到键列";
+                                b.AddContent(11, $"{item.IndexName} ({label}) - 键列: {keyColumns}");
+                                b.CloseElement();
+                            }
+                            b.CloseElement();
+                        }
+                    }));
+                    descBuilder.CloseComponent();
+
+                    descBuilder.OpenComponent<DescriptionsItem>(40);
+                    descBuilder.AddAttribute(41, "Title", "自动对齐策略");
+                    descBuilder.AddAttribute(42, "ChildContent", (RenderFragment)(b =>
+                    {
+                        if (inspection.BlockingReason is not null)
+                        {
+                            b.AddContent(0, "需要人工处理，已阻止继续执行。");
+                        }
+                        else if (inspection.IndexesNeedingAlignment.Count > 0)
+                        {
+                            b.AddContent(0, "执行阶段将自动补齐分区列并重建索引。");
+                        }
+                        else
+                        {
+                            b.AddContent(0, "索引已满足要求，无需额外操作。");
+                        }
+                    }));
+                    descBuilder.CloseComponent();
+                }));
+                inspectBuilder.CloseComponent(); // Descriptions
+            }));
+            builder.CloseComponent(); // Card
+        }
 
         // 警告提示
         builder.OpenComponent<Alert>(200);
@@ -326,7 +457,7 @@ public partial class ExecutionWizard
     {
         return CurrentStep switch
         {
-            0 => Context != null && !Context.IsCommitted,
+            0 => Context != null && !Context.IsCommitted && string.IsNullOrEmpty(Context.IndexInspection.BlockingReason),
             1 => !string.IsNullOrWhiteSpace(RequestedBy) && BackupConfirmed,
             _ => false
         };

@@ -403,20 +403,124 @@ internal sealed class PartitionExecutionProcessor
                 $"准备将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表（保存并重建所有索引到分区方案）...",
                 cancellationToken);
 
-            var tableConverted = await commandExecutor.ConvertToPartitionedTableAsync(
-                task.DataSourceId,
-                configuration,
+            PartitionIndexInspection indexInspection;
+            try
+            {
+                indexInspection = await metadataRepository.GetIndexInspectionAsync(
+                    task.DataSourceId,
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    configuration.PartitionColumn.Name,
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                stepWatch.Stop();
+                logger.LogError(ex,
+                    "索引检查失败，无法执行分区转换: Schema={Schema}, Table={Table}",
+                    configuration.SchemaName,
+                    configuration.TableName);
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Error",
+                    "索引检查失败",
+                    $"无法获取表 {configuration.SchemaName}.{configuration.TableName} 的索引信息：{ex.Message}",
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.MarkFailed("SYSTEM", $"索引检查失败：{ex.Message}");
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
+
+            var indexesNeedingAlignment = indexInspection.IndexesMissingPartitionColumn.ToList();
+
+            if (!indexInspection.HasClusteredIndex)
+            {
+                stepWatch.Stop();
+                const string messageNoCluster = "索引检查失败：目标表未检测到聚集索引，无法自动对齐分区列。";
+                await AppendLogAsync(task.Id, "Error", "索引检查失败", messageNoCluster, cancellationToken, durationMs: stepWatch.ElapsedMilliseconds);
+                task.MarkFailed("SYSTEM", messageNoCluster);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
+
+            if (indexInspection.HasExternalForeignKeys && indexesNeedingAlignment.Count > 0)
+            {
+                stepWatch.Stop();
+                var fkSummary = indexInspection.ExternalForeignKeys.Count > 0
+                    ? string.Join("、", indexInspection.ExternalForeignKeys)
+                    : "存在外部外键引用";
+                var message = $"索引检查失败：检测到外部外键引用（{fkSummary}），无法自动调整索引，请手动处理后重试。";
+                await AppendLogAsync(task.Id, "Error", "索引检查失败", message, cancellationToken, durationMs: stepWatch.ElapsedMilliseconds);
+                task.MarkFailed("SYSTEM", message);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
+
+            var inspectionMessage = indexesNeedingAlignment.Count > 0
+                ? $"检测到需补齐分区列的索引：{string.Join("、", indexesNeedingAlignment.Select(x => x.IndexName))}，执行阶段将自动对齐。"
+                : "索引结构已包含分区列，无需额外调整。";
+
+            await AppendLogAsync(
+                task.Id,
+                indexesNeedingAlignment.Count > 0 ? "Warning" : "Info",
+                "索引检查结果",
+                inspectionMessage,
                 cancellationToken);
+
+            PartitionConversionResult conversionResult;
+            try
+            {
+                conversionResult = await commandExecutor.ConvertToPartitionedTableAsync(
+                    task.DataSourceId,
+                    configuration,
+                    indexInspection,
+                    cancellationToken);
+            }
+            catch (PartitionConversionException ex)
+            {
+                stepWatch.Stop();
+
+                await AppendLogAsync(
+                    task.Id,
+                    "Error",
+                    "表转换失败",
+                    ex.Message,
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.MarkFailed("SYSTEM", ex.Message);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
 
             stepWatch.Stop();
 
-            if (tableConverted)
+            if (conversionResult.Converted)
             {
+                var droppedSummary = conversionResult.DroppedIndexNames.Count > 0
+                    ? string.Join("、", conversionResult.DroppedIndexNames)
+                    : "无";
+                var recreatedSummary = conversionResult.RecreatedIndexNames.Count > 0
+                    ? string.Join("、", conversionResult.RecreatedIndexNames)
+                    : "无";
+                var alignmentSummary = conversionResult.AutoAlignedIndexes.Count > 0
+                    ? string.Join("、", conversionResult.AutoAlignedIndexes.Select(a => $"{a.IndexName}({a.OriginalKeyColumns} → {a.UpdatedKeyColumns})"))
+                    : "无";
+
+                var detailMessage =
+                    $"成功将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表，所有索引已在分区方案上重建。\r\n" +
+                    $"已删除索引：{droppedSummary}\r\n" +
+                    $"已重建索引：{recreatedSummary}\r\n" +
+                    $"自动对齐索引：{alignmentSummary}";
+
                 await AppendLogAsync(
                     task.Id,
                     "Info",
                     "表已转换为分区表",
-                    $"成功将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表，所有索引已在分区方案上重建。",
+                    detailMessage,
                     cancellationToken,
                     durationMs: stepWatch.ElapsedMilliseconds);
             }
@@ -493,6 +597,7 @@ internal sealed class PartitionExecutionProcessor
                     task.DataSourceId,
                     configuration,
                     pendingBoundaryValues,
+                    indexInspection,
                     cancellationToken);
 
                 stepWatch.Stop();
