@@ -495,7 +495,7 @@ internal sealed class SqlPartitionCommandExecutor
     /// <para>3. 重建聚集索引到分区方案（此时表变为分区表）</para>
     /// <para>4. 重建所有非聚集索引</para>
     /// </summary>
-    public async Task<bool> ConvertToPartitionedTableAsync(
+    public async Task<PartitionConversionResult> ConvertToPartitionedTableAsync(
         Guid dataSourceId,
         PartitionConfiguration configuration,
         CancellationToken cancellationToken = default)
