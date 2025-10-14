@@ -298,6 +298,25 @@ public partial class ExecutionWizard
         builder.AddAttribute(204, "ShowIcon", true);
         builder.AddAttribute(205, "Style", "margin-top: 16px;");
         builder.CloseComponent();
+
+        // 执行风险提示
+        builder.OpenComponent<Alert>(200);
+        builder.AddAttribute(201, "Type", AlertType.Info);
+        builder.AddAttribute(202, "ShowIcon", true);
+        builder.AddAttribute(203, "Message", "执行耗时与风险提示");
+        builder.AddAttribute(204, "Description",
+            "转换为分区表需要重建索引并可能将分区列改为 NOT NULL。若表数据量大或存在外部外键，请在业务低峰期执行，并优先导出脚本交由 DBA 审核。");
+        builder.AddAttribute(205, "Style", "margin-top: 16px;");
+        builder.CloseComponent();
+
+        builder.OpenComponent<Alert>(210);
+        builder.AddAttribute(211, "Type", AlertType.Info);
+        builder.AddAttribute(212, "ShowIcon", true);
+        builder.AddAttribute(213, "Message", "需要预览 SQL 脚本？");
+        builder.AddAttribute(214, "Description",
+            "当前版本暂未提供自动导出索引调整脚本，如需审阅，请联系 DBA 或使用数据库工具生成对应的 ALTER/CREATE 语句。");
+        builder.AddAttribute(215, "Style", "margin-top: 12px;");
+        builder.CloseComponent();
     };
 
     private RenderFragment RenderExecutionParams() => builder =>

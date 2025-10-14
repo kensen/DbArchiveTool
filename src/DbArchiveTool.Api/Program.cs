@@ -62,6 +62,12 @@ async Task EnsureDatabaseAsync(IServiceProvider services, ILogger logger)
 
     try
     {
+        if (!dbContext.Database.IsRelational())
+        {
+            await dbContext.Database.EnsureCreatedAsync();
+            return;
+        }
+
         await dbContext.Database.MigrateAsync();
     }
     catch (Exception ex)
