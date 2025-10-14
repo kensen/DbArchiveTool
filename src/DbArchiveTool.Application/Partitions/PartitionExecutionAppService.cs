@@ -234,13 +234,68 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         }
 
         var dto = MapToDetail(task);
+        var configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId, cancellationToken);
+        if (configuration is not null)
+        {
+            dto.SourceTable = $"{configuration.SchemaName}.{configuration.TableName}";
+            dto.TargetTable = configuration.TargetTable is not null
+                ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
+                : string.Empty;
+        }
+
         return Result<PartitionExecutionTaskDetailDto>.Success(dto);
     }
 
     public async Task<Result<List<PartitionExecutionTaskSummaryDto>>> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
     {
         var tasks = await taskRepository.ListRecentAsync(dataSourceId, maxCount, cancellationToken);
-        var items = tasks.Select(MapToSummary).ToList();
+
+        var dataSourceLookup = new Dictionary<Guid, string>();
+        var configurationLookup = new Dictionary<Guid, (string SourceTable, string? TargetTable)>();
+        if (tasks.Count > 0)
+        {
+            var dataSourceIds = tasks.Select(t => t.DataSourceId).Distinct().ToList();
+            foreach (var id in dataSourceIds)
+            {
+                var dataSource = await dataSourceRepository.GetAsync(id, cancellationToken);
+                dataSourceLookup[id] = dataSource?.DatabaseName ?? "未知数据库";
+            }
+            var configurationIds = tasks.Select(t => t.PartitionConfigurationId).Distinct().ToList();
+            foreach (var configurationId in configurationIds)
+            {
+                var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+                if (configuration is null)
+                {
+                    continue;
+                }
+
+                var sourceTable = $"{configuration.SchemaName}.{configuration.TableName}";
+                string? targetTable = configuration.TargetTable is not null
+                    ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
+                    : null;
+
+                configurationLookup[configurationId] = (sourceTable, targetTable);
+            }
+        }
+
+        var items = tasks.Select(task =>
+        {
+            var summary = MapToSummary(task);
+            summary.TaskType = "分区执行";
+            summary.DataSourceName = dataSourceLookup.TryGetValue(task.DataSourceId, out var dsName) ? dsName : "未知数据库";
+            if (configurationLookup.TryGetValue(task.PartitionConfigurationId, out var tableInfo))
+            {
+                summary.SourceTable = tableInfo.SourceTable;
+                summary.TargetTable = string.IsNullOrWhiteSpace(tableInfo.TargetTable) ? string.Empty : tableInfo.TargetTable;
+            }
+            else
+            {
+                summary.SourceTable = "未知对象";
+                summary.TargetTable = string.Empty;
+            }
+            return summary;
+        }).ToList();
+
         return Result<List<PartitionExecutionTaskSummaryDto>>.Success(items);
     }
 

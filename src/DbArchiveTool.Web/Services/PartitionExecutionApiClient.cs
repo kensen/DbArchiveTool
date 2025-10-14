@@ -168,6 +168,10 @@ public class PartitionExecutionTaskSummaryModel
     public Guid Id { get; set; }
     public Guid PartitionConfigurationId { get; set; }
     public Guid DataSourceId { get; set; }
+    public string TaskType { get; set; } = string.Empty;
+    public string DataSourceName { get; set; } = string.Empty;
+    public string SourceTable { get; set; } = string.Empty;
+    public string TargetTable { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public string Phase { get; set; } = string.Empty;
     public double Progress { get; set; }

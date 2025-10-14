@@ -1,4 +1,4 @@
-﻿@page "/partition-executions/monitor"
+@page "/partition-executions/monitor"
 @page "/partition-executions/monitor/{DataSourceId:guid}"
 @attribute [ReuseTabsPage(Title = "任务调度", Closable = true)]
 @inherits MonitorBase
@@ -50,6 +50,7 @@
                        Loading="@Loading"
                        Size="@TableSize.Small"
                        Bordered>
+                    <PropertyColumn Property="@(t => t.TaskType)" Title="任务类型" />
                     <PropertyColumn Property="@(t => t.Id)" Title="任务ID">
                         <Template>
                             <Text Code>@context.Id.ToString("N")[..16]...</Text>
@@ -74,8 +75,20 @@
                             <Progress Percent="@((int)(context.Progress * 100))" Size="@ProgressSize.Small" />
                         </Template>
                     </PropertyColumn>
+                    <PropertyColumn Property="@(t => t.DataSourceName)" Title="数据库" />
+                    <PropertyColumn Property="@(t => t.SourceTable)" Title="对象">
+                        <Template>
+                            @(string.IsNullOrWhiteSpace(context.SourceTable)
+                                ? (string.IsNullOrWhiteSpace(context.TargetTable) ? "-" : context.TargetTable)
+                                : context.SourceTable)
+                        </Template>
+                    </PropertyColumn>
                     <PropertyColumn Property="@(t => t.RequestedBy)" Title="执行人" />
-                    <PropertyColumn Property="@(t => t.CreatedAtUtc)" Title="创建时间" Format="yyyy-MM-dd HH:mm:ss" />
+                    <PropertyColumn Property="@(t => t.CreatedAtUtc)" Title="创建时间">
+                        <Template>
+                            @context.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                        </Template>
+                    </PropertyColumn>
                     <ActionColumn Title="操作">
                         <Space Size="@("small")">
                             <SpaceItem>
