@@ -579,6 +579,47 @@ internal sealed class SqlPartitionCommandExecutor
             }
 
             var autoAlignmentChanges = new List<IndexAlignmentChange>();
+            var partitionColumnAltered = false;
+
+            if (configuration.RequirePartitionColumnNotNull)
+            {
+                var columnMetadata = await GetPartitionColumnMetadataAsync(
+                    connection,
+                    transaction,
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    configuration.PartitionColumn.Name,
+                    cancellationToken);
+
+                if (columnMetadata is null)
+                {
+                    throw new PartitionConversionException(
+                        $"未能获取表 {configuration.SchemaName}.{configuration.TableName} 的分区列 {configuration.PartitionColumn.Name} 元数据，无法确认可空性。");
+                }
+
+                if (columnMetadata.IsNullable)
+                {
+                    var nullableCount = await sqlExecutor.QuerySingleAsync<int>(
+                        connection,
+                        $"SELECT COUNT(1) FROM [{configuration.SchemaName}].[{configuration.TableName}] WHERE [{configuration.PartitionColumn.Name}] IS NULL",
+                        transaction: transaction);
+
+                    if (nullableCount > 0)
+                    {
+                        throw new PartitionConversionException(
+                            $"分区列 {configuration.PartitionColumn.Name} 仍存在 {nullableCount} 条 NULL 数据，无法自动转换为 NOT NULL。请清理数据或关闭去可空选项后重试。");
+                    }
+
+                    var alterSql = $"ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] ALTER COLUMN [{configuration.PartitionColumn.Name}] {BuildColumnTypeDefinition(columnMetadata)} NOT NULL";
+                    await sqlExecutor.ExecuteAsync(connection, alterSql, transaction: transaction, timeoutSeconds: 300);
+                    logger.LogInformation(
+                        "已将分区列 {Schema}.{Table}.{Column} 转换为 NOT NULL。",
+                        configuration.SchemaName,
+                        configuration.TableName,
+                        configuration.PartitionColumn.Name);
+                    partitionColumnAltered = true;
+                }
+            }
 
             if (indicesToAlign.Count > 0)
             {
@@ -669,7 +710,7 @@ internal sealed class SqlPartitionCommandExecutor
                 indexes.Count, nonClusteredIndexes.Count);
 
             await transaction.CommitAsync(cancellationToken);
-            return PartitionConversionResult.Success(droppedIndexes, recreatedIndexes, autoAlignmentChanges);
+            return PartitionConversionResult.Success(droppedIndexes, recreatedIndexes, autoAlignmentChanges, partitionColumnAltered);
         }
         catch (Exception ex)
         {
@@ -735,14 +776,18 @@ internal sealed class SqlPartitionCommandExecutor
                 var alignmentSummary = conversionResult.AutoAlignedIndexes.Count > 0
                     ? string.Join(", ", conversionResult.AutoAlignedIndexes.Select(a => $"{a.IndexName}({a.OriginalKeyColumns} -> {a.UpdatedKeyColumns})"))
                     : "无";
+                var columnSummary = conversionResult.PartitionColumnAlteredToNotNull
+                    ? "分区列已转换为 NOT NULL"
+                    : "分区列未调整";
 
                 logger.LogInformation(
-                    "表 {Schema}.{Table} 已转换为分区表。已删除索引：{Dropped}；已重建索引：{Recreated}；自动对齐索引：{Aligned}",
+                    "表 {Schema}.{Table} 已转换为分区表。已删除索引：{Dropped}；已重建索引：{Recreated}；自动对齐索引：{Aligned}；列调整：{Column}",
                     configuration.SchemaName,
                     configuration.TableName,
                     droppedSummary,
                     recreatedSummary,
-                    alignmentSummary);
+                    alignmentSummary,
+                    columnSummary);
             }
 
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
@@ -875,6 +920,82 @@ internal sealed class SqlPartitionCommandExecutor
         }
     }
 
+    private async Task<PartitionColumnMetadata?> GetPartitionColumnMetadataAsync(
+        IDbConnection connection,
+        IDbTransaction transaction,
+        string schemaName,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT TOP 1
+    t.name AS DataType,
+    c.max_length AS MaxLength,
+    c.precision AS Precision,
+    c.scale AS Scale,
+    c.is_nullable AS IsNullable,
+    c.collation_name AS CollationName
+FROM sys.columns c
+INNER JOIN sys.types t ON c.user_type_id = t.user_type_id AND c.system_type_id = t.system_type_id
+WHERE c.object_id = OBJECT_ID(@FullName) AND c.name = @ColumnName";
+
+        var result = await sqlExecutor.QuerySingleAsync<PartitionColumnMetadata>(
+            connection,
+            sql,
+            new
+            {
+                FullName = $"[{schemaName}].[{tableName}]",
+                ColumnName = columnName
+            },
+            transaction);
+
+        return result;
+    }
+
+    private static string BuildColumnTypeDefinition(PartitionColumnMetadata metadata)
+    {
+        var dataType = metadata.DataType.ToLowerInvariant();
+        string typeDeclaration = dataType switch
+        {
+            "nvarchar" => metadata.MaxLength == -1
+                ? "NVARCHAR(MAX)"
+                : $"NVARCHAR({Math.Max(1, metadata.MaxLength / 2)})",
+            "nchar" => metadata.MaxLength == -1
+                ? "NCHAR(MAX)"
+                : $"NCHAR({Math.Max(1, metadata.MaxLength / 2)})",
+            "varchar" => metadata.MaxLength == -1
+                ? "VARCHAR(MAX)"
+                : $"VARCHAR({Math.Max(1, Convert.ToInt32(metadata.MaxLength))})",
+            "char" => metadata.MaxLength == -1
+                ? "CHAR(MAX)"
+                : $"CHAR({Math.Max(1, Convert.ToInt32(metadata.MaxLength))})",
+            "varbinary" => metadata.MaxLength == -1
+                ? "VARBINARY(MAX)"
+                : $"VARBINARY({Math.Max(1, Convert.ToInt32(metadata.MaxLength))})",
+            "binary" => metadata.MaxLength == -1
+                ? "BINARY(MAX)"
+                : $"BINARY({Math.Max(1, Convert.ToInt32(metadata.MaxLength))})",
+            "decimal" or "numeric" => metadata.Scale > 0
+                ? $"{metadata.DataType.ToUpperInvariant()}({metadata.Precision},{metadata.Scale})"
+                : $"{metadata.DataType.ToUpperInvariant()}({metadata.Precision})",
+            "datetime2" or "datetimeoffset" or "time" => metadata.Scale > 0
+                ? $"{metadata.DataType.ToUpperInvariant()}({metadata.Scale})"
+                : metadata.DataType.ToUpperInvariant(),
+            "float" or "real" or "bigint" or "int" or "smallint" or "tinyint" or "bit" or "datetime" or "date" or "smalldatetime" or "money" or "smallmoney" or "uniqueidentifier"
+                => metadata.DataType.ToUpperInvariant(),
+            _ => metadata.DataType.ToUpperInvariant()
+        };
+
+        if (!string.IsNullOrWhiteSpace(metadata.CollationName) &&
+            (dataType.Contains("char") || dataType.Contains("text")))
+        {
+            typeDeclaration += $" COLLATE {metadata.CollationName}";
+        }
+
+        return typeDeclaration;
+    }
+
     private static string ResolveDefaultFilegroup(PartitionConfiguration configuration)
     {
         if (configuration.StorageSettings.Mode == PartitionStorageMode.DedicatedFilegroupSingleFile &&
@@ -891,22 +1012,34 @@ internal sealed record PartitionConversionResult(
     bool Converted,
     IReadOnlyList<string> DroppedIndexNames,
     IReadOnlyList<string> RecreatedIndexNames,
-    IReadOnlyList<IndexAlignmentChange> AutoAlignedIndexes)
+    IReadOnlyList<IndexAlignmentChange> AutoAlignedIndexes,
+    bool PartitionColumnAlteredToNotNull)
 {
     public static PartitionConversionResult Skipped() =>
-        new(false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<IndexAlignmentChange>());
+        new(false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<IndexAlignmentChange>(), false);
 
     public static PartitionConversionResult Success(
         IReadOnlyList<string> droppedIndexNames,
         IReadOnlyList<string> recreatedIndexNames,
-        IReadOnlyList<IndexAlignmentChange> autoAlignedIndexes) =>
-        new(true, droppedIndexNames, recreatedIndexNames, autoAlignedIndexes);
+        IReadOnlyList<IndexAlignmentChange> autoAlignedIndexes,
+        bool partitionColumnAlteredToNotNull) =>
+        new(true, droppedIndexNames, recreatedIndexNames, autoAlignedIndexes, partitionColumnAlteredToNotNull);
 }
 
 internal sealed record IndexAlignmentChange(
     string IndexName,
     string OriginalKeyColumns,
     string UpdatedKeyColumns);
+
+internal sealed class PartitionColumnMetadata
+{
+    public string DataType { get; set; } = string.Empty;
+    public short MaxLength { get; set; }
+    public byte Precision { get; set; }
+    public byte Scale { get; set; }
+    public bool IsNullable { get; set; }
+    public string? CollationName { get; set; }
+}
 
 /// <summary>
 /// SQL 执行结果。

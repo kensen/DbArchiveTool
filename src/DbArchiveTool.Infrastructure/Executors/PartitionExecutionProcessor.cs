@@ -516,6 +516,11 @@ internal sealed class PartitionExecutionProcessor
                     $"已重建索引：{recreatedSummary}\r\n" +
                     $"自动对齐索引：{alignmentSummary}";
 
+                if (conversionResult.PartitionColumnAlteredToNotNull)
+                {
+                    detailMessage += "\r\n分区列已自动转换为 NOT NULL。";
+                }
+
                 await AppendLogAsync(
                     task.Id,
                     "Info",
