@@ -38,23 +38,25 @@
                ShowIcon="true"
                Style="margin-bottom: 24px;">
             <MessageTemplate>
-                <Space Size="@("large")">
-                    <SpaceItem>
-                        <strong>数据源:</strong> @Context.DataSourceName
-                    </SpaceItem>
-                    <SpaceItem>
-                        <strong>目标表:</strong> @Context.FullTableName
-                    </SpaceItem>
+                <Descriptions Column="2"
+                              Size="@DescriptionsSize.Small"
+                              Style="width: 100%;">
+                    <DescriptionsItem Title="数据源">
+                        @Context.DataSourceName
+                    </DescriptionsItem>
+                    <DescriptionsItem Title="目标表">
+                        @Context.FullTableName
+                    </DescriptionsItem>
                     @if (Context.TableStatistics?.TableExists == true)
                     {
-                        <SpaceItem>
-                            <strong>当前行数:</strong> @Context.TableStatistics.TotalRows.ToString("N0")
-                        </SpaceItem>
-                        <SpaceItem>
-                            <strong>表大小:</strong> @Context.TableStatistics.TotalSizeMB.ToString("N2") MB
-                        </SpaceItem>
+                        <DescriptionsItem Title="当前行数">
+                            @Context.TableStatistics.TotalRows.ToString("N0")
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="表大小">
+                            @Context.TableStatistics.TotalSizeMB.ToString("N2") MB
+                        </DescriptionsItem>
                     }
-                </Space>
+                </Descriptions>
             </MessageTemplate>
         </Alert>
 

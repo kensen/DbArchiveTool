@@ -45,6 +45,12 @@ public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplic
                 configuration.PartitionColumn.Name,
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(inspection);
+        metadataRepository.Setup(x => x.GetTableStatisticsAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TableStatistics(true, 5000, 128m, 32m, 160m));
         metadataRepository.Setup(x => x.ListBoundariesAsync(
                 configuration.ArchiveDataSourceId,
                 configuration.SchemaName,
@@ -75,6 +81,8 @@ public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplic
         Assert.True(context.IndexInspection.CanAutoAlign);
         Assert.Null(context.IndexInspection.BlockingReason);
         Assert.Empty(context.IndexInspection.IndexesNeedingAlignment);
+        Assert.NotNull(context.TableStatistics);
+        Assert.Equal(5000, context.TableStatistics!.TotalRows);
     }
 
     private static PartitionConfiguration CreatePartitionConfiguration()
@@ -92,6 +100,7 @@ public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplic
     {
         public Guid ConfigurationId { get; set; }
         public IndexInspectionResponse IndexInspection { get; set; } = new();
+        public TableStatisticsResponse? TableStatistics { get; set; }
     }
 
     private sealed class IndexInspectionResponse
@@ -99,6 +108,13 @@ public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplic
         public bool CanAutoAlign { get; set; }
         public string? BlockingReason { get; set; }
         public List<IndexAlignmentItemResponse> IndexesNeedingAlignment { get; set; } = new();
+    }
+
+    private sealed class TableStatisticsResponse
+    {
+        public bool TableExists { get; set; }
+        public long TotalRows { get; set; }
+        public decimal TotalSizeMB { get; set; }
     }
 
     private sealed class IndexAlignmentItemResponse

@@ -407,10 +407,40 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
                 ClusteredIndexContainsPartitionColumn = false,
                 CanAutoAlign = false,
                 BlockingReason = $"索引检查失败：{ex.Message}"
-            };
+            };         
         }
 
-        // 3. 构建上下文DTO
+        // 4. 表统计信息
+        TableStatisticsDto? tableStatisticsDto = null;
+        try
+        {
+            var tableStats = await metadataRepository.GetTableStatisticsAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                cancellationToken);
+
+            if (tableStats.TableExists)
+            {
+                tableStatisticsDto = new TableStatisticsDto
+                {
+                    TableExists = true,
+                    TotalRows = tableStats.TotalRows,
+                    DataSizeMB = tableStats.DataSizeMb,
+                    IndexSizeMB = tableStats.IndexSizeMb,
+                    TotalSizeMB = tableStats.TotalSizeMb
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "表统计信息获取失败，将在向导中隐藏: Schema={Schema}, Table={Table}",
+                configuration.SchemaName,
+                configuration.TableName);
+        }
+
+        // 5. 构建上下文DTO
         var context = new ExecutionWizardContextDto
         {
             ConfigurationId = configuration.Id,
@@ -434,6 +464,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
                 DisplayValue = b.Value.ToInvariantString()
             }).ToList(),
             IndexInspection = indexInspectionDto,
+            TableStatistics = tableStatisticsDto,
             Remarks = configuration.Remarks,
             ExecutionStage = configuration.ExecutionStage,
             IsCommitted = configuration.IsCommitted

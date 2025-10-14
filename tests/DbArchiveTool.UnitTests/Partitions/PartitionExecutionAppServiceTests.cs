@@ -19,6 +19,16 @@ public class PartitionExecutionAppServiceTests
     private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
     private readonly Mock<ILogger<PartitionExecutionAppService>> logger = new();
 
+    public PartitionExecutionAppServiceTests()
+    {
+        metadataRepository.Setup(x => x.GetTableStatisticsAsync(
+                It.IsAny<Guid>(),
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TableStatistics.NotFound);
+    }
+
     [Fact]
     public async Task GetExecutionContext_ShouldFlagBlocking_WhenClusteredIndexMissing()
     {
@@ -40,6 +50,12 @@ public class PartitionExecutionAppServiceTests
                 ClusteredIndex: null,
                 UniqueIndexes: Array.Empty<IndexAlignmentInfo>(),
                 ExternalForeignKeys: Array.Empty<string>()));
+        metadataRepository.Setup(x => x.GetTableStatisticsAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TableStatistics.NotFound);
 
         var service = CreateService();
 
@@ -51,6 +67,7 @@ public class PartitionExecutionAppServiceTests
         var inspection = result.Value!.IndexInspection;
         Assert.False(inspection.CanAutoAlign);
         Assert.Equal("目标表尚未创建聚集索引，无法自动对齐分区索引。", inspection.BlockingReason);
+        Assert.Null(result.Value.TableStatistics);
     }
 
     [Fact]
@@ -80,6 +97,12 @@ public class PartitionExecutionAppServiceTests
                 KeyColumns: new[] { "[Id] ASC" }),
                 UniqueIndexes: Array.Empty<IndexAlignmentInfo>(),
                 ExternalForeignKeys: Array.Empty<string>()));
+        metadataRepository.Setup(x => x.GetTableStatisticsAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TableStatistics(true, 123, 10m, 2m, 12m));
 
         var service = CreateService();
 
@@ -89,6 +112,8 @@ public class PartitionExecutionAppServiceTests
         var inspection = result.Value!.IndexInspection;
         Assert.True(inspection.CanAutoAlign);
         Assert.Null(inspection.BlockingReason);
+        Assert.NotNull(result.Value.TableStatistics);
+        Assert.Equal(123, result.Value.TableStatistics!.TotalRows);
     }
 
     [Fact]
@@ -107,6 +132,12 @@ public class PartitionExecutionAppServiceTests
                 configuration.PartitionColumn.Name,
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("metadata unavailable"));
+        metadataRepository.Setup(x => x.GetTableStatisticsAsync(
+                configuration.ArchiveDataSourceId,
+                configuration.SchemaName,
+                configuration.TableName,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(TableStatistics.NotFound);
 
         var service = CreateService();
 
@@ -117,6 +148,7 @@ public class PartitionExecutionAppServiceTests
         Assert.False(inspection.CanAutoAlign);
         Assert.Contains("索引检查失败", inspection.BlockingReason);
         Assert.Contains("metadata unavailable", inspection.BlockingReason);
+        Assert.Null(result.Value.TableStatistics);
     }
 
     private PartitionExecutionAppService CreateService()

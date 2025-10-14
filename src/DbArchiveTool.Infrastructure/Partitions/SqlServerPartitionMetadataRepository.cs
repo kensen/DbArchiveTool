@@ -185,14 +185,14 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         }
 
         /// <inheritdoc />
-        public async Task<PartitionIndexInspection> GetIndexInspectionAsync(
-            Guid dataSourceId,
-            string schemaName,
-            string tableName,
-            string partitionColumn,
-            CancellationToken cancellationToken = default)
-        {
-            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+    public async Task<PartitionIndexInspection> GetIndexInspectionAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        string partitionColumn,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
 
             const string indexSql = @"
 SELECT 
@@ -285,31 +285,78 @@ WHERE fk.referenced_object_id = OBJECT_ID(@FullName)
                 clusteredIndex,
                 uniqueIndexes,
                 foreignKeys);
+    }
+
+    public async Task<TableStatistics> GetTableStatisticsAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+
+        const string statsSql = @"
+SELECT 
+    SUM(row_count) AS TotalRows,
+    SUM(used_page_count) AS UsedPages,
+    SUM(reserved_page_count) AS ReservedPages
+FROM sys.dm_db_partition_stats
+WHERE object_id = OBJECT_ID(@FullName);";
+
+        var stats = await connection.QuerySingleOrDefaultAsync<TableStatisticsRow>(
+            statsSql,
+            new { FullName = $"[{schemaName}].[{tableName}]" });
+
+        if (stats is null || stats.TotalRows is null)
+        {
+            return TableStatistics.NotFound;
         }
 
-        private static IndexAlignmentInfo MapToAlignmentInfo(TableIndexDefinition definition)
-        {
-            var keyColumns = string.IsNullOrWhiteSpace(definition.KeyColumns)
-                ? new List<string>()
-                : definition.KeyColumns
-                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(column => column.Trim())
-                    .ToList();
+        var totalSizeMb = ConvertPagesToMb(stats.ReservedPages);
+        var dataSizeMb = ConvertPagesToMb(stats.UsedPages);
+        var indexSizeMb = Math.Max(0m, totalSizeMb - dataSizeMb);
 
-            return new IndexAlignmentInfo(
-                definition.IndexName,
-                definition.IsClustered,
-                definition.IsPrimaryKey,
-                definition.IsUniqueConstraint,
-                definition.IsUnique,
-                definition.ContainsPartitionColumn,
-                keyColumns);
+        return new TableStatistics(
+            TableExists: true,
+            TotalRows: stats.TotalRows.Value,
+            DataSizeMb: dataSizeMb,
+            IndexSizeMb: indexSizeMb,
+            TotalSizeMb: totalSizeMb);
+    }
+
+    private static IndexAlignmentInfo MapToAlignmentInfo(TableIndexDefinition definition)
+    {
+        var keyColumns = string.IsNullOrWhiteSpace(definition.KeyColumns)
+            ? new List<string>()
+            : definition.KeyColumns
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(column => column.Trim())
+                .ToList();
+
+        return new IndexAlignmentInfo(
+            definition.IndexName,
+            definition.IsClustered,
+            definition.IsPrimaryKey,
+            definition.IsUniqueConstraint,
+            definition.IsUnique,
+            definition.ContainsPartitionColumn,
+            keyColumns);
+    }
+
+    private static decimal ConvertPagesToMb(long? pages)
+    {
+        if (!pages.HasValue)
+        {
+            return 0m;
         }
 
-        private static PartitionValueKind MapToValueKind(string sqlType)
+        return pages.Value * 8m / 1024m;
+    }
+
+    private static PartitionValueKind MapToValueKind(string sqlType)
+    {
+        return sqlType.ToLowerInvariant() switch
         {
-            return sqlType.ToLowerInvariant() switch
-            {
                 "int" => PartitionValueKind.Int,
             "bigint" => PartitionValueKind.BigInt,
             "date" => PartitionValueKind.Date,
@@ -337,5 +384,12 @@ WHERE fk.referenced_object_id = OBJECT_ID(@FullName)
             "uniqueidentifier" => PartitionValue.FromGuid((Guid)boundaryValue),
             _ => PartitionValue.FromString(boundaryValue.ToString() ?? string.Empty)
         };
+    }
+
+    private sealed class TableStatisticsRow
+    {
+        public long? TotalRows { get; set; }
+        public long? UsedPages { get; set; }
+        public long? ReservedPages { get; set; }
     }
 }

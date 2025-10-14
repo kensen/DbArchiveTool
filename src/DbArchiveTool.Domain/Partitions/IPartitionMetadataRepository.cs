@@ -29,4 +29,13 @@ public interface IPartitionMetadataRepository
         string tableName,
         string partitionColumn,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 获取目标表的行数与空间占用统计信息。
+    /// </summary>
+    Task<TableStatistics> GetTableStatisticsAsync(
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken = default);
 }
