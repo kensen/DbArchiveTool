@@ -6,6 +6,7 @@ using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
 using System.Linq;
 using OneOf;
+using DbArchiveTool.Web.Core;
 
 namespace DbArchiveTool.Web.Pages.PartitionExecutions;
 
@@ -20,6 +21,7 @@ public partial class ExecutionWizard
     [Inject] private NavigationManager Navigation { get; set; } = default!;
     [Inject] private IMessageService Message { get; set; } = default!;
     [Inject] private ReuseTabsService ReuseTabsService { get; set; } = default!;
+    [Inject] private PartitionPageState PartitionPageState { get; set; } = default!;
 
     private bool Loading { get; set; } = true;
     private bool Submitting { get; set; }
@@ -98,38 +100,51 @@ public partial class ExecutionWizard
                 descBuilder.AddAttribute(22, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.PartitionSchemeName)));
                 descBuilder.CloseComponent();
 
-                // 分区列
-                descBuilder.OpenComponent<DescriptionsItem>(30);
-                descBuilder.AddAttribute(31, "Title", "分区列");
-                descBuilder.AddAttribute(32, "ChildContent", (RenderFragment)(b => b.AddContent(0, $"{Context!.PartitionColumnName} ({Context.PartitionColumnType})")));
+            // 分区列
+            descBuilder.OpenComponent<DescriptionsItem>(30);
+            descBuilder.AddAttribute(31, "Title", "分区列");
+            descBuilder.AddAttribute(32, "ChildContent", (RenderFragment)(b => b.AddContent(0, $"{Context!.PartitionColumnName} ({Context.PartitionColumnType})")));
+            descBuilder.CloseComponent();
+
+            // 边界数量
+            descBuilder.OpenComponent<DescriptionsItem>(40);
+            descBuilder.AddAttribute(41, "Title", "分区边界数");
+            descBuilder.AddAttribute(42, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.Boundaries.Count)));
+            descBuilder.CloseComponent();
+
+            // Range类型
+            descBuilder.OpenComponent<DescriptionsItem>(50);
+            descBuilder.AddAttribute(51, "Title", "Range类型");
+            descBuilder.AddAttribute(52, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.IsRangeRight ? "RIGHT" : "LEFT")));
+            descBuilder.CloseComponent();
+
+            // 主文件组
+            descBuilder.OpenComponent<DescriptionsItem>(60);
+            descBuilder.AddAttribute(61, "Title", "主文件组");
+            descBuilder.AddAttribute(62, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.PrimaryFilegroup)));
+            descBuilder.CloseComponent();
+
+            if (Context is { TableStatistics: { TableExists: true } stats })
+            {
+                descBuilder.OpenComponent<DescriptionsItem>(70);
+                descBuilder.AddAttribute(71, "Title", "当前行数");
+                descBuilder.AddAttribute(72, "ChildContent", (RenderFragment)(b => b.AddContent(0, stats.TotalRows.ToString("N0"))));
                 descBuilder.CloseComponent();
 
-                // 边界数量
-                descBuilder.OpenComponent<DescriptionsItem>(40);
-                descBuilder.AddAttribute(41, "Title", "分区边界数");
-                descBuilder.AddAttribute(42, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.Boundaries.Count)));
+                descBuilder.OpenComponent<DescriptionsItem>(80);
+                descBuilder.AddAttribute(81, "Title", "表大小 (MB)");
+                descBuilder.AddAttribute(82, "ChildContent", (RenderFragment)(b => b.AddContent(0, stats.TotalSizeMB.ToString("N2"))));
                 descBuilder.CloseComponent();
+            }
 
-                // Range类型
-                descBuilder.OpenComponent<DescriptionsItem>(50);
-                descBuilder.AddAttribute(51, "Title", "Range类型");
-                descBuilder.AddAttribute(52, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.IsRangeRight ? "RIGHT" : "LEFT")));
+            // 备注
+            if (!string.IsNullOrWhiteSpace(Context!.Remarks))
+            {
+                descBuilder.OpenComponent<DescriptionsItem>(90);
+                descBuilder.AddAttribute(91, "Title", "备注");
+                descBuilder.AddAttribute(92, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context.Remarks)));
                 descBuilder.CloseComponent();
-
-                // 主文件组
-                descBuilder.OpenComponent<DescriptionsItem>(60);
-                descBuilder.AddAttribute(61, "Title", "主文件组");
-                descBuilder.AddAttribute(62, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context!.PrimaryFilegroup)));
-                descBuilder.CloseComponent();
-
-                // 备注
-                if (!string.IsNullOrWhiteSpace(Context!.Remarks))
-                {
-                    descBuilder.OpenComponent<DescriptionsItem>(70);
-                    descBuilder.AddAttribute(71, "Title", "备注");
-                    descBuilder.AddAttribute(72, "ChildContent", (RenderFragment)(b => b.AddContent(0, Context.Remarks)));
-                    descBuilder.CloseComponent();
-                }
+            }
             }));
             cardBuilder.CloseComponent(); // Descriptions
 
@@ -512,6 +527,7 @@ public partial class ExecutionWizard
                 ResultTitle = "执行成功";
                 // Ignore returned task
                 Message.Success("分区执行任务已创建");
+                PartitionPageState.RequestDraftsRefresh(Context?.DataSourceId ?? Guid.Empty, ConfigId);
             }
             else
             {

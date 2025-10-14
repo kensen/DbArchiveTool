@@ -1,5 +1,6 @@
 @page "/archive-data-sources/{DataSourceId:guid}/partitions"
 @attribute [ReuseTabsPage(Title = "分区管理", Closable = true)]
+@implements IDisposable
 @using AntDesign
 @using AntDesign.TableModels
 @using System.Globalization
@@ -14,6 +15,7 @@
 @inject PartitionConfigurationApiClient PartitionConfigApi
 @inject MessageService Message
 @inject NavigationManager Navigation
+@inject PartitionPageState PartitionPageState
 
 <PageTitle>分区管理</PageTitle>
 
@@ -386,12 +388,65 @@
         !_selectedDraft.IsPartitioned;
 
     private bool _loadingDrafts = false;
+    private CancellationTokenSource? _draftRefreshCts;
 
     protected override async Task OnInitializedAsync()
     {
+        PartitionPageState.DraftsRefreshRequested += OnDraftsRefreshRequested;
         await LoadDataSourceInfoAsync();
         await LoadPartitionTablesAsync();
         await LoadConfigurationDraftsAsync();
+    }
+
+    public void Dispose()
+    {
+        PartitionPageState.DraftsRefreshRequested -= OnDraftsRefreshRequested;
+        _draftRefreshCts?.Cancel();
+    }
+
+    private void OnDraftsRefreshRequested(Guid dataSourceId, Guid configurationId)
+    {
+        if (dataSourceId != DataSourceId)
+        {
+            return;
+        }
+
+        _draftRefreshCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _draftRefreshCts = cts;
+        _ = AutoRefreshDraftsAsync(configurationId, cts.Token);
+    }
+
+    private async Task AutoRefreshDraftsAsync(Guid configurationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            for (var attempt = 0; attempt < 12 && !cancellationToken.IsCancellationRequested; attempt++)
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadPartitionTablesAsync();
+                    await LoadConfigurationDraftsAsync();
+                    if (_selectedTable is not null)
+                    {
+                        await LoadPartitionDetailsAsync(_selectedTable);
+                    }
+                    StateHasChanged();
+                });
+
+                var draft = _configurationDrafts.FirstOrDefault(d => d.Id == configurationId);
+                if (draft is null || draft.IsCommitted || string.Equals(draft.ExecutionStage, "Completed", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // ignore
+        }
     }
 
     private async Task OnTabChanged(string key)
@@ -1004,9 +1059,6 @@
         public string Password { get; set; } = "";
     }
 }
-
-
-
 
 
 
