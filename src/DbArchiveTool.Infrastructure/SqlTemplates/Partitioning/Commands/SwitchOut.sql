@@ -2,8 +2,8 @@ SET XACT_ABORT ON;
 SET NOCOUNT ON;
 BEGIN TRY
     BEGIN TRAN;
-    ALTER TABLE [{Schema}].[{SourceTable}] SWITCH PARTITION {SourcePartitionNumber}
-    TO [{Schema}].[{TargetTable}] PARTITION {TargetPartitionNumber};
+    ALTER TABLE [{SourceSchema}].[{SourceTable}] SWITCH PARTITION {SourcePartitionNumber}
+    TO [{TargetSchema}].[{TargetTable}] PARTITION {TargetPartitionNumber};
     COMMIT TRAN;
 END TRY
 BEGIN CATCH

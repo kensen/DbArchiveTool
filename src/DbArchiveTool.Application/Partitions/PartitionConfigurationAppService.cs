@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
@@ -21,6 +22,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
     private readonly IPartitionConfigurationRepository configurationRepository;
     private readonly IPartitionExecutionTaskRepository executionTaskRepository;
     private readonly IPartitionExecutionLogRepository executionLogRepository;
+    private readonly IPartitionAuditLogRepository auditLogRepository;
     private readonly PartitionValueParser valueParser;
     private readonly ILogger<PartitionConfigurationAppService> logger;
 
@@ -29,6 +31,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         IPartitionConfigurationRepository configurationRepository,
         IPartitionExecutionTaskRepository executionTaskRepository,
         IPartitionExecutionLogRepository executionLogRepository,
+        IPartitionAuditLogRepository auditLogRepository,
         PartitionValueParser valueParser,
         ILogger<PartitionConfigurationAppService> logger)
     {
@@ -36,6 +39,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         this.configurationRepository = configurationRepository;
         this.executionTaskRepository = executionTaskRepository;
         this.executionLogRepository = executionLogRepository;
+        this.auditLogRepository = auditLogRepository;
         this.valueParser = valueParser;
         this.logger = logger;
     }
@@ -184,12 +188,21 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             var filegroupLabel = string.IsNullOrWhiteSpace(request.FilegroupName) ? "默认" : request.FilegroupName!;
             var message = $"新增边界 {boundaryKey} = {literalForLog} (文件组: {filegroupLabel})。当前边界数: {configuration.Boundaries.Count}";
+            var auditPayload = new
+            {
+                boundaryKey,
+                boundaryValue = literalForLog,
+                filegroup = filegroupLabel,
+                boundaryCount = configuration.Boundaries.Count
+            };
+
             await RecordBoundaryOperationAsync(
                 configuration,
                 PartitionExecutionOperationType.AddBoundary,
                 request.RequestedBy,
                 "新增分区边界",
                 message,
+                auditPayload,
                 cancellationToken);
 
             logger.LogInformation("Boundary {BoundaryKey} added to configuration {ConfigurationId} by {User}", boundaryKey, configurationId, request.RequestedBy);
@@ -245,7 +258,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
         var newBoundaryKey = GenerateBoundaryKey();
         var newBoundary = new PartitionBoundary(newBoundaryKey, newBoundaryValue);
-        var addResult = configuration.TryAddBoundary(newBoundary);
+        var addResult = configuration.TryInsertBoundary(newBoundary);
         if (!addResult.IsSuccess)
         {
             return Result.Failure(addResult.ErrorMessage ?? "拆分分区失败。");
@@ -269,12 +282,22 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             var filegroupLabel = string.IsNullOrWhiteSpace(request.FilegroupName) ? "继承文件组" : request.FilegroupName!;
             var newLiteral = newBoundaryValue.ToLiteral();
             var splitMessage = $"拆分边界 {request.BoundaryKey}，插入新边界 {newBoundaryKey} = {newLiteral} (文件组: {filegroupLabel})。当前边界数: {configuration.Boundaries.Count}";
+            var auditPayload = new
+            {
+                originalBoundaryKey = request.BoundaryKey,
+                newBoundaryKey,
+                newBoundaryValue = newLiteral,
+                filegroup = filegroupLabel,
+                boundaryCount = configuration.Boundaries.Count
+            };
+
             await RecordBoundaryOperationAsync(
                 configuration,
                 PartitionExecutionOperationType.SplitBoundary,
                 request.RequestedBy,
                 "拆分分区边界",
                 splitMessage,
+                auditPayload,
                 cancellationToken);
 
             logger.LogInformation("Boundary {BoundaryKey} split in configuration {ConfigurationId} by {User}, new boundary {NewBoundaryKey}", request.BoundaryKey, configurationId, request.RequestedBy, newBoundaryKey);
@@ -318,12 +341,19 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             configuration.Touch(request.RequestedBy);
             await configurationRepository.UpdateAsync(configuration, cancellationToken);
             var mergeMessage = $"合并边界 {request.BoundaryKey} 后，剩余边界数：{configuration.Boundaries.Count}";
+            var auditPayload = new
+            {
+                boundaryKey = request.BoundaryKey,
+                boundaryCount = configuration.Boundaries.Count
+            };
+
             await RecordBoundaryOperationAsync(
                 configuration,
                 PartitionExecutionOperationType.MergeBoundary,
                 request.RequestedBy,
                 "合并分区边界",
                 mergeMessage,
+                auditPayload,
                 cancellationToken);
             logger.LogInformation("Boundary {BoundaryKey} merged in configuration {ConfigurationId} by {User}", request.BoundaryKey, configurationId, request.RequestedBy);
             return Result.Success();
@@ -799,7 +829,9 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         string requestedBy,
         string title,
         string message,
-        CancellationToken cancellationToken)
+        object? auditPayload,
+        CancellationToken cancellationToken,
+        string? script = null)
     {
         try
         {
@@ -824,6 +856,30 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             var log = PartitionExecutionLogEntry.Create(task.Id, "Info", title, message);
             await executionLogRepository.AddAsync(log, cancellationToken);
+
+            var payloadEnvelope = new
+            {
+                message,
+                data = auditPayload,
+                targetDatabase,
+                targetTable,
+                configurationId = configuration.Id,
+                schema = configuration.SchemaName,
+                table = configuration.TableName
+            };
+
+            var payloadJson = JsonSerializer.Serialize(payloadEnvelope);
+            var auditLog = PartitionAuditLog.Create(
+                requestedBy,
+                operationType.ToString(),
+                nameof(PartitionConfiguration),
+                configuration.Id.ToString(),
+                title,
+                payloadJson,
+                "Success",
+                script);
+
+            await auditLogRepository.AddAsync(auditLog, cancellationToken);
         }
         catch (Exception ex)
         {

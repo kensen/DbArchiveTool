@@ -85,15 +85,21 @@ internal sealed class SqlPartitionCommandExecutor
 
     public string RenderSwitchOutScript(PartitionConfiguration configuration, SwitchPayload payload)
     {
+        if (string.IsNullOrWhiteSpace(payload.TargetSchema))
+        {
+            throw new InvalidOperationException("目标架构不能为空。");
+        }
+
         var template = templateProvider.GetTemplate("SwitchOut.sql");
         var script = template
-            .Replace("{Schema}", configuration.SchemaName)
+            .Replace("{SourceSchema}", configuration.SchemaName)
             .Replace("{SourceTable}", configuration.TableName)
+            .Replace("{TargetSchema}", payload.TargetSchema)
             .Replace("{TargetTable}", payload.TargetTable)
             .Replace("{SourcePartitionNumber}", payload.SourcePartitionKey)
             .Replace("{TargetPartitionNumber}", payload.SourcePartitionKey);
 
-        logger.LogDebug("Switch script generated for {Schema}.{Table} to {Target}", configuration.SchemaName, configuration.TableName, payload.TargetTable);
+        logger.LogDebug("Switch script generated for {Schema}.{Table} to {TargetSchema}.{TargetTable}", configuration.SchemaName, configuration.TableName, payload.TargetSchema, payload.TargetTable);
         return script;
     }
 

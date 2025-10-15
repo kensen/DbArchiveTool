@@ -202,13 +202,34 @@ public sealed class PartitionConfiguration : AggregateRoot
             return PartitionOperationResult.Failure("边界信息不能为空。");
         }
 
-        var validation = ValidateNewBoundary(boundary);
+        var validation = ValidateAppendBoundary(boundary);
         if (!validation.IsSatisfied)
         {
             return PartitionOperationResult.Failure(validation.ErrorMessage);
         }
 
         AddBoundaryInternal(boundary, skipValidation: false);
+        Touch(DefaultAuditUser);
+        return PartitionOperationResult.Success();
+    }
+
+    /// <summary>
+    /// 尝试在现有边界之间插入新的分区边界（用于拆分场景）。
+    /// </summary>
+    public PartitionOperationResult TryInsertBoundary(PartitionBoundary boundary)
+    {
+        if (boundary is null)
+        {
+            return PartitionOperationResult.Failure("边界信息不能为空。");
+        }
+
+        var validation = ValidateInsertBoundary(boundary);
+        if (!validation.IsSatisfied)
+        {
+            return PartitionOperationResult.Failure(validation.ErrorMessage);
+        }
+
+        AddBoundaryInternal(boundary, skipValidation: true);
         Touch(DefaultAuditUser);
         return PartitionOperationResult.Success();
     }
@@ -404,7 +425,7 @@ public sealed class PartitionConfiguration : AggregateRoot
 
         if (!skipValidation)
         {
-            var validation = ValidateNewBoundary(boundary);
+            var validation = ValidateAppendBoundary(boundary);
             if (!validation.IsSatisfied)
             {
                 throw new InvalidOperationException(validation.ErrorMessage);
@@ -432,7 +453,7 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// 校验待新增的分区边界是否满足单调性与唯一性要求。
     /// </summary>
     /// <param name="boundary">待校验的分区边界。</param>
-    private PartitionBoundaryValidation ValidateNewBoundary(PartitionBoundary boundary)
+    private PartitionBoundaryValidation ValidateAppendBoundary(PartitionBoundary boundary)
     {
         if (boundaries.Any(x => x.SortKey.Equals(boundary.SortKey, StringComparison.Ordinal)))
         {
@@ -463,6 +484,47 @@ public sealed class PartitionConfiguration : AggregateRoot
             }
         }
 
+        return PartitionBoundaryValidation.Satisfied();
+    }
+
+    /// <summary>
+    /// 校验在拆分场景下插入新的分区边界是否满足严格递增要求。
+    /// </summary>
+    private PartitionBoundaryValidation ValidateInsertBoundary(PartitionBoundary boundary)
+    {
+        if (boundaries.Any(x => x.SortKey.Equals(boundary.SortKey, StringComparison.Ordinal)))
+        {
+            return PartitionBoundaryValidation.NotSatisfied("已存在相同的分区边界。");
+        }
+
+        if (boundaries.Count == 0)
+        {
+            return PartitionBoundaryValidation.Satisfied();
+        }
+
+        const string invalidMessage = "分区边界值必须严格递增，且不能与现有边界相同。";
+        var sorted = boundaries.OrderBy(x => x).ToList();
+
+        for (var i = 0; i < sorted.Count; i++)
+        {
+            var comparison = boundary.CompareTo(sorted[i]);
+            if (comparison == 0)
+            {
+                return PartitionBoundaryValidation.NotSatisfied("分区边界值已存在。");
+            }
+
+            if (comparison < 0)
+            {
+                if (i > 0 && boundary.CompareTo(sorted[i - 1]) <= 0)
+                {
+                    return PartitionBoundaryValidation.NotSatisfied(invalidMessage);
+                }
+
+                return PartitionBoundaryValidation.Satisfied();
+            }
+        }
+
+        // 大于当前所有边界，直接通过
         return PartitionBoundaryValidation.Satisfied();
     }
 

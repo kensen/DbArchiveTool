@@ -21,6 +21,7 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
     public DbSet<PartitionExecutionTask> PartitionExecutionTasks => Set<PartitionExecutionTask>();
     public DbSet<PartitionExecutionLogEntry> PartitionExecutionLogs => Set<PartitionExecutionLogEntry>();
+    public DbSet<PartitionAuditLog> PartitionAuditLogs => Set<PartitionAuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -187,6 +188,24 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.ExtraJson).HasColumnType("nvarchar(max)");
 
             builder.HasIndex(x => new { x.ExecutionTaskId, x.LogTimeUtc });
+        });
+
+        modelBuilder.Entity<PartitionAuditLog>(builder =>
+        {
+            builder.ToTable("PartitionAuditLog");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.UserId).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.Action).IsRequired().HasMaxLength(100);
+            builder.Property(x => x.ResourceType).IsRequired().HasMaxLength(100);
+            builder.Property(x => x.ResourceId).IsRequired().HasMaxLength(64);
+            builder.Property(x => x.OccurredAtUtc).IsRequired();
+            builder.Property(x => x.Summary).HasMaxLength(512);
+            builder.Property(x => x.PayloadJson).HasColumnType("nvarchar(max)");
+            builder.Property(x => x.Result).IsRequired().HasMaxLength(32);
+            builder.Property(x => x.Script).HasColumnType("nvarchar(max)");
+
+            builder.HasIndex(x => new { x.ResourceType, x.ResourceId, x.OccurredAtUtc });
+            builder.HasIndex(x => new { x.Action, x.OccurredAtUtc });
         });
     }
 }

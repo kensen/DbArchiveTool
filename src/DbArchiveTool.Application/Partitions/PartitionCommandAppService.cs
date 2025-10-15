@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using DbArchiveTool.Domain.Partitions;
@@ -261,6 +262,121 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         return warnings;
     }
 
+    private static Result ValidateSwitchRequest(SwitchPartitionRequest request)
+    {
+        if (request.DataSourceId == Guid.Empty)
+        {
+            return Result.Failure("数据源标识不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SchemaName) || string.IsNullOrWhiteSpace(request.TableName))
+        {
+            return Result.Failure("架构名称与表名称不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SourcePartitionKey))
+        {
+            return Result.Failure("源分区编号不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetTable))
+        {
+            return Result.Failure("目标表不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("请求人不能为空。");
+        }
+
+        return Result.Success();
+    }
+
+    private static IReadOnlyList<string> BuildSwitchWarnings(SwitchPartitionRequest request)
+    {
+        var warnings = new List<string>();
+        if (!request.BackupConfirmed)
+        {
+            warnings.Add("尚未确认备份，执行前请确保已有最新备份。");
+        }
+
+        if (request.CreateStagingTable)
+        {
+            warnings.Add("当前版本尚未自动创建临时表，请确保目标表已提前准备或取消临时表选项。");
+        }
+
+        return warnings;
+    }
+
+    private static string FormatQualifiedName(string schema, string table)
+        => $"[{schema}].[{table}]";
+
+    private static NormalizedTarget NormalizeTargetQualifiedName(string raw, string defaultSchema)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return NormalizedTarget.Invalid("目标表不能为空。");
+        }
+
+        var trimmed = raw.Trim();
+        string schema = defaultSchema;
+        string table;
+
+        if (TrySplitQualifiedName(trimmed, out var parsedSchema, out var parsedTable))
+        {
+            schema = parsedSchema;
+            table = parsedTable;
+        }
+        else
+        {
+            table = trimmed.Trim('[', ']');
+        }
+
+        if (string.IsNullOrWhiteSpace(table))
+        {
+            return NormalizedTarget.Invalid("目标表名称解析失败，请使用 schema.table 格式。");
+        }
+
+        return NormalizedTarget.Valid(schema.Trim('[', ']'), table.Trim('[', ']'));
+    }
+
+    private static bool TrySplitQualifiedName(string input, out string schema, out string table)
+    {
+        input = input.Trim();
+        schema = string.Empty;
+        table = string.Empty;
+
+        if (input.StartsWith("[", StringComparison.Ordinal) && input.Contains("].[", StringComparison.Ordinal))
+        {
+            var parts = input.Split(new[] { "].[" }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2)
+            {
+                schema = parts[0].Trim('[', ']');
+                table = parts[1].Trim('[', ']');
+                return true;
+            }
+        }
+
+        var tokens = input.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 2)
+        {
+            schema = tokens[0].Trim('[', ']');
+            table = tokens[1].Trim('[', ']');
+            return true;
+        }
+
+        return false;
+    }
+
+    private sealed record NormalizedTarget(bool IsValid, string Schema, string Table, string? Error)
+    {
+        public static NormalizedTarget Valid(string schema, string table)
+            => new(true, schema, table, null);
+
+        public static NormalizedTarget Invalid(string error)
+            => new(false, string.Empty, string.Empty, error);
+    }
+
     public async Task<Result<PartitionCommandPreviewDto>> PreviewMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
     {
         var validation = ValidateMergeRequest(request);
@@ -332,14 +448,100 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         return Result<Guid>.Success(command.Id);
     }
 
-    public Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(Result<PartitionCommandPreviewDto>.Failure("Switch功能开发中"));
+        var validation = ValidateSwitchRequest(request);
+        if (!validation.IsSuccess)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(validation.Error!);
+        }
+
+        var configuration = await metadataRepository.GetConfigurationAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure("未找到分区配置，请确认目标表启用了分区。");
+        }
+
+        var target = NormalizeTargetQualifiedName(request.TargetTable, configuration.SchemaName);
+        if (!target.IsValid)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(target.Error!);
+        }
+
+        var payload = new SwitchPayload(
+            request.SourcePartitionKey,
+            target.Schema,
+            target.Table,
+            request.CreateStagingTable,
+            null,
+            null,
+            null);
+
+        var scriptResult = scriptGenerator.GenerateSwitchOutScript(configuration, payload);
+        if (!scriptResult.IsSuccess)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(scriptResult.Error!);
+        }
+
+        var warnings = BuildSwitchWarnings(request);
+        var dto = new PartitionCommandPreviewDto(scriptResult.Value!, warnings);
+        return Result<PartitionCommandPreviewDto>.Success(dto);
     }
 
-    public Task<Result<Guid>> ExecuteSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<Guid>> ExecuteSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(Result<Guid>.Failure("Switch功能开发中"));
+        if (!request.BackupConfirmed)
+        {
+            return Result<Guid>.Failure("执行切换前需要确认已有备份或快照。");
+        }
+
+        var preview = await PreviewSwitchAsync(request, cancellationToken);
+        if (!preview.IsSuccess)
+        {
+            return Result<Guid>.Failure(preview.Error!);
+        }
+
+        var configuration = await metadataRepository.GetConfigurationAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<Guid>.Failure("未找到分区配置，请确认目标表启用了分区。");
+        }
+
+        var target = NormalizeTargetQualifiedName(request.TargetTable, configuration.SchemaName);
+        if (!target.IsValid)
+        {
+            return Result<Guid>.Failure(target.Error!);
+        }
+
+        var payloadJson = JsonSerializer.Serialize(new
+        {
+            configurationId = configuration.Id,
+            request.SchemaName,
+            request.TableName,
+            request.SourcePartitionKey,
+            targetSchema = target.Schema,
+            targetTable = target.Table,
+            request.CreateStagingTable
+        });
+
+        var command = PartitionCommand.CreateSwitch(
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            preview.Value!.Script,
+            payloadJson,
+            request.RequestedBy);
+
+        await commandRepository.AddAsync(command, cancellationToken);
+        logger.LogInformation(
+            "Partition switch command {CommandId} created for {Schema}.{Table} (Target {TargetSchema}.{TargetTable})",
+            command.Id,
+            request.SchemaName,
+            request.TableName,
+            target.Schema,
+            target.Table);
+
+        return Result<Guid>.Success(command.Id);
     }
 
     public async Task<Result<PartitionCommandStatusDto>> GetStatusAsync(Guid commandId, CancellationToken cancellationToken = default)

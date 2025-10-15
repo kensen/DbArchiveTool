@@ -23,6 +23,7 @@ public interface IPartitionCommandScriptGenerator
 /// </summary>
 public sealed record SwitchPayload(
     string SourcePartitionKey,
+    string TargetSchema,
     string TargetTable,
     bool CreateStagingTable,
     string? StagingTableName,

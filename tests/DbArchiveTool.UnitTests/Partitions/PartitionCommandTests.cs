@@ -1,3 +1,4 @@
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions;
@@ -166,6 +167,67 @@ public class PartitionCommandTests
         commandRepository.Verify(x => x.UpdateAsync(command, It.IsAny<CancellationToken>()), Times.Once);
         commandQueue.Verify(x => x.EnqueueAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
         Assert.Equal(command.Id, queuedCommandId);
+    }
+
+    [Fact]
+    public async Task PreviewSwitchAsync_Should_Generate_Script()
+    {
+        var dataSourceId = Guid.NewGuid();
+        var configuration = CreateConfiguration(dataSourceId);
+
+        metadataRepository
+            .Setup(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        SwitchPayload? capturedPayload = null;
+        scriptGenerator
+            .Setup(x => x.GenerateSwitchOutScript(configuration, It.IsAny<SwitchPayload>()))
+            .Callback<PartitionConfiguration, SwitchPayload>((_, payload) => capturedPayload = payload)
+            .Returns(Result<string>.Success("SWITCH SCRIPT"));
+
+        var service = CreateService();
+        var request = new SwitchPartitionRequest(dataSourceId, "dbo", "Orders", "5", "archive.SwitchTarget", false, true, "tester");
+
+        var result = await service.PreviewSwitchAsync(request);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("SWITCH SCRIPT", result.Value!.Script);
+        Assert.NotNull(capturedPayload);
+        Assert.Equal("archive", capturedPayload!.TargetSchema);
+        Assert.Equal("SwitchTarget", capturedPayload.TargetTable);
+    }
+
+    [Fact]
+    public async Task ExecuteSwitchAsync_Should_Create_Command()
+    {
+        var dataSourceId = Guid.NewGuid();
+        var configuration = CreateConfiguration(dataSourceId);
+
+        metadataRepository
+            .SetupSequence(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration)  // preview
+            .ReturnsAsync(configuration); // execute
+
+        scriptGenerator
+            .Setup(x => x.GenerateSwitchOutScript(configuration, It.IsAny<SwitchPayload>()))
+            .Returns(Result<string>.Success("SWITCH SCRIPT"));
+
+        PartitionCommand? captured = null;
+        commandRepository
+            .Setup(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()))
+            .Callback<PartitionCommand, CancellationToken>((cmd, _) => captured = cmd)
+            .Returns(Task.CompletedTask);
+
+        var service = CreateService();
+        var request = new SwitchPartitionRequest(dataSourceId, "dbo", "Orders", "7", "archive.SwitchTarget", false, true, "tester");
+
+        var result = await service.ExecuteSwitchAsync(request);
+
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(captured);
+        Assert.Equal(PartitionCommandType.Switch, captured!.CommandType);
+        Assert.Contains("\"targetSchema\":\"archive\"", captured.Payload, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"targetTable\":\"SwitchTarget\"", captured.Payload, StringComparison.OrdinalIgnoreCase);
     }
 
     private static PartitionConfiguration CreateConfiguration(Guid dataSourceId, IEnumerable<PartitionBoundary>? boundaries = null)

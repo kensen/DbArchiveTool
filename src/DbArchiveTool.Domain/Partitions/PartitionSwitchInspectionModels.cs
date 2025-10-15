@@ -1,0 +1,92 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace DbArchiveTool.Domain.Partitions;
+
+/// <summary>
+/// 定义分区切换前的检查上下文。
+/// </summary>
+public sealed record PartitionSwitchInspectionContext(
+    string SourcePartitionKey,
+    string TargetSchema,
+    string TargetTable,
+    bool CreateStagingTable);
+
+/// <summary>
+/// 表示分区切换检查的列信息。
+/// </summary>
+public sealed record PartitionSwitchColumnInfo(
+    string Name,
+    string DataType,
+    int? MaxLength,
+    byte? Precision,
+    int? Scale,
+    bool IsNullable,
+    bool IsIdentity,
+    bool IsComputed);
+
+/// <summary>
+/// 表示分区切换检查的表结构信息。
+/// </summary>
+public sealed record PartitionSwitchTableInfo(
+    string SchemaName,
+    string TableName,
+    long RowCount,
+    IReadOnlyList<PartitionSwitchColumnInfo> Columns);
+
+/// <summary>
+/// 表示检查过程中产生的阻塞或警告信息。
+/// </summary>
+public sealed record PartitionSwitchIssue(
+    string Code,
+    string Message,
+    string? Recommendation = null);
+
+/// <summary>
+/// 分区切换检查结果。
+/// </summary>
+public sealed class PartitionSwitchInspectionResult
+{
+    public PartitionSwitchInspectionResult(
+        bool canSwitch,
+        IReadOnlyList<PartitionSwitchIssue> blockingIssues,
+        IReadOnlyList<PartitionSwitchIssue> warnings,
+        PartitionSwitchTableInfo sourceTable,
+        PartitionSwitchTableInfo targetTable)
+    {
+        CanSwitch = canSwitch;
+        BlockingIssues = blockingIssues;
+        Warnings = warnings;
+        SourceTable = sourceTable ?? throw new ArgumentNullException(nameof(sourceTable));
+        TargetTable = targetTable ?? throw new ArgumentNullException(nameof(targetTable));
+    }
+
+    /// <summary>是否满足切换条件。</summary>
+    public bool CanSwitch { get; }
+
+    /// <summary>阻塞切换的原因列表。</summary>
+    public IReadOnlyList<PartitionSwitchIssue> BlockingIssues { get; }
+
+    /// <summary>提供的警告信息。</summary>
+    public IReadOnlyList<PartitionSwitchIssue> Warnings { get; }
+
+    /// <summary>源表信息。</summary>
+    public PartitionSwitchTableInfo SourceTable { get; }
+
+    /// <summary>目标表信息。</summary>
+    public PartitionSwitchTableInfo TargetTable { get; }
+}
+
+/// <summary>
+/// 定义分区切换前检查服务接口。
+/// </summary>
+public interface IPartitionSwitchInspectionService
+{
+    Task<PartitionSwitchInspectionResult> InspectAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        PartitionSwitchInspectionContext context,
+        CancellationToken cancellationToken = default);
+}

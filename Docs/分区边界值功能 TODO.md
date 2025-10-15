@@ -12,15 +12,15 @@
 - [x] `PartitionConfigurationAppService` 实现新增方法，调用领域逻辑并持久化
 - [x] 基础设施层编写 `SplitPartitionCommand`、`MergePartitionCommand` 执行器
 - [x] API 控制器新增 `POST /boundaries/add|split|merge`
-- [ ] 审计日志写入 `PartitionAuditLog`（或新增）并写调度任务
-- [ ] 单元测试覆盖：边界顺序校验、文件组验证、异常路径
+- [x] 审计日志写入 `PartitionAuditLog`（或新增）并写调度任务
+- [x] 单元测试覆盖：边界顺序校验、文件组验证、异常路径
 
 ## 2. 后端 - 数据归档（分区切换方案）
-- [ ] 新建 `PartitionSwitchInspectionService`，实现结构/索引/约束检查
+- [x] 新建 `PartitionSwitchInspectionService`，实现结构/索引/约束检查
 - [ ] 扩展 `PartitionExecutionTask`：字段 `OperationType`、归档目标信息
-- [ ] `PartitionSwitchAppService`：`InspectAsync` + `ArchiveBySwitchAsync`
-- [ ] API：新增 `POST /archive/inspect`、`POST /archive/switch`
-- [ ] 执行器：复用/扩展 `SqlPartitionCommandExecutor` 支持 `SwitchPartitionCommand`
+- [x] `PartitionSwitchAppService`：`InspectAsync` + `ArchiveBySwitchAsync`
+- [x] API：新增 `POST /archive/inspect`、`POST /archive/switch`
+- [x] 执行器：复用/扩展 `SqlPartitionCommandExecutor` 支持 `SwitchPartitionCommand`
 - [ ] 更新任务调度平台日志写入逻辑，支持 Archive 类别
 - [ ] 集成测试：成功切换、结构不一致失败、索引不齐失败
 

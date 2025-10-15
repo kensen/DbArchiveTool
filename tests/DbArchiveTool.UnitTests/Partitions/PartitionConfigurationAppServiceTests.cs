@@ -1,8 +1,12 @@
-
+using System;
+using System.Linq;
 using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using Microsoft.Extensions.Logging;
 using Moq;
+using Xunit;
+using Xunit.Sdk;
 
 namespace DbArchiveTool.UnitTests.Partitions;
 
@@ -15,6 +19,7 @@ public class PartitionConfigurationAppServiceTests
     private readonly Mock<IPartitionConfigurationRepository> configurationRepository = new();
     private readonly Mock<IPartitionExecutionTaskRepository> taskRepository = new();
     private readonly Mock<IPartitionExecutionLogRepository> logRepository = new();
+    private readonly Mock<IPartitionAuditLogRepository> auditRepository = new();
     private readonly PartitionValueParser parser = new();
     private readonly Mock<ILogger<PartitionConfigurationAppService>> logger = new();
 
@@ -284,7 +289,7 @@ public class PartitionConfigurationAppServiceTests
     [Fact]
     public async Task GetAsync_ShouldReturnDetail_WhenFound()
     {
-        var configuration = CreateMetadataConfiguration(isColumnNullable: false);
+        var configuration = CreateMetadataConfiguration(isColumnNullable: false, valueKind: PartitionValueKind.Date);
         configuration.ReplaceBoundaries(new[]
         {
             PartitionValue.FromInt(10),
@@ -299,10 +304,123 @@ public class PartitionConfigurationAppServiceTests
         var service = CreateService();
         var result = await service.GetAsync(configuration.Id);
 
-        Assert.True(result.IsSuccess);
+        Assert.True(result.IsSuccess, result.Error);
         Assert.NotNull(result.Value);
         Assert.Equal(configuration.SchemaName, result.Value!.SchemaName);
         Assert.Equal(2, result.Value.BoundaryValues.Count);
+    }
+
+    [Fact]
+    public async Task AddBoundaryAsync_Should_Record_Audit_And_Filegroup()
+    {
+        var configuration = CreateMetadataConfiguration(isColumnNullable: false, valueKind: PartitionValueKind.Date);
+        configuration.ReplaceBoundaries(new[]
+        {
+            PartitionValue.FromDate(new DateOnly(2024, 1, 1))
+        });
+
+        configurationRepository.Setup(x => x.GetByIdAsync(configuration.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        var service = CreateService();
+        var request = new AddPartitionBoundaryRequest("2024-01-05", "FG_ARCHIVE", "tester");
+
+        var result = await service.AddBoundaryAsync(configuration.Id, request);
+        if (!result.IsSuccess)
+        {
+            throw new XunitException($"Expected success but got: {result.Error ?? "null"}");
+        }
+        Assert.Contains(configuration.Boundaries, b => b.Value.ToInvariantString() == "2024-01-05");
+        Assert.Equal("FG_ARCHIVE", configuration.ResolveFilegroup(configuration.Boundaries.Last().SortKey));
+
+        configurationRepository.Verify(x => x.UpdateAsync(configuration, It.IsAny<CancellationToken>()), Times.Once);
+        taskRepository.Verify(x => x.AddAsync(It.IsAny<PartitionExecutionTask>(), It.IsAny<CancellationToken>()), Times.Once);
+        logRepository.Verify(x => x.AddAsync(It.IsAny<PartitionExecutionLogEntry>(), It.IsAny<CancellationToken>()), Times.Once);
+        auditRepository.Verify(x => x.AddAsync(It.Is<PartitionAuditLog>(log =>
+            log.Action == PartitionExecutionOperationType.AddBoundary.ToString() &&
+            log.ResourceId == configuration.Id.ToString() &&
+            log.PayloadJson != null &&
+            log.PayloadJson.Contains("FG_ARCHIVE", StringComparison.OrdinalIgnoreCase)), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task AddBoundaryAsync_ShouldFail_WhenConfigurationMissing()
+    {
+        configurationRepository.Setup(x => x.GetByIdAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((PartitionConfiguration?)null);
+
+        var service = CreateService();
+        var result = await service.AddBoundaryAsync(Guid.NewGuid(), new AddPartitionBoundaryRequest("2024-01-05", null, "tester"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("未找到指定的分区配置。", result.Error);
+        auditRepository.Verify(x => x.AddAsync(It.IsAny<PartitionAuditLog>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SplitBoundaryAsync_ShouldFail_WhenValueNotWithinRange()
+    {
+        var configuration = CreateMetadataConfiguration(isColumnNullable: false);
+        configuration.ReplaceBoundaries(new[]
+        {
+            PartitionValue.FromInt(10),
+            PartitionValue.FromInt(20)
+        });
+
+        configurationRepository.Setup(x => x.GetByIdAsync(configuration.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        var service = CreateService();
+        var result = await service.SplitBoundaryAsync(configuration.Id, new SplitPartitionBoundaryRequest(configuration.Boundaries[1].SortKey, "30", null, "tester"));
+        Assert.False(result.IsSuccess);
+        Assert.Equal("新边界值不在允许拆分的范围内。", result.Error);
+        auditRepository.Verify(x => x.AddAsync(It.IsAny<PartitionAuditLog>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task MergeBoundaryAsync_ShouldFail_WhenBoundaryMissing()
+    {
+        var configuration = CreateMetadataConfiguration(isColumnNullable: false);
+        configuration.ReplaceBoundaries(new[]
+        {
+            PartitionValue.FromInt(10),
+            PartitionValue.FromInt(20)
+        });
+
+        configurationRepository.Setup(x => x.GetByIdAsync(configuration.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        var service = CreateService();
+        var result = await service.MergeBoundaryAsync(configuration.Id, new MergePartitionBoundaryRequest("UNKNOWN", "tester"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("未找到指定的分区边界。", result.Error);
+    }
+
+    [Fact]
+    public async Task SplitBoundaryAsync_Should_Record_Audit_On_Success()
+    {
+        var configuration = CreateMetadataConfiguration(isColumnNullable: false);
+        configuration.ReplaceBoundaries(new[]
+        {
+            PartitionValue.FromInt(10),
+            PartitionValue.FromInt(20)
+        });
+
+        configurationRepository.Setup(x => x.GetByIdAsync(configuration.Id, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        var service = CreateService();
+        var result = await service.SplitBoundaryAsync(configuration.Id, new SplitPartitionBoundaryRequest(configuration.Boundaries[1].SortKey, "15", "FG_SPLIT", "tester"));
+        if (!result.IsSuccess)
+        {
+            throw new XunitException($"Expected success but got: {result.Error ?? "null"}");
+        }
+        configurationRepository.Verify(x => x.UpdateAsync(configuration, It.IsAny<CancellationToken>()), Times.AtLeastOnce);
+        auditRepository.Verify(x => x.AddAsync(It.Is<PartitionAuditLog>(log =>
+            log.Action == PartitionExecutionOperationType.SplitBoundary.ToString() &&
+            log.PayloadJson != null &&
+            log.PayloadJson.Contains("FG_SPLIT", StringComparison.OrdinalIgnoreCase)), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     private PartitionConfigurationAppService CreateService()
@@ -311,17 +429,18 @@ public class PartitionConfigurationAppServiceTests
             configurationRepository.Object,
             taskRepository.Object,
             logRepository.Object,
+            auditRepository.Object,
             parser,
             logger.Object);
 
-    private static PartitionConfiguration CreateMetadataConfiguration(bool isColumnNullable)
+    private static PartitionConfiguration CreateMetadataConfiguration(bool isColumnNullable, PartitionValueKind valueKind = PartitionValueKind.Int)
         => new(
             Guid.NewGuid(),
             "dbo",
             "Orders",
             "pf_orders",
             "ps_orders",
-            new PartitionColumn("OrderDate", PartitionValueKind.Int, isColumnNullable),
+            new PartitionColumn("OrderDate", valueKind, isColumnNullable),
             PartitionFilegroupStrategy.Default("PRIMARY"),
             isRangeRight: true,
             storageSettings: PartitionStorageSettings.UsePrimary("PRIMARY"));

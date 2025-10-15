@@ -104,11 +104,12 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
             return Result<string>.Failure("源分区标识格式不正确。");
         }
 
-        if (string.IsNullOrWhiteSpace(payload.TargetTable))
+        if (string.IsNullOrWhiteSpace(payload.TargetSchema) || string.IsNullOrWhiteSpace(payload.TargetTable))
         {
             return Result<string>.Failure("目标表名称不能为空。");
         }
 
+        var qualifiedTarget = $"[{payload.TargetSchema}].[{payload.TargetTable}]";
         var builder = new StringBuilder();
         builder.AppendLine("SET XACT_ABORT ON;");
         builder.AppendLine("SET NOCOUNT ON;");
@@ -122,7 +123,7 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         }
 
         builder.AppendLine($"    ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] SWITCH PARTITION {partitionNumber}");
-        builder.AppendLine($"    TO {payload.TargetTable};");
+        builder.AppendLine($"    TO {qualifiedTarget};");
         builder.AppendLine("    COMMIT TRANSACTION;");
         builder.AppendLine("END TRY");
         builder.AppendLine("BEGIN CATCH");
