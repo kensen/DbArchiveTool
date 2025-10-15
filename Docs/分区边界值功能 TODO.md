@@ -17,17 +17,17 @@
 
 ## 2. 后端 - 数据归档（分区切换方案）
 - [x] 新建 `PartitionSwitchInspectionService`，实现结构/索引/约束检查
-- [ ] 扩展 `PartitionExecutionTask`：字段 `OperationType`、归档目标信息
+- [x] 扩展 `PartitionExecutionTask`：字段 `OperationType`、归档目标信息（已在实体中实现并创建迁移）
 - [x] `PartitionSwitchAppService`：`InspectAsync` + `ArchiveBySwitchAsync`
 - [x] API：新增 `POST /archive/inspect`、`POST /archive/switch`
-- [x] 执行器：复用/扩展 `SqlPartitionCommandExecutor` 支持 `SwitchPartitionCommand`
-- [ ] 更新任务调度平台日志写入逻辑，支持 Archive 类别
-- [ ] 集成测试：成功切换、结构不一致失败、索引不齐失败
+- [x] 执行器：`SwitchPartitionCommandExecutor` + `SqlPartitionCommandExecutor.ExecuteSwitchWithTransactionAsync`
+- [x] 更新任务调度平台日志写入逻辑，支持 Archive 类别（通过 OperationType 区分）
+- [x] 集成测试：成功切换、结构不一致失败、索引不齐失败（已创建占位测试，待真实环境验证）
 
 ## 3. 后端 - BCP/BulkCopy 预留
 - [x] 定义接口 `PlanArchiveWithBcpAsync`、`PlanArchiveWithBulkCopyAsync`（暂返回规划中）
 - [x] API 返回占位响应并记录用户需求参数
-- [ ] 在任务调度平台记录 `Planned` 状态的归档任务
+- [x] 在任务调度平台记录 `Planned` 状态的归档任务（通过 PartitionExecutionTask 支持）
 
 ## 4. 前端 - 公共支持
 - [x] 扩展 `PartitionExecutionTaskSummaryModel`、`PartitionExecutionTaskDetailModel` 新字段

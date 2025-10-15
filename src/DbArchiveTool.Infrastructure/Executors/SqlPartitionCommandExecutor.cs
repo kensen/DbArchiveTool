@@ -899,6 +899,67 @@ internal sealed class SqlPartitionCommandExecutor
         }
     }
 
+    /// <summary>
+    /// 执行分区切换操作（带事务保护）。
+    /// </summary>
+    public async Task<SqlExecutionResult> ExecuteSwitchWithTransactionAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        SwitchPayload payload,
+        CancellationToken cancellationToken = default)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+            try
+            {
+                await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
+
+                var script = RenderSwitchOutScript(configuration, payload);
+
+                await sqlExecutor.ExecuteAsync(connection, script, transaction: transaction, timeoutSeconds: 300);
+
+                await transaction.CommitAsync(cancellationToken);
+
+                stopwatch.Stop();
+
+                logger.LogInformation(
+                    "成功执行分区切换：{Schema}.{Table} 分区 {Partition} -> {TargetSchema}.{TargetTable}，耗时 {Elapsed}",
+                    configuration.SchemaName, configuration.TableName, payload.SourcePartitionKey, payload.TargetSchema, payload.TargetTable, stopwatch.Elapsed);
+
+                return SqlExecutionResult.Success(
+                    1,
+                    stopwatch.ElapsedMilliseconds,
+                    $"成功切换分区 {payload.SourcePartitionKey} 至 {payload.TargetSchema}.{payload.TargetTable}");
+            }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            logger.LogError(
+                ex,
+                "执行分区切换失败：{Schema}.{Table} -> {TargetSchema}.{TargetTable}",
+                configuration.SchemaName,
+                configuration.TableName,
+                payload.TargetSchema,
+                payload.TargetTable);
+
+            return SqlExecutionResult.Failure(
+                ex.Message,
+                stopwatch.ElapsedMilliseconds,
+                ex.ToString());
+        }
+    }
+
     private static void ApplyPartitionColumn(TableIndexDefinition definition, string partitionColumn, IList<IndexAlignmentChange> alignmentChanges)
     {
         var originalKeyColumns = definition.KeyColumns ?? string.Empty;
