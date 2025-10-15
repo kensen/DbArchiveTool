@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using DbArchiveTool.Application.Partitions.Dtos;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
 
 namespace DbArchiveTool.Application.Partitions;
@@ -56,6 +57,11 @@ public class PartitionExecutionTaskSummaryDto
     public string DataSourceName { get; set; } = string.Empty;
     public string SourceTable { get; set; } = string.Empty;
     public string TargetTable { get; set; } = string.Empty;
+    public PartitionExecutionOperationType OperationType { get; set; } = PartitionExecutionOperationType.Unknown;
+    public string? ArchiveScheme { get; set; }
+    public string? ArchiveTargetConnection { get; set; }
+    public string? ArchiveTargetDatabase { get; set; }
+    public string? ArchiveTargetTable { get; set; }
     public PartitionExecutionStatus Status { get; set; }
     public string Phase { get; set; } = string.Empty;
     public double Progress { get; set; }

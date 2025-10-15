@@ -2,6 +2,7 @@ using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Infrastructure.Persistence.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -148,6 +149,14 @@ public sealed class ArchiveDbContext : DbContext
             builder.HasKey(x => x.Id);
             builder.Property(x => x.PartitionConfigurationId).IsRequired();
             builder.Property(x => x.DataSourceId).IsRequired();
+            builder.Property(x => x.OperationType)
+                .HasConversion<int>()
+                .HasDefaultValue(PartitionExecutionOperationType.Unknown)
+                .IsRequired();
+            builder.Property(x => x.ArchiveScheme).HasMaxLength(128);
+            builder.Property(x => x.ArchiveTargetConnection).HasMaxLength(512);
+            builder.Property(x => x.ArchiveTargetDatabase).HasMaxLength(128);
+            builder.Property(x => x.ArchiveTargetTable).HasMaxLength(256);
             builder.Property(x => x.Status).IsRequired();
             builder.Property(x => x.Phase).IsRequired().HasMaxLength(64);
             builder.Property(x => x.Progress).IsRequired();

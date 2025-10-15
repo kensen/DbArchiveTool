@@ -50,7 +50,21 @@
                        Loading="@Loading"
                        Size="@TableSize.Small"
                        Bordered>
-                    <PropertyColumn Property="@(t => t.TaskType)" Title="任务类型" />
+                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="操作类型">
+                        <Template>
+                            @GetOperationDisplay(context)
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="归档方案">
+                        <Template>
+                            @(string.IsNullOrWhiteSpace(context.ArchiveScheme) ? "-" : context.ArchiveScheme)
+                        </Template>
+                    </PropertyColumn>
+                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="目标实例/库">
+                        <Template>
+                            @GetArchiveTargetDisplay(context)
+                        </Template>
+                    </PropertyColumn>
                     <PropertyColumn Property="@(t => t.Id)" Title="任务ID">
                         <Template>
                             <Text Code>@context.Id.ToString("N")[..16]...</Text>
@@ -139,6 +153,9 @@
                     @GetStatusDisplayText(TaskDetail.Status)
                 </Tag>
             </DescriptionsItem>
+            <DescriptionsItem Title="操作类型">@GetOperationDisplay(TaskDetail)</DescriptionsItem>
+            <DescriptionsItem Title="归档方案">@(string.IsNullOrWhiteSpace(TaskDetail.ArchiveScheme) ? "-" : TaskDetail.ArchiveScheme)</DescriptionsItem>
+            <DescriptionsItem Title="归档目标" Span="2">@GetArchiveTargetDisplay(TaskDetail)</DescriptionsItem>
             <DescriptionsItem Title="当前阶段">@TaskDetail.Phase</DescriptionsItem>
             <DescriptionsItem Title="进度">
                 <Progress Percent="@((int)(TaskDetail.Progress * 100))" Size="@ProgressSize.Small" />

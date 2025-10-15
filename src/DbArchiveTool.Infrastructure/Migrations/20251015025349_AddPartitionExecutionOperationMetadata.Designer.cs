@@ -4,6 +4,7 @@ using DbArchiveTool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DbArchiveTool.Infrastructure.Migrations
 {
     [DbContext(typeof(ArchiveDbContext))]
-    partial class ArchiveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251015025349_AddPartitionExecutionOperationMetadata")]
+    partial class AddPartitionExecutionOperationMetadata
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

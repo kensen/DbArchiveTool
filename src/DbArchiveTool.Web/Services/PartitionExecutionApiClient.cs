@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Shared.Partitions;
 
 namespace DbArchiveTool.Web.Services;
 
@@ -172,6 +173,11 @@ public class PartitionExecutionTaskSummaryModel
     public string DataSourceName { get; set; } = string.Empty;
     public string SourceTable { get; set; } = string.Empty;
     public string TargetTable { get; set; } = string.Empty;
+    public PartitionExecutionOperationType OperationType { get; set; } = PartitionExecutionOperationType.Unknown;
+    public string? ArchiveScheme { get; set; }
+    public string? ArchiveTargetConnection { get; set; }
+    public string? ArchiveTargetDatabase { get; set; }
+    public string? ArchiveTargetTable { get; set; }
     public string Status { get; set; } = string.Empty;
     public string Phase { get; set; } = string.Empty;
     public double Progress { get; set; }

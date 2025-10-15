@@ -1,5 +1,6 @@
 using System;
 using DbArchiveTool.Domain.Abstractions;
+using DbArchiveTool.Shared.Partitions;
 
 namespace DbArchiveTool.Domain.Partitions;
 
@@ -40,6 +41,19 @@ public sealed class PartitionExecutionTask : AggregateRoot
 
     /// <summary>分区所在的归档数据源标识。</summary>
     public Guid DataSourceId { get; private set; }
+    /// <summary>任务操作类型，用于调度平台区分。</summary>
+    public PartitionExecutionOperationType OperationType { get; private set; } = PartitionExecutionOperationType.Unknown;
+
+    /// <summary>归档方案名称（如 SWITCH/BCP/BulkCopy）。</summary>
+    public string? ArchiveScheme { get; private set; }
+
+    /// <summary>归档目标连接信息（跨实例场景）。</summary>
+    public string? ArchiveTargetConnection { get; private set; }
+
+    public string? ArchiveTargetDatabase { get; private set; }
+
+    public string? ArchiveTargetTable { get; private set; }
+
 
     /// <summary>任务当前状态。</summary>
     public PartitionExecutionStatus Status { get; private set; }
@@ -99,9 +113,15 @@ public sealed class PartitionExecutionTask : AggregateRoot
         string createdBy,
         string? backupReference = null,
         string? notes = null,
-        int priority = 0)
+        int priority = 0,
+        PartitionExecutionOperationType operationType = PartitionExecutionOperationType.Unknown,
+        string? archiveScheme = null,
+        string? archiveTargetConnection = null,
+        string? archiveTargetDatabase = null,
+        string? archiveTargetTable = null)
     {
         var task = new PartitionExecutionTask(partitionConfigurationId, dataSourceId, requestedBy, backupReference, notes, priority);
+        task.UpdateOperationMetadata(operationType, archiveScheme, archiveTargetConnection, archiveTargetDatabase, archiveTargetTable);
         task.InitializeAudit(createdBy);
         return task;
     }
@@ -224,6 +244,21 @@ public sealed class PartitionExecutionTask : AggregateRoot
         CompletedAtUtc = DateTime.UtcNow;
         FailureReason = NormalizeOptional(reason);
         UpdateHeartbeat(user);
+    }
+
+    /// <summary>更新任务操作类型及归档目标信息。</summary>
+    public void UpdateOperationMetadata(
+        PartitionExecutionOperationType operationType,
+        string? archiveScheme = null,
+        string? archiveTargetConnection = null,
+        string? archiveTargetDatabase = null,
+        string? archiveTargetTable = null)
+    {
+        OperationType = operationType;
+        ArchiveScheme = NormalizeOptional(archiveScheme);
+        ArchiveTargetConnection = NormalizeOptional(archiveTargetConnection);
+        ArchiveTargetDatabase = NormalizeOptional(archiveTargetDatabase);
+        ArchiveTargetTable = NormalizeOptional(archiveTargetTable);
     }
 
     private void EnsureStatus(PartitionExecutionStatus expected, string operation)

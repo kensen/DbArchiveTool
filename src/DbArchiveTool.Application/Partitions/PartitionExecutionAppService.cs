@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions.Dtos;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Extensions.Logging;
 
@@ -622,7 +623,12 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             CompletedAtUtc = task.CompletedAtUtc,
             RequestedBy = task.RequestedBy,
             FailureReason = task.FailureReason,
-            BackupReference = task.BackupReference
+            BackupReference = task.BackupReference,
+            OperationType = task.OperationType,
+            ArchiveScheme = task.ArchiveScheme,
+            ArchiveTargetConnection = task.ArchiveTargetConnection,
+            ArchiveTargetDatabase = task.ArchiveTargetDatabase,
+            ArchiveTargetTable = task.ArchiveTargetTable
         };
     }
 

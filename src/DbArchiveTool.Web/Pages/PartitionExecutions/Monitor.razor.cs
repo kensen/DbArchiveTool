@@ -1,4 +1,5 @@
 ﻿using AntDesign;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -343,6 +344,45 @@ public partial class MonitorBase : ComponentBase, IDisposable
             "Information" => "blue",
             _ => "gray"
         };
+    }
+
+    /// <summary>
+    /// 根据操作类型返回显示文本。
+    /// </summary>
+    protected string GetOperationDisplay(PartitionExecutionTaskSummaryModel task)
+    {
+        return task.OperationType switch
+        {
+            PartitionExecutionOperationType.AddBoundary => "添加分区值",
+            PartitionExecutionOperationType.SplitBoundary => "拆分分区",
+            PartitionExecutionOperationType.MergeBoundary => "合并分区",
+            PartitionExecutionOperationType.ArchiveSwitch => "归档（分区切换）",
+            PartitionExecutionOperationType.ArchiveBcp => "归档（BCP 规划中）",
+            PartitionExecutionOperationType.ArchiveBulkCopy => "归档（BulkCopy 规划中）",
+            PartitionExecutionOperationType.Custom => "自定义任务",
+            _ => string.IsNullOrWhiteSpace(task.TaskType) ? "未知任务" : task.TaskType
+        };
+    }
+
+    /// <summary>
+    /// 获取归档目标显示信息。
+    /// </summary>
+    protected string GetArchiveTargetDisplay(PartitionExecutionTaskSummaryModel task)
+    {
+        if (string.IsNullOrWhiteSpace(task.ArchiveTargetDatabase) &&
+            string.IsNullOrWhiteSpace(task.ArchiveTargetTable))
+        {
+            return "-";
+        }
+
+        var targetDb = string.IsNullOrWhiteSpace(task.ArchiveTargetDatabase)
+            ? "(未指定库)"
+            : task.ArchiveTargetDatabase;
+        var targetTable = string.IsNullOrWhiteSpace(task.ArchiveTargetTable)
+            ? "(未指定表)"
+            : task.ArchiveTargetTable;
+
+        return $"{targetDb} / {targetTable}";
     }
 
     #endregion
