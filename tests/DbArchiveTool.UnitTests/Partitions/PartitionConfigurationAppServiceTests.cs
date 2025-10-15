@@ -20,6 +20,7 @@ public class PartitionConfigurationAppServiceTests
     private readonly Mock<IPartitionExecutionTaskRepository> taskRepository = new();
     private readonly Mock<IPartitionExecutionLogRepository> logRepository = new();
     private readonly Mock<IPartitionAuditLogRepository> auditRepository = new();
+    private readonly Mock<IPartitionCommandScriptGenerator> scriptGenerator = new();
     private readonly PartitionValueParser parser = new();
     private readonly Mock<ILogger<PartitionConfigurationAppService>> logger = new();
 
@@ -430,6 +431,7 @@ public class PartitionConfigurationAppServiceTests
             taskRepository.Object,
             logRepository.Object,
             auditRepository.Object,
+            scriptGenerator.Object,
             parser,
             logger.Object);
 

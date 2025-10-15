@@ -309,9 +309,13 @@
                        EditingConfiguration="_editingConfigurationDetail"
                        OnCompleted="OnPartitionConfigCompletedAsync" />
 
-<Modal Title="添加分区边界值" @bind-Visible="_addPartitionValueModalVisible" Width="600" OnOk="() => _addPartitionValueModalVisible = false" OnCancel="() => _addPartitionValueModalVisible = false">
-    <Alert Type="@AlertType.Info" Message="添加分区值功能开发中" ShowIcon="true" />
-</Modal>
+<PartitionBoundaryAddDialog 
+    Visible="@_addPartitionValueModalVisible"
+    VisibleChanged="@((bool v) => _addPartitionValueModalVisible = v)"
+    ConfigurationId="@_currentOperationConfigId"
+    PartitionColumnType="@_currentOperationPartitionColumnType"
+    RequestedBy="WebUser"
+    OnCompleted="@OnBoundaryOperationCompletedAsync" />
 
 <Modal Title="拆分分区" @bind-Visible="_splitModalVisible" Width="720" OnOk="() => _splitModalVisible = false" OnCancel="() => _splitModalVisible = false">
     <Alert Type="@AlertType.Info" Message="拆分分区功能开发中" ShowIcon="true" />
@@ -843,11 +847,89 @@
         _editingConfigurationId = null;
         _editingConfigurationDetail = null;
     }
-    private void ShowAddPartitionValue() => _addPartitionValueModalVisible = true;
+    
+    private Guid _currentOperationConfigId = Guid.Empty;
+    private string? _currentOperationPartitionColumnType = null;
+    
+    private async Task ShowAddPartitionValue()
+    {
+        await GetConfigurationInfoForSelectedTableAsync();
+        _addPartitionValueModalVisible = true;
+    }
+    
+    /// <summary>
+    /// 获取选定表的配置信息(ID和分区列类型)
+    /// </summary>
+    private async Task GetConfigurationInfoForSelectedTableAsync()
+    {
+        _currentOperationConfigId = Guid.Empty;
+        _currentOperationPartitionColumnType = null;
+        
+        // 优先使用草稿
+        if (_selectedDraft != null && !_selectedDraft.IsCommitted)
+        {
+            _currentOperationConfigId = _selectedDraft.Id;
+            // 获取草稿的详细信息以获得分区列类型
+            try
+            {
+                var detailResult = await PartitionConfigApi.GetAsync(_selectedDraft.Id);
+                if (detailResult.IsSuccess && detailResult.Value != null)
+                {
+                    _currentOperationPartitionColumnType = detailResult.Value.PartitionColumnKind.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                Message.Error($"获取配置详情失败: {ex.Message}");
+            }
+            return;
+        }
+        
+        // 对于已分区表,通过API查询配置
+        if (_selectedTable != null)
+        {
+            try
+            {
+                var configsResult = await PartitionConfigApi.GetByDataSourceAsync(DataSourceId);
+                if (configsResult.IsSuccess && configsResult.Value != null)
+                {
+                    var config = configsResult.Value.FirstOrDefault(c => 
+                        c.SchemaName == _selectedTable.SchemaName && 
+                        c.TableName == _selectedTable.TableName &&
+                        c.IsCommitted);
+                    
+                    if (config != null)
+                    {
+                        _currentOperationConfigId = config.Id;
+                        // 获取详细信息
+                        var detailResult = await PartitionConfigApi.GetAsync(config.Id);
+                        if (detailResult.IsSuccess && detailResult.Value != null)
+                        {
+                            _currentOperationPartitionColumnType = detailResult.Value.PartitionColumnKind.ToString();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Message.Error($"查询配置失败: {ex.Message}");
+            }
+        }
+    }
+    
     private void ShowSplitPartition() => _splitModalVisible = true;
     private void ShowMergePartition() => _mergeModalVisible = true;
     private void ShowSwitchPartition() => _switchModalVisible = true;
     private void ViewTableDetails(PartitionTableInfo table) { }
+    
+    private async Task OnBoundaryOperationCompletedAsync()
+    {
+        // 刷新分区详情
+        if (_selectedTable != null)
+        {
+            await LoadPartitionDetailsAsync(_selectedTable);
+        }
+    }
     
     private async Task TestTargetServerConnection()
     {

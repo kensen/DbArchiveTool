@@ -1,0 +1,413 @@
+@using AntDesign
+@using DbArchiveTool.Domain.Partitions
+@using System.Text.Json
+
+<Drawer Visible="Visible"
+        Title="@("添加分区边界值")"
+        Width="560"
+        Placement="DrawerPlacement.Right"
+        Closable="true"
+        MaskClosable="false"
+        OnClose="HandleClose">
+    <Spin Spinning="@_loading">
+        <div class="boundary-add-drawer-body">
+            @if (_metadata != null)
+            {
+                <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:24px;">
+                    <DescriptionsItem Title="表名">@($"{SchemaName}.{TableName}")</DescriptionsItem>
+                    <DescriptionsItem Title="分区列">@_metadata.ColumnName (@_metadata.ColumnType)</DescriptionsItem>
+                    <DescriptionsItem Title="分区函数">@_metadata.PartitionFunctionName</DescriptionsItem>
+                    <DescriptionsItem Title="分区方案">@_metadata.PartitionSchemeName</DescriptionsItem>
+                    <DescriptionsItem Title="当前边界数">@_metadata.Boundaries.Count</DescriptionsItem>
+                </Descriptions>
+
+                <Form Model="_formModel" Layout="FormLayout.Vertical">
+                    <FormItem Label="边界值" Required>
+                        @if (IsIntegerType)
+                        {
+                            <AntDesign.InputNumber TValue="long?"
+                                                   @bind-Value="_intValue"
+                                                   Placeholder="请输入整数值"
+                                                   Style="width:100%" />
+                            <div class="form-tip">建议范围: @GetStatHint()</div>
+                        }
+                        else if (IsBigIntType)
+                        {
+                            <AntDesign.InputNumber TValue="long?"
+                                                   @bind-Value="_bigIntValue"
+                                                   Placeholder="请输入长整数值"
+                                                   Style="width:100%" />
+                            <div class="form-tip">建议范围: @GetStatHint()</div>
+                        }
+                        else if (IsDateType)
+                        {
+                            <DatePicker @bind-Value="_dateValue"
+                                        Placeholder="@("选择日期")"
+                                        Picker="@DatePickerType.Date"
+                                        Format="yyyy-MM-dd"
+                                        Style="width:100%" />
+                        }
+                        else if (IsDateTimeType)
+                        {
+                            <DatePicker @bind-Value="_dateTimeValue"
+                                        Placeholder="@("选择日期时间")"
+                                        Picker="@DatePickerType.Date"
+                                        ShowTime="@true"
+                                        Format="yyyy-MM-dd HH:mm:ss"
+                                        Style="width:100%" />
+                        }
+                        else if (IsGuidType)
+                        {
+                            <Space Direction="@SpaceDirection.Vertical" Style="width:100%;">
+                                <Input @bind-Value="_formModel.BoundaryValue"
+                                       Placeholder="请输入GUID或点击生成"
+                                       Style="width:100%" />
+                                <Button OnClick="GenerateGuid">生成新GUID</Button>
+                            </Space>
+                        }
+                        else
+                        {
+                            <Input @bind-Value="_formModel.BoundaryValue"
+                                   Placeholder="@GetPlaceholderText()"
+                                   Style="width:100%" />
+                        }
+                    </FormItem>
+
+                    <FormItem Label="文件组名称(可选)">
+                        <Select TItem="string" TItemValue="string"
+                                @bind-Value="_formModel.FilegroupName"
+                                AllowClear
+                                Placeholder="选择文件组或留空使用默认"
+                                Style="width:100%">
+                            @if (_metadata.FilegroupMappings.Count > 0)
+                            {
+                                @foreach (var mapping in _metadata.FilegroupMappings.Select(m => m.FilegroupName).Distinct())
+                                {
+                                    <SelectOption Value="@mapping" Label="@mapping" />
+                                }
+                            }
+                        </Select>
+                        <div class="form-tip">若不指定,将使用NEXT USED文件组。</div>
+                    </FormItem>
+
+                    <FormItem Label="备注(可选)">
+                        <Input TextAreaRows="3"
+                               @bind-Value="_formModel.Notes"
+                               Placeholder="添加操作备注..."
+                               MaxLength="500" />
+                    </FormItem>
+                </Form>
+
+                @if (_existingBoundaries.Count > 0)
+                {
+                    <Divider>已有边界值(最近5个)</Divider>
+                    <div class="existing-boundaries">
+                        @foreach (var boundary in _existingBoundaries.Take(5))
+                        {
+                            <Tag>@boundary.LiteralValue</Tag>
+                        }
+                        @if (_existingBoundaries.Count > 5)
+                        {
+                            <Tag>共@(_metadata.Boundaries.Count)个</Tag>
+                        }
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(_errorMessage))
+                {
+                    <Alert Message="@_errorMessage"
+                           Type="@AlertType.Error"
+                           Closable
+                           OnClose="() => _errorMessage = null"
+                           Style="margin-top:16px" />
+                }
+            }
+            else if (_loading)
+            {
+                <Empty Description="@("正在加载分区元数据")" />
+            }
+            else
+            {
+                <Empty Description="@("无法获取分区元数据")" />
+            }
+        </div>
+    </Spin>
+
+    <div class="drawer-footer">
+        <Space>
+            <Button OnClick="@(async () => await HandleClose())">取消</Button>
+            <Button Type="@ButtonType.Primary"
+                    Loading="@_submitting"
+                    Disabled="@(_metadata == null || _submitting)"
+                    OnClick="@(async () => await HandleSubmit())">
+                提交
+            </Button>
+        </Space>
+    </div>
+</Drawer>
+
+<style>
+    .boundary-add-drawer-body {
+        padding: 0 24px 24px 24px;
+    }
+
+    .drawer-footer {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        border-top: 1px solid #f0f0f0;
+        padding: 10px 24px;
+        background: #fff;
+        text-align: right;
+    }
+
+    .form-tip {
+        font-size: 12px;
+        color: #999;
+        margin-top: 4px;
+    }
+
+    .existing-boundaries {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+</style>
+
+@code {
+    /// <summary>数据源ID</summary>
+    [Parameter]
+    public Guid DataSourceId { get; set; }
+
+    /// <summary>架构名</summary>
+    [Parameter]
+    public string SchemaName { get; set; } = string.Empty;
+
+    /// <summary>表名</summary>
+    [Parameter]
+    public string TableName { get; set; } = string.Empty;
+
+    /// <summary>是否可见</summary>
+    [Parameter]
+    public bool Visible { get; set; }
+
+    /// <summary>关闭回调</summary>
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    /// <summary>提交成功回调</summary>
+    [Parameter]
+    public EventCallback OnSuccess { get; set; }
+
+    [Inject]
+    private HttpClient Http { get; set; } = default!;
+
+    [Inject]
+    private IMessageService Message { get; set; } = default!;
+
+    private PartitionMetadataDto? _metadata;
+    private List<PartitionBoundaryItemDto> _existingBoundaries = new();
+    private AddBoundaryFormModel _formModel = new();
+    private bool _loading;
+    private bool _submitting;
+    private string? _errorMessage;
+
+    // 类型特定的值
+    private long? _intValue;
+    private long? _bigIntValue;
+    private DateTime? _dateValue;
+    private DateTime? _dateTimeValue;
+
+    // 类型判断
+    private bool IsIntegerType => _metadata?.ColumnType.Equals("int", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsBigIntType => _metadata?.ColumnType.Equals("bigint", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsDateType => _metadata?.ColumnType.Equals("date", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsDateTimeType => _metadata?.ColumnType.Contains("datetime", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsGuidType => _metadata?.ColumnType.Equals("uniqueidentifier", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && _metadata == null)
+        {
+            await LoadMetadataAsync();
+        }
+    }
+
+    private async Task LoadMetadataAsync()
+    {
+        _loading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var url = $"api/v1/archive-data-sources/{DataSourceId}/partitions/metadata?schema={Uri.EscapeDataString(SchemaName)}&table={Uri.EscapeDataString(TableName)}";
+            var response = await Http.GetAsync(url);
+
+            if (response.IsSuccessStatusCode)
+            {
+                _metadata = await response.Content.ReadFromJsonAsync<PartitionMetadataDto>();
+                if (_metadata != null)
+                {
+                    _existingBoundaries = _metadata.Boundaries.OrderByDescending(b => b.Key).ToList();
+                }
+            }
+            else
+            {
+                _errorMessage = $"加载分区元数据失败: {response.ReasonPhrase}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"加载分区元数据时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private string GetPlaceholderText()
+    {
+        if (_metadata == null) return "请输入边界值";
+
+        return _metadata.ColumnType.ToLower() switch
+        {
+            "varchar" or "nvarchar" or "char" or "nchar" => "请输入字符串值",
+            "decimal" or "numeric" or "money" => "请输入数值",
+            _ => "请输入边界值"
+        };
+    }
+
+    private string GetStatHint()
+    {
+        // TODO: 从统计信息中获取建议范围
+        return "根据数据分布选择合适的边界值";
+    }
+
+    private void GenerateGuid()
+    {
+        _formModel.BoundaryValue = Guid.NewGuid().ToString();
+    }
+
+    private async Task HandleSubmit()
+    {
+        // 根据类型构建边界值字符串
+        string? boundaryValue = null;
+
+        if (IsIntegerType && _intValue.HasValue)
+        {
+            boundaryValue = _intValue.Value.ToString();
+        }
+        else if (IsBigIntType && _bigIntValue.HasValue)
+        {
+            boundaryValue = _bigIntValue.Value.ToString();
+        }
+        else if (IsDateType && _dateValue.HasValue)
+        {
+            boundaryValue = _dateValue.Value.ToString("yyyy-MM-dd");
+        }
+        else if (IsDateTimeType && _dateTimeValue.HasValue)
+        {
+            boundaryValue = _dateTimeValue.Value.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+        else
+        {
+            boundaryValue = _formModel.BoundaryValue;
+        }
+
+        if (string.IsNullOrWhiteSpace(boundaryValue))
+        {
+            _errorMessage = "请输入边界值";
+            return;
+        }
+
+        _submitting = true;
+        _errorMessage = null;
+
+        try
+        {
+            var request = new AddBoundaryRequestDto(
+                SchemaName,
+                TableName,
+                boundaryValue!,
+                _formModel.FilegroupName,
+                "WebUser", // TODO: 从认证上下文获取用户名
+                _formModel.Notes
+            );
+
+            var url = $"api/v1/archive-data-sources/{DataSourceId}/partitions/boundaries";
+            var response = await Http.PostAsJsonAsync(url, request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                Message.Success("边界值添加成功!DDL脚本已生成并记录到审计日志。");
+                ResetForm();
+                await OnSuccess.InvokeAsync();
+                await OnClose.InvokeAsync();
+            }
+            else
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                _errorMessage = $"添加边界值失败: {content}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"提交时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task HandleClose()
+    {
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private void ResetForm()
+    {
+        // 重置状态
+        _metadata = null;
+        _formModel = new();
+        _intValue = null;
+        _bigIntValue = null;
+        _dateValue = null;
+        _dateTimeValue = null;
+        _errorMessage = null;
+        _existingBoundaries.Clear();
+    }
+
+    private class AddBoundaryFormModel
+    {
+        public string? BoundaryValue { get; set; }
+        public string? FilegroupName { get; set; }
+        public string? Notes { get; set; }
+    }
+
+    // DTO定义(与后端匹配)
+    private record PartitionMetadataDto(
+        string ColumnName,
+        string ColumnType,
+        bool IsNullable,
+        bool IsRangeRight,
+        string PartitionFunctionName,
+        string PartitionSchemeName,
+        IReadOnlyList<PartitionBoundaryItemDto> Boundaries,
+        IReadOnlyList<PartitionFilegroupMappingDto> FilegroupMappings);
+
+    private record PartitionBoundaryItemDto(string Key, string LiteralValue);
+
+    private record PartitionFilegroupMappingDto(int PartitionNumber, string FilegroupName);
+
+    private record AddBoundaryRequestDto(
+        string SchemaName,
+        string TableName,
+        string BoundaryValue,
+        string? FilegroupName,
+        string? RequestedBy,
+        string? Notes);
+}
+

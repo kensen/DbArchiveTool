@@ -104,6 +104,54 @@ public sealed class PartitionConfigurationApiClient
                ?? Result.Failure("删除配置成功，但解析响应失败。");
     }
 
+    /// <summary>
+    /// 添加分区边界值
+    /// </summary>
+    public async Task<Result> AddBoundaryAsync(Guid configurationId, object request)
+    {
+        var response = await httpClient.PostAsJsonAsync($"api/v1/partition-configurations/{configurationId}/boundaries", request, JsonOptions);
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result>(response)
+                   ?? Result.Failure($"添加边界值失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result>(response)
+               ?? Result.Failure("添加边界值成功，但解析响应失败。");
+    }
+
+    /// <summary>
+    /// 拆分分区边界
+    /// </summary>
+    public async Task<Result> SplitBoundaryAsync(Guid configurationId, object request)
+    {
+        var response = await httpClient.PostAsJsonAsync($"api/v1/partition-configurations/{configurationId}/boundaries/split", request, JsonOptions);
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result>(response)
+                   ?? Result.Failure($"拆分边界失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result>(response)
+               ?? Result.Failure("拆分边界成功，但解析响应失败。");
+    }
+
+    /// <summary>
+    /// 合并分区边界
+    /// </summary>
+    public async Task<Result> MergeBoundaryAsync(Guid configurationId, object request)
+    {
+        var response = await httpClient.PostAsJsonAsync($"api/v1/partition-configurations/{configurationId}/boundaries/merge", request, JsonOptions);
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ReadFailureAsync<Result>(response)
+                   ?? Result.Failure($"合并边界失败，HTTP {response.StatusCode}。");
+        }
+
+        return await ReadSuccessAsync<Result>(response)
+               ?? Result.Failure("合并边界成功，但解析响应失败。");
+    }
+
     private static async Task<T?> ReadSuccessAsync<T>(HttpResponseMessage response)
     {
         try

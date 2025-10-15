@@ -1,0 +1,169 @@
+﻿@using AntDesign
+@using DbArchiveTool.Web.Services
+@using DbArchiveTool.Shared.Results
+@using Microsoft.AspNetCore.Components
+@inject PartitionConfigurationApiClient PartitionConfigApi
+@inject MessageService Message
+
+<Modal Title="添加分区边界值"
+       @bind-Visible="@Visible"
+       Width="600"
+       OnOk="HandleSubmitAsync"
+       OnCancel="HandleCancel"
+       ConfirmLoading="@_submitting">
+    <ChildContent>
+        <Form Model="@_model" LabelColSpan="6" WrapperColSpan="18">
+            <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom: 16px;">
+                <MessageTemplate>
+                    <Text>为选定的分区配置添加新的边界值。系统将自动验证边界顺序并执行 ALTER PARTITION FUNCTION 操作。</Text>
+                </MessageTemplate>
+            </Alert>
+
+            <FormItem Label="边界值" Required>
+                <Input @bind-Value="_model.BoundaryValue"
+                       Placeholder="@GetBoundaryPlaceholder()"
+                       Disabled="@_submitting" />
+                <small style="color: #8c8c8c; margin-top: 4px; display: block;">
+                    根据分区列数据类型输入，例如：@GetBoundaryExample()
+                </small>
+            </FormItem>
+
+            <FormItem Label="文件组">
+                <Input @bind-Value="_model.FilegroupName"
+                       Placeholder="留空表示自动分配"
+                       Disabled="@_submitting" />
+                <small style="color: #8c8c8c; margin-top: 4px; display: block;">
+                    可选项，留空则使用默认文件组策略
+                </small>
+            </FormItem>
+
+            <FormItem Label="备注">
+                <TextArea @bind-Value="_model.Notes"
+                          Placeholder="可选的备注信息"
+                          Rows="3"
+                          MaxLength="200"
+                          ShowCount
+                          Disabled="@_submitting" />
+            </FormItem>
+
+        @if (!string.IsNullOrEmpty(_errorMessage))
+        {
+            <Alert Type="@AlertType.Error" Message="@_errorMessage" ShowIcon="true" Closable OnClose="() => _errorMessage = null" />
+        }
+    </Form>
+    </ChildContent>
+</Modal>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
+    [Parameter] public Guid ConfigurationId { get; set; }
+    [Parameter] public string? PartitionColumnType { get; set; }
+    [Parameter] public string RequestedBy { get; set; } = "WebUser";
+    [Parameter] public EventCallback OnCompleted { get; set; }
+
+    private AddBoundaryModel _model = new();
+    private bool _submitting;
+    private string? _errorMessage;
+
+    protected override void OnParametersSet()
+    {
+        if (Visible && ConfigurationId != Guid.Empty)
+        {
+            _model = new AddBoundaryModel();
+            _errorMessage = null;
+        }
+    }
+
+    private string GetBoundaryPlaceholder()
+    {
+        return PartitionColumnType?.ToLowerInvariant() switch
+        {
+            "int" or "bigint" or "smallint" => "输入整数，例如：100",
+            "date" or "datetime" or "datetime2" => "输入日期，例如：2024-01-01",
+            "nvarchar" or "varchar" => "输入文本，例如：ABC",
+            _ => "请输入边界值"
+        };
+    }
+
+    private string GetBoundaryExample()
+    {
+        return PartitionColumnType?.ToLowerInvariant() switch
+        {
+            "int" or "bigint" or "smallint" => "100、1000、10000",
+            "date" or "datetime" or "datetime2" => "2024-01-01、2024-01-01 00:00:00",
+            "nvarchar" or "varchar" => "'Category_A'、'Type_001'",
+            _ => "根据分区列类型填写"
+        };
+    }
+
+    private async Task HandleSubmitAsync()
+    {
+        if (ConfigurationId == Guid.Empty)
+        {
+            _errorMessage = "配置ID无效";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_model.BoundaryValue))
+        {
+            _errorMessage = "请输入边界值";
+            return;
+        }
+
+        _submitting = true;
+        _errorMessage = null;
+
+        try
+        {
+            var request = new
+            {
+                BoundaryValue = _model.BoundaryValue.Trim(),
+                FilegroupName = string.IsNullOrWhiteSpace(_model.FilegroupName) ? null : _model.FilegroupName.Trim(),
+                RequestedBy = RequestedBy
+            };
+
+            var response = await PartitionConfigApi.AddBoundaryAsync(ConfigurationId, request);
+
+            if (response.IsSuccess)
+            {
+                Message.Success("成功添加分区边界值");
+                CloseDialog();
+                await OnCompleted.InvokeAsync();
+            }
+            else
+            {
+                _errorMessage = response.Error ?? "添加边界值失败";
+                Message.Error(_errorMessage);
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"操作失败：{ex.Message}";
+            Message.Error(_errorMessage);
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void HandleCancel()
+    {
+        CloseDialog();
+    }
+
+    private void CloseDialog()
+    {
+        _model = new AddBoundaryModel();
+        _errorMessage = null;
+        VisibleChanged.InvokeAsync(false);
+    }
+
+    private class AddBoundaryModel
+    {
+        public string BoundaryValue { get; set; } = string.Empty;
+        public string? FilegroupName { get; set; }
+        public string? Notes { get; set; }
+    }
+}

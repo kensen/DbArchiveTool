@@ -48,4 +48,57 @@ public sealed class PartitionManagementController : ControllerBase
 
         return Ok(result.Value);
     }
+
+    /// <summary>
+    /// 获取指定已分区表的元数据信息(分区列、类型、边界值、文件组映射等)。
+    /// </summary>
+    [HttpGet("metadata")]
+    [ProducesResponseType(typeof(PartitionMetadataDto), StatusCodes.Status200OK)]
+    public async Task<IActionResult> GetMetadataAsync(Guid dataSourceId, [FromQuery] string schema, [FromQuery] string table, CancellationToken cancellationToken)
+    {
+        var result = await appService.GetPartitionMetadataAsync(new PartitionMetadataRequest(dataSourceId, schema, table), cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return Problem(title: "获取分区元数据失败", detail: result.Error, statusCode: StatusCodes.Status404NotFound);
+        }
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// 为已分区表添加新的分区边界值。
+    /// </summary>
+    [HttpPost("boundaries")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> AddBoundaryAsync(Guid dataSourceId, [FromBody] AddBoundaryRequestDto dto, CancellationToken cancellationToken)
+    {
+        var request = new AddBoundaryToPartitionedTableRequest(
+            dataSourceId,
+            dto.SchemaName,
+            dto.TableName,
+            dto.BoundaryValue,
+            dto.FilegroupName,
+            dto.RequestedBy ?? "Anonymous",
+            dto.Notes);
+
+        var result = await appService.AddBoundaryToPartitionedTableAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return Problem(title: "添加分区边界值失败", detail: result.Error, statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return Ok();
+    }
 }
+
+/// <summary>
+/// 添加边界值请求DTO(用于API Body绑定)。
+/// </summary>
+public sealed record AddBoundaryRequestDto(
+    string SchemaName,
+    string TableName,
+    string BoundaryValue,
+    string? FilegroupName,
+    string? RequestedBy,
+    string? Notes);
+

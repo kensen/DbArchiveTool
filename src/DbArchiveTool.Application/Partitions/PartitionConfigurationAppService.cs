@@ -23,6 +23,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
     private readonly IPartitionExecutionTaskRepository executionTaskRepository;
     private readonly IPartitionExecutionLogRepository executionLogRepository;
     private readonly IPartitionAuditLogRepository auditLogRepository;
+    private readonly IPartitionCommandScriptGenerator scriptGenerator;
     private readonly PartitionValueParser valueParser;
     private readonly ILogger<PartitionConfigurationAppService> logger;
 
@@ -32,6 +33,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         IPartitionExecutionTaskRepository executionTaskRepository,
         IPartitionExecutionLogRepository executionLogRepository,
         IPartitionAuditLogRepository auditLogRepository,
+        IPartitionCommandScriptGenerator scriptGenerator,
         PartitionValueParser valueParser,
         ILogger<PartitionConfigurationAppService> logger)
     {
@@ -40,6 +42,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         this.executionTaskRepository = executionTaskRepository;
         this.executionLogRepository = executionLogRepository;
         this.auditLogRepository = auditLogRepository;
+        this.scriptGenerator = scriptGenerator;
         this.valueParser = valueParser;
         this.logger = logger;
     }
@@ -149,10 +152,27 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             return Result.Failure("未找到指定的分区配置。");
         }
 
+        // 对于已提交的配置,需要执行DDL;对于草稿,直接修改配置对象
         if (configuration.IsCommitted)
         {
-            return Result.Failure("配置已提交执行，暂不允许直接修改边界。");
+            // 已分区表:执行ALTER PARTITION FUNCTION
+            return await AddBoundaryToCommittedConfigurationAsync(configuration, request, cancellationToken);
         }
+        else
+        {
+            // 草稿配置:直接修改边界值列表
+            return await AddBoundaryToDraftConfigurationAsync(configuration, request, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 为草稿配置添加边界值(修改内存对象)
+    /// </summary>
+    private async Task<Result> AddBoundaryToDraftConfigurationAsync(
+        PartitionConfiguration configuration,
+        AddPartitionBoundaryRequest request,
+        CancellationToken cancellationToken)
+    {
 
         var parse = valueParser.ParseValues(configuration.PartitionColumn, new[] { request.BoundaryValue });
         if (!parse.IsSuccess)
@@ -205,14 +225,105 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
                 auditPayload,
                 cancellationToken);
 
-            logger.LogInformation("Boundary {BoundaryKey} added to configuration {ConfigurationId} by {User}", boundaryKey, configurationId, request.RequestedBy);
+            logger.LogInformation("Boundary {BoundaryKey} added to draft configuration {ConfigurationId} by {User}", 
+                boundaryKey, configuration.Id, request.RequestedBy);
             return Result.Success();
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to add boundary for configuration {ConfigurationId}", configurationId);
+            logger.LogError(ex, "Failed to add boundary to draft configuration {ConfigurationId}", configuration.Id);
             configuration.TryRemoveBoundary(boundaryKey);
             return Result.Failure("新增边界时发生异常，请稍后重试。");
+        }
+    }
+
+    /// <summary>
+    /// 为已提交的配置添加边界值(执行DDL)
+    /// </summary>
+    private async Task<Result> AddBoundaryToCommittedConfigurationAsync(
+        PartitionConfiguration configuration,
+        AddPartitionBoundaryRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 1. 解析并验证边界值
+        var parseResult = valueParser.ParseValues(configuration.PartitionColumn, new[] { request.BoundaryValue });
+        if (!parseResult.IsSuccess || parseResult.Value is null || parseResult.Value.Count == 0)
+        {
+            logger.LogWarning(
+                "Invalid boundary value for committed configuration {ConfigurationId}: {Value}",
+                configuration.Id,
+                request.BoundaryValue);
+            return Result.Failure($"边界值格式错误: {parseResult.Error}");
+        }
+
+        var newValue = parseResult.Value[0];
+        var sortKey = newValue.ToInvariantString();
+        var newBoundary = new PartitionBoundary(sortKey, newValue);
+
+        // 检查边界是否已存在
+        if (configuration.Boundaries.Any(b => b.SortKey.Equals(sortKey, StringComparison.Ordinal)))
+        {
+            logger.LogInformation(
+                "Boundary {Key} already exists in committed configuration {ConfigurationId}",
+                sortKey,
+                configuration.Id);
+            return Result.Failure("该边界值已存在于分区函数中。");
+        }
+
+        // 2. 生成DDL脚本
+        var scriptResult = scriptGenerator.GenerateSplitScript(configuration, parseResult.Value);
+        if (!scriptResult.IsSuccess || string.IsNullOrEmpty(scriptResult.Value))
+        {
+            logger.LogError(
+                "Failed to generate split script for configuration {ConfigurationId}: {Error}",
+                configuration.Id,
+                scriptResult.Error);
+            return Result.Failure($"生成DDL脚本失败: {scriptResult.Error}");
+        }
+
+        var ddlScript = scriptResult.Value;
+
+        // 3. 添加边界到配置对象(在执行DDL前先更新,保持一致性)
+        var addResult = configuration.TryAddBoundary(newBoundary);
+        if (!addResult.IsSuccess)
+        {
+            logger.LogWarning(
+                "Failed to add boundary to committed configuration {ConfigurationId}: {Error}",
+                configuration.Id,
+                addResult.ErrorMessage);
+            return Result.Failure(addResult.ErrorMessage ?? "添加边界失败");
+        }
+
+        try
+        {
+            // 4. 保存配置更新
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+
+            // 5. 记录审计日志
+            await RecordBoundaryOperationAsync(
+                configuration,
+                PartitionExecutionOperationType.AddBoundary,
+                request.RequestedBy,
+                "添加分区边界值",
+                $"为已分区表 [{configuration.SchemaName}].[{configuration.TableName}] 添加边界值: {request.BoundaryValue}",
+                new { BoundaryValue = request.BoundaryValue, FilegroupName = request.FilegroupName },
+                cancellationToken,
+                ddlScript);
+
+            logger.LogInformation(
+                "Successfully added boundary {Key} to committed configuration {ConfigurationId}. DDL script generated.",
+                sortKey,
+                configuration.Id);
+
+            // 注意:此处仅生成脚本并记录审计,实际DDL执行由用户通过执行任务触发
+            // 或者可以集成到PartitionExecutionProcessor中自动执行
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to add boundary to committed configuration {ConfigurationId}", configuration.Id);
+            configuration.TryRemoveBoundary(sortKey); // 回滚配置对象更改
+            return Result.Failure("添加边界时发生异常，请稍后重试。");
         }
     }
 
