@@ -54,8 +54,12 @@ public static class DependencyInjection
         services.AddScoped<SqlPartitionQueryService>();
         services.AddScoped<SqlPartitionCommandExecutor>();
         services.AddScoped<PartitionExecutionProcessor>();
+        services.AddScoped<IPartitionCommandExecutor, SplitPartitionCommandExecutor>();
+        services.AddScoped<IPartitionCommandExecutor, MergePartitionCommandExecutor>();
         services.AddSingleton<PartitionExecutionQueue>();
+        services.AddSingleton<IPartitionCommandQueue, PartitionCommandQueue>();
         services.AddHostedService<PartitionExecutionHostedService>();
+        services.AddHostedService<PartitionCommandHostedService>();
         services.AddSingleton<IPartitionExecutionDispatcher, PartitionExecutionDispatcher>();
 
         // 注册密码加密服务

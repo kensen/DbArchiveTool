@@ -95,6 +95,52 @@ public sealed class ReplacePartitionValuesDto
         new(BoundaryValues, UpdatedBy);
 }
 
+/// <summary>新增分区边界请求 DTO。</summary>
+public sealed class AddPartitionBoundaryDto
+{
+    [Required]
+    public string BoundaryValue { get; set; } = string.Empty;
+
+    public string? FilegroupName { get; set; }
+
+    [Required]
+    public string RequestedBy { get; set; } = string.Empty;
+
+    public AddPartitionBoundaryRequest ToApplicationRequest() =>
+        new(BoundaryValue, FilegroupName, RequestedBy);
+}
+
+/// <summary>拆分分区请求 DTO。</summary>
+public sealed class SplitPartitionBoundaryDto
+{
+    [Required]
+    public string BoundaryKey { get; set; } = string.Empty;
+
+    [Required]
+    public string NewBoundaryValue { get; set; } = string.Empty;
+
+    public string? FilegroupName { get; set; }
+
+    [Required]
+    public string RequestedBy { get; set; } = string.Empty;
+
+    public SplitPartitionBoundaryRequest ToApplicationRequest() =>
+        new(BoundaryKey, NewBoundaryValue, FilegroupName, RequestedBy);
+}
+
+/// <summary>合并分区请求 DTO。</summary>
+public sealed class MergePartitionBoundaryDto
+{
+    [Required]
+    public string BoundaryKey { get; set; } = string.Empty;
+
+    [Required]
+    public string RequestedBy { get; set; } = string.Empty;
+
+    public MergePartitionBoundaryRequest ToApplicationRequest() =>
+        new(BoundaryKey, RequestedBy);
+}
+
 /// <summary>
 /// 更新分区配置的请求体。
 /// </summary>

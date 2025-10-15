@@ -1,7 +1,8 @@
+using System.Linq;
+using System.Text.Json;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Extensions.Logging;
-using System.Text.Json;
 
 namespace DbArchiveTool.Application.Partitions;
 
@@ -13,6 +14,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
     private readonly IPartitionMetadataRepository metadataRepository;
     private readonly IPartitionCommandRepository commandRepository;
     private readonly IPartitionCommandScriptGenerator scriptGenerator;
+    private readonly IPartitionCommandQueue commandQueue;
     private readonly PartitionValueParser parser;
     private readonly ILogger<PartitionCommandAppService> logger;
 
@@ -20,12 +22,14 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         IPartitionMetadataRepository metadataRepository,
         IPartitionCommandRepository commandRepository,
         IPartitionCommandScriptGenerator scriptGenerator,
+        IPartitionCommandQueue commandQueue,
         PartitionValueParser parser,
         ILogger<PartitionCommandAppService> logger)
     {
         this.metadataRepository = metadataRepository;
         this.commandRepository = commandRepository;
         this.scriptGenerator = scriptGenerator;
+        this.commandQueue = commandQueue;
         this.parser = parser;
         this.logger = logger;
     }
@@ -57,7 +61,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<PartitionCommandPreviewDto>.Failure(scriptResult.Error!);
         }
 
-        var warnings = BuildWarnings(request);
+        var warnings = BuildSplitWarnings(request);
         var dto = new PartitionCommandPreviewDto(scriptResult.Value!, warnings);
         return Result<PartitionCommandPreviewDto>.Success(dto);
     }
@@ -93,7 +97,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         {
             request.SchemaName,
             request.TableName,
-            Boundaries = values.Value!.Select(v => v.ToLiteral()).ToArray()
+            Boundaries = values.Value!.Select(v => v.ToInvariantString()).ToArray()
         });
 
         var command = PartitionCommand.CreateSplit(request.DataSourceId, request.SchemaName, request.TableName, script, payload, request.RequestedBy);
@@ -126,7 +130,13 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         {
             command.Approve(approver);
             await commandRepository.UpdateAsync(command, cancellationToken);
-            logger.LogInformation("Partition command {CommandId} approved by {Approver}", commandId, approver);
+
+            await commandQueue.EnqueueAsync(command.Id, cancellationToken);
+
+            logger.LogInformation(
+                "Partition command {CommandId} approved by {Approver} and enqueued for execution",
+                commandId,
+                approver);
             return Result.Success();
         }
         catch (Exception ex)
@@ -198,7 +208,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         return Result.Success();
     }
 
-    private static IReadOnlyList<string> BuildWarnings(SplitPartitionRequest request)
+    private static IReadOnlyList<string> BuildSplitWarnings(SplitPartitionRequest request)
     {
         var warnings = new List<string>();
         if (!request.BackupConfirmed)
@@ -214,14 +224,112 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         return warnings;
     }
 
-    public Task<Result<PartitionCommandPreviewDto>> PreviewMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    private static Result ValidateMergeRequest(MergePartitionRequest request)
     {
-        return Task.FromResult(Result<PartitionCommandPreviewDto>.Failure("Merge功能开发中"));
+        if (request.DataSourceId == Guid.Empty)
+        {
+            return Result.Failure("数据源标识不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SchemaName) || string.IsNullOrWhiteSpace(request.TableName))
+        {
+            return Result.Failure("架构名称与表名称不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BoundaryKey))
+        {
+            return Result.Failure("请指定需要合并的分区边界。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("请求人不能为空。");
+        }
+
+        return Result.Success();
     }
 
-    public Task<Result<Guid>> ExecuteMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    private static IReadOnlyList<string> BuildMergeWarnings(MergePartitionRequest request, PartitionBoundary boundary)
     {
-        return Task.FromResult(Result<Guid>.Failure("Merge功能开发中"));
+        var warnings = new List<string>();
+        if (!request.BackupConfirmed)
+        {
+            warnings.Add("尚未确认备份，执行前请确保已有最新备份。");
+        }
+
+        warnings.Add($"合并边界 {boundary.SortKey} ({boundary.Value.ToLiteral()}) 将移除一个分区，请确保该分区已清空。");
+        return warnings;
+    }
+
+    public async Task<Result<PartitionCommandPreviewDto>> PreviewMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateMergeRequest(request);
+        if (!validation.IsSuccess)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(validation.Error!);
+        }
+
+        var configuration = await metadataRepository.GetConfigurationAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure("未找到分区配置，请确认目标表启用了分区。");
+        }
+
+        var boundary = configuration.Boundaries.FirstOrDefault(x => x.SortKey.Equals(request.BoundaryKey, StringComparison.Ordinal));
+        if (boundary is null)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure($"未找到分区边界 {request.BoundaryKey}，请刷新后重试。");
+        }
+
+        var scriptResult = scriptGenerator.GenerateMergeScript(configuration, request.BoundaryKey);
+        if (!scriptResult.IsSuccess)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(scriptResult.Error!);
+        }
+
+        var warnings = BuildMergeWarnings(request, boundary);
+        var dto = new PartitionCommandPreviewDto(scriptResult.Value!, warnings);
+        return Result<PartitionCommandPreviewDto>.Success(dto);
+    }
+
+    public async Task<Result<Guid>> ExecuteMergeAsync(MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!request.BackupConfirmed)
+        {
+            return Result<Guid>.Failure("执行合并前需要确认已有备份或快照。");
+        }
+
+        var preview = await PreviewMergeAsync(request, cancellationToken);
+        if (!preview.IsSuccess)
+        {
+            return Result<Guid>.Failure(preview.Error!);
+        }
+
+        var script = preview.Value!.Script;
+        var payload = JsonSerializer.Serialize(new
+        {
+            request.SchemaName,
+            request.TableName,
+            request.BoundaryKey
+        });
+
+        var command = PartitionCommand.CreateMerge(
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            script,
+            payload,
+            request.RequestedBy);
+
+        await commandRepository.AddAsync(command, cancellationToken);
+        logger.LogInformation(
+            "Partition merge command {CommandId} created for {Schema}.{Table} (Boundary {BoundaryKey})",
+            command.Id,
+            request.SchemaName,
+            request.TableName,
+            request.BoundaryKey);
+
+        return Result<Guid>.Success(command.Id);
     }
 
     public Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)

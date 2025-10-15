@@ -1,31 +1,39 @@
 using System.Collections.Generic;
-
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Results;
 
 namespace DbArchiveTool.Application.Partitions;
 
 /// <summary>
-/// 定义分区配置向导相关的用例。
+/// 分区配置相关的应用服务。
 /// </summary>
 public interface IPartitionConfigurationAppService
 {
-    /// <summary>创建新的分区配置草稿。</summary>
+    /// <summary>创建新的分区配置。</summary>
     Task<Result<Guid>> CreateAsync(CreatePartitionConfigurationRequest request, CancellationToken cancellationToken = default);
 
-    /// <summary>重置分区配置的边界列表。</summary>
+    /// <summary>替换分区配置的边界列表。</summary>
     Task<Result> ReplaceValuesAsync(Guid configurationId, ReplacePartitionValuesRequest request, CancellationToken cancellationToken = default);
 
-    /// <summary>获取数据源下的所有配置草稿。</summary>
+    /// <summary>新增单个分区边界。</summary>
+    Task<Result> AddBoundaryAsync(Guid configurationId, AddPartitionBoundaryRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>对指定分区执行拆分操作。</summary>
+    Task<Result> SplitBoundaryAsync(Guid configurationId, SplitPartitionBoundaryRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>合并相邻分区。</summary>
+    Task<Result> MergeBoundaryAsync(Guid configurationId, MergePartitionBoundaryRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>获取数据源下的所有分区配置。</summary>
     Task<Result<List<PartitionConfigurationSummaryDto>>> GetByDataSourceAsync(Guid dataSourceId, CancellationToken cancellationToken = default);
 
-    /// <summary>删除配置草稿。</summary>
+    /// <summary>删除分区配置。</summary>
     Task<Result> DeleteAsync(Guid configurationId, CancellationToken cancellationToken = default);
 
-    /// <summary>获取指定配置草稿详情。</summary>
+    /// <summary>获取指定分区配置详情。</summary>
     Task<Result<PartitionConfigurationDetailDto>> GetAsync(Guid configurationId, CancellationToken cancellationToken = default);
 
-    /// <summary>更新配置草稿的基础信息。</summary>
+    /// <summary>更新分区配置的基础信息。</summary>
     Task<Result> UpdateAsync(Guid configurationId, UpdatePartitionConfigurationRequest request, CancellationToken cancellationToken = default);
 }
 
@@ -53,14 +61,38 @@ public sealed record CreatePartitionConfigurationRequest(
     string? Remarks);
 
 /// <summary>
-/// 重置分区值的请求。
+/// 替换边界值请求。
 /// </summary>
 public sealed record ReplacePartitionValuesRequest(
     IReadOnlyList<string> BoundaryValues,
     string UpdatedBy);
 
 /// <summary>
-/// 更新分区配置草稿的请求。
+/// 新增分区边界请求。
+/// </summary>
+public sealed record AddPartitionBoundaryRequest(
+    string BoundaryValue,
+    string? FilegroupName,
+    string RequestedBy);
+
+/// <summary>
+/// 拆分分区请求。
+/// </summary>
+public sealed record SplitPartitionBoundaryRequest(
+    string BoundaryKey,
+    string NewBoundaryValue,
+    string? FilegroupName,
+    string RequestedBy);
+
+/// <summary>
+/// 合并分区请求。
+/// </summary>
+public sealed record MergePartitionBoundaryRequest(
+    string BoundaryKey,
+    string RequestedBy);
+
+/// <summary>
+/// 更新分区配置请求。
 /// </summary>
 public sealed record UpdatePartitionConfigurationRequest(
     PartitionStorageMode StorageMode,
@@ -77,7 +109,7 @@ public sealed record UpdatePartitionConfigurationRequest(
     string? Remarks);
 
 /// <summary>
-/// 分区配置摘要信息。
+/// 分区配置概要信息。
 /// </summary>
 public sealed class PartitionConfigurationSummaryDto
 {
@@ -95,12 +127,10 @@ public sealed class PartitionConfigurationSummaryDto
     public DateTime UpdatedAtUtc { get; set; }
     public string? Remarks { get; set; }
     public bool IsCommitted { get; set; }
-    
     /// <summary>
     /// 执行阶段(Queued/Running/Completed/Failed等)
     /// </summary>
     public string? ExecutionStage { get; set; }
-    
     /// <summary>
     /// 最后一次执行任务ID
     /// </summary>
@@ -108,7 +138,7 @@ public sealed class PartitionConfigurationSummaryDto
 }
 
 /// <summary>
-/// 分区配置草稿详情信息。
+/// 分区配置详情信息。
 /// </summary>
 public sealed class PartitionConfigurationDetailDto
 {

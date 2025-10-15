@@ -1,11 +1,14 @@
+using System.Threading;
 using System.Threading.Channels;
+using System.Threading.Tasks;
+using DbArchiveTool.Domain.Partitions;
 
 namespace DbArchiveTool.Infrastructure.Executors;
 
 /// <summary>
 /// 简单的内存队列实现，用于缓存待执行的分区命令标识，支持异步读写。
 /// </summary>
-internal sealed class PartitionCommandQueue
+internal sealed class PartitionCommandQueue : IPartitionCommandQueue
 {
     private readonly Channel<Guid> channel;
 

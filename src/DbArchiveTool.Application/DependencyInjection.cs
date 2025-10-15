@@ -24,6 +24,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionCommandAppService, PartitionCommandAppService>();
         services.AddScoped<IPartitionConfigurationAppService, PartitionConfigurationAppService>();
         services.AddScoped<IPartitionExecutionAppService, PartitionExecutionAppService>();
+        services.AddScoped<IPartitionArchiveAppService, PartitionArchiveAppService>();
         services.AddScoped<PartitionValueParser>();
         services.AddScoped<IPasswordHasher<AdminUser>, PasswordHasher<AdminUser>>();
 

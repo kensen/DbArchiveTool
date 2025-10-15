@@ -13,6 +13,8 @@ public class PartitionConfigurationAppServiceTests
 {
     private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
     private readonly Mock<IPartitionConfigurationRepository> configurationRepository = new();
+    private readonly Mock<IPartitionExecutionTaskRepository> taskRepository = new();
+    private readonly Mock<IPartitionExecutionLogRepository> logRepository = new();
     private readonly PartitionValueParser parser = new();
     private readonly Mock<ILogger<PartitionConfigurationAppService>> logger = new();
 
@@ -304,7 +306,13 @@ public class PartitionConfigurationAppServiceTests
     }
 
     private PartitionConfigurationAppService CreateService()
-        => new(metadataRepository.Object, configurationRepository.Object, parser, logger.Object);
+        => new(
+            metadataRepository.Object,
+            configurationRepository.Object,
+            taskRepository.Object,
+            logRepository.Object,
+            parser,
+            logger.Object);
 
     private static PartitionConfiguration CreateMetadataConfiguration(bool isColumnNullable)
         => new(

@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Extensions.Logging;
 
@@ -13,19 +15,27 @@ namespace DbArchiveTool.Application.Partitions;
 /// </summary>
 internal sealed class PartitionConfigurationAppService : IPartitionConfigurationAppService
 {
+    private static readonly IComparer<PartitionBoundary> BoundaryComparer = Comparer<PartitionBoundary>.Create((left, right) => left.CompareTo(right));
+
     private readonly IPartitionMetadataRepository metadataRepository;
     private readonly IPartitionConfigurationRepository configurationRepository;
+    private readonly IPartitionExecutionTaskRepository executionTaskRepository;
+    private readonly IPartitionExecutionLogRepository executionLogRepository;
     private readonly PartitionValueParser valueParser;
     private readonly ILogger<PartitionConfigurationAppService> logger;
 
     public PartitionConfigurationAppService(
         IPartitionMetadataRepository metadataRepository,
         IPartitionConfigurationRepository configurationRepository,
+        IPartitionExecutionTaskRepository executionTaskRepository,
+        IPartitionExecutionLogRepository executionLogRepository,
         PartitionValueParser valueParser,
         ILogger<PartitionConfigurationAppService> logger)
     {
         this.metadataRepository = metadataRepository;
         this.configurationRepository = configurationRepository;
+        this.executionTaskRepository = executionTaskRepository;
+        this.executionLogRepository = executionLogRepository;
         this.valueParser = valueParser;
         this.logger = logger;
     }
@@ -118,6 +128,210 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         {
             logger.LogError(ex, "Failed to create partition configuration for {Schema}.{Table}", request.SchemaName, request.TableName);
             return Result<Guid>.Failure("创建分区配置时发生错误，请稍后重试。");
+        }
+    }
+
+    public async Task<Result> AddBoundaryAsync(Guid configurationId, AddPartitionBoundaryRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateAddBoundaryRequest(configurationId, request);
+        if (!validation.IsSuccess)
+        {
+            return validation;
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result.Failure("未找到指定的分区配置。");
+        }
+
+        if (configuration.IsCommitted)
+        {
+            return Result.Failure("配置已提交执行，暂不允许直接修改边界。");
+        }
+
+        var parse = valueParser.ParseValues(configuration.PartitionColumn, new[] { request.BoundaryValue });
+        if (!parse.IsSuccess)
+        {
+            return Result.Failure(parse.Error!);
+        }
+
+        var boundaryValue = parse.Value![0];
+        var boundaryKey = GenerateBoundaryKey();
+        var boundary = new PartitionBoundary(boundaryKey, boundaryValue);
+        var literalForLog = boundaryValue.ToLiteral();
+
+        var addResult = configuration.TryAddBoundary(boundary);
+        if (!addResult.IsSuccess)
+        {
+            return Result.Failure(addResult.ErrorMessage ?? "新增分区边界失败。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.FilegroupName))
+        {
+            var assignResult = configuration.TryAssignFilegroup(boundaryKey, request.FilegroupName!);
+            if (!assignResult.IsSuccess)
+            {
+                configuration.TryRemoveBoundary(boundaryKey);
+                return Result.Failure(assignResult.ErrorMessage ?? "文件组分配失败。");
+            }
+        }
+
+        try
+        {
+            configuration.Touch(request.RequestedBy);
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+
+            var filegroupLabel = string.IsNullOrWhiteSpace(request.FilegroupName) ? "默认" : request.FilegroupName!;
+            var message = $"新增边界 {boundaryKey} = {literalForLog} (文件组: {filegroupLabel})。当前边界数: {configuration.Boundaries.Count}";
+            await RecordBoundaryOperationAsync(
+                configuration,
+                PartitionExecutionOperationType.AddBoundary,
+                request.RequestedBy,
+                "新增分区边界",
+                message,
+                cancellationToken);
+
+            logger.LogInformation("Boundary {BoundaryKey} added to configuration {ConfigurationId} by {User}", boundaryKey, configurationId, request.RequestedBy);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to add boundary for configuration {ConfigurationId}", configurationId);
+            configuration.TryRemoveBoundary(boundaryKey);
+            return Result.Failure("新增边界时发生异常，请稍后重试。");
+        }
+    }
+
+    public async Task<Result> SplitBoundaryAsync(Guid configurationId, SplitPartitionBoundaryRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateSplitBoundaryRequest(configurationId, request);
+        if (!validation.IsSuccess)
+        {
+            return validation;
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result.Failure("未找到指定的分区配置。");
+        }
+
+        if (configuration.IsCommitted)
+        {
+            return Result.Failure("配置已提交执行，暂不允许直接修改边界。");
+        }
+
+        var ordered = configuration.Boundaries
+            .OrderBy(b => b, BoundaryComparer)
+            .ToList();
+        var anchorIndex = ordered.FindIndex(b => b.SortKey.Equals(request.BoundaryKey, StringComparison.Ordinal));
+        if (anchorIndex < 0)
+        {
+            return Result.Failure("目标分区边界不存在。");
+        }
+
+        var parse = valueParser.ParseValues(configuration.PartitionColumn, new[] { request.NewBoundaryValue });
+        if (!parse.IsSuccess)
+        {
+            return Result.Failure(parse.Error!);
+        }
+
+        var newBoundaryValue = parse.Value![0];
+        if (!IsValueWithinSplitRange(configuration.IsRangeRight, newBoundaryValue, anchorIndex, ordered))
+        {
+            return Result.Failure("新边界值不在允许拆分的范围内。");
+        }
+
+        var newBoundaryKey = GenerateBoundaryKey();
+        var newBoundary = new PartitionBoundary(newBoundaryKey, newBoundaryValue);
+        var addResult = configuration.TryAddBoundary(newBoundary);
+        if (!addResult.IsSuccess)
+        {
+            return Result.Failure(addResult.ErrorMessage ?? "拆分分区失败。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.FilegroupName))
+        {
+            var assignResult = configuration.TryAssignFilegroup(newBoundaryKey, request.FilegroupName!);
+            if (!assignResult.IsSuccess)
+            {
+                configuration.TryRemoveBoundary(newBoundaryKey);
+                return Result.Failure(assignResult.ErrorMessage ?? "文件组分配失败。");
+            }
+        }
+
+        try
+        {
+            configuration.Touch(request.RequestedBy);
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+
+            var filegroupLabel = string.IsNullOrWhiteSpace(request.FilegroupName) ? "继承文件组" : request.FilegroupName!;
+            var newLiteral = newBoundaryValue.ToLiteral();
+            var splitMessage = $"拆分边界 {request.BoundaryKey}，插入新边界 {newBoundaryKey} = {newLiteral} (文件组: {filegroupLabel})。当前边界数: {configuration.Boundaries.Count}";
+            await RecordBoundaryOperationAsync(
+                configuration,
+                PartitionExecutionOperationType.SplitBoundary,
+                request.RequestedBy,
+                "拆分分区边界",
+                splitMessage,
+                cancellationToken);
+
+            logger.LogInformation("Boundary {BoundaryKey} split in configuration {ConfigurationId} by {User}, new boundary {NewBoundaryKey}", request.BoundaryKey, configurationId, request.RequestedBy, newBoundaryKey);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to split boundary {BoundaryKey} for configuration {ConfigurationId}", request.BoundaryKey, configurationId);
+            configuration.TryRemoveBoundary(newBoundaryKey);
+            return Result.Failure("拆分分区时发生异常，请稍后重试。");
+        }
+    }
+
+    public async Task<Result> MergeBoundaryAsync(Guid configurationId, MergePartitionBoundaryRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateMergeBoundaryRequest(configurationId, request);
+        if (!validation.IsSuccess)
+        {
+            return validation;
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result.Failure("未找到指定的分区配置。");
+        }
+
+        if (configuration.IsCommitted)
+        {
+            return Result.Failure("配置已提交执行，暂不允许直接修改边界。");
+        }
+
+        var mergeResult = configuration.TryRemoveBoundary(request.BoundaryKey);
+        if (!mergeResult.IsSuccess)
+        {
+            return Result.Failure(mergeResult.ErrorMessage ?? "合并分区失败。");
+        }
+
+        try
+        {
+            configuration.Touch(request.RequestedBy);
+            await configurationRepository.UpdateAsync(configuration, cancellationToken);
+            var mergeMessage = $"合并边界 {request.BoundaryKey} 后，剩余边界数：{configuration.Boundaries.Count}";
+            await RecordBoundaryOperationAsync(
+                configuration,
+                PartitionExecutionOperationType.MergeBoundary,
+                request.RequestedBy,
+                "合并分区边界",
+                mergeMessage,
+                cancellationToken);
+            logger.LogInformation("Boundary {BoundaryKey} merged in configuration {ConfigurationId} by {User}", request.BoundaryKey, configurationId, request.RequestedBy);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to merge boundary {BoundaryKey} for configuration {ConfigurationId}", request.BoundaryKey, configurationId);
+            return Result.Failure("合并分区时发生异常，请稍后重试。");
         }
     }
 
@@ -495,6 +709,167 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
 
         return Result.Success();
+    }
+
+    private static Result ValidateAddBoundaryRequest(Guid configurationId, AddPartitionBoundaryRequest request)
+    {
+        if (configurationId == Guid.Empty)
+        {
+            return Result.Failure("配置标识不能为空。");
+        }
+
+        if (request is null)
+        {
+            return Result.Failure("请求不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BoundaryValue))
+        {
+            return Result.Failure("需要提供新的分区边界值。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("操作人不能为空。");
+        }
+
+        return Result.Success();
+    }
+
+    private static Result ValidateSplitBoundaryRequest(Guid configurationId, SplitPartitionBoundaryRequest request)
+    {
+        if (configurationId == Guid.Empty)
+        {
+            return Result.Failure("配置标识不能为空。");
+        }
+
+        if (request is null)
+        {
+            return Result.Failure("请求不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BoundaryKey))
+        {
+            return Result.Failure("需要指定要拆分的分区边界。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.NewBoundaryValue))
+        {
+            return Result.Failure("需要提供新的分区边界值。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("操作人不能为空。");
+        }
+
+        return Result.Success();
+    }
+
+    private static Result ValidateMergeBoundaryRequest(Guid configurationId, MergePartitionBoundaryRequest request)
+    {
+        if (configurationId == Guid.Empty)
+        {
+            return Result.Failure("配置标识不能为空。");
+        }
+
+        if (request is null)
+        {
+            return Result.Failure("请求不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.BoundaryKey))
+        {
+            return Result.Failure("需要指定要合并的分区边界。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("操作人不能为空。");
+        }
+
+        return Result.Success();
+    }
+
+    private static string GenerateBoundaryKey() => $"AUTO_{DateTime.UtcNow:yyyyMMddHHmmssfff}_{Guid.NewGuid():N}";
+
+    private async Task RecordBoundaryOperationAsync(
+        PartitionConfiguration configuration,
+        PartitionExecutionOperationType operationType,
+        string requestedBy,
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var targetDatabase = configuration.TargetTable?.DatabaseName ?? configuration.SchemaName;
+            var targetTable = configuration.TargetTable is not null
+                ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
+                : $"{configuration.SchemaName}.{configuration.TableName}";
+
+            var task = PartitionExecutionTask.Create(
+                configuration.Id,
+                configuration.ArchiveDataSourceId,
+                requestedBy,
+                requestedBy,
+                operationType: operationType,
+                archiveTargetDatabase: targetDatabase,
+                archiveTargetTable: targetTable);
+
+            task.MarkValidating(requestedBy);
+            task.MarkSucceeded(requestedBy);
+
+            await executionTaskRepository.AddAsync(task, cancellationToken);
+
+            var log = PartitionExecutionLogEntry.Create(task.Id, "Info", title, message);
+            await executionLogRepository.AddAsync(log, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "记录分区边界操作日志失败: ConfigurationId={ConfigurationId}, Operation={Operation}", configuration.Id, operationType);
+        }
+    }
+
+    private static bool IsValueWithinSplitRange(bool isRangeRight, PartitionValue newValue, int anchorIndex, IReadOnlyList<PartitionBoundary> ordered)
+    {
+        if (ordered.Count == 0)
+        {
+            return false;
+        }
+
+        if (isRangeRight)
+        {
+            var lowerBound = anchorIndex > 0 ? ordered[anchorIndex - 1].Value : null;
+            var upperBound = ordered[anchorIndex].Value;
+
+            if (lowerBound is not null && newValue.CompareTo(lowerBound) <= 0)
+            {
+                return false;
+            }
+
+            if (newValue.CompareTo(upperBound) >= 0)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            var lowerBound = ordered[anchorIndex].Value;
+            var upperBound = anchorIndex + 1 < ordered.Count ? ordered[anchorIndex + 1].Value : null;
+
+            if (newValue.CompareTo(lowerBound) <= 0)
+            {
+                return false;
+            }
+
+            if (upperBound is not null && newValue.CompareTo(upperBound) >= 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static Result<PartitionStorageSettings> BuildStorageSettings(

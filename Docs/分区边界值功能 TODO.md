@@ -8,10 +8,10 @@
     - [ ] 更新任务调度平台 API 契约文档（若有独立仓库请同步 PR）
 
 ## 1. 后端 - 配置边界操作
-- [ ] `IPartitionConfigurationAppService` 新增 Add/Split/Merge 方法定义
-- [ ] `PartitionConfigurationAppService` 实现新增方法，调用领域逻辑并持久化
-- [ ] 基础设施层编写 `SplitPartitionCommand`、`MergePartitionCommand` 执行器
-- [ ] API 控制器新增 `POST /boundaries/add|split|merge`
+- [x] `IPartitionConfigurationAppService` 新增 Add/Split/Merge 方法定义
+- [x] `PartitionConfigurationAppService` 实现新增方法，调用领域逻辑并持久化
+- [x] 基础设施层编写 `SplitPartitionCommand`、`MergePartitionCommand` 执行器
+- [x] API 控制器新增 `POST /boundaries/add|split|merge`
 - [ ] 审计日志写入 `PartitionAuditLog`（或新增）并写调度任务
 - [ ] 单元测试覆盖：边界顺序校验、文件组验证、异常路径
 
@@ -25,8 +25,8 @@
 - [ ] 集成测试：成功切换、结构不一致失败、索引不齐失败
 
 ## 3. 后端 - BCP/BulkCopy 预留
-- [ ] 定义接口 `ArchiveUsingBcpAsync`、`ArchiveUsingBulkCopyAsync`（暂返回规划中）
-- [ ] API 返回占位响应并记录用户需求参数
+- [x] 定义接口 `PlanArchiveWithBcpAsync`、`PlanArchiveWithBulkCopyAsync`（暂返回规划中）
+- [x] API 返回占位响应并记录用户需求参数
 - [ ] 在任务调度平台记录 `Planned` 状态的归档任务
 
 ## 4. 前端 - 公共支持

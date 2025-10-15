@@ -48,6 +48,48 @@ public sealed class PartitionConfigurationsController : ControllerBase
     }
 
     /// <summary>
+    /// 新增分区边界。
+    /// </summary>
+    [HttpPost("{id:guid}/boundaries/add")]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> AddBoundaryAsync(Guid id, [FromBody] AddPartitionBoundaryDto request, CancellationToken cancellationToken)
+    {
+        var result = await appService.AddBoundaryAsync(id, request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(Result.Success())
+            : BadRequest(Result.Failure(result.Error!));
+    }
+
+    /// <summary>
+    /// 拆分指定分区边界。
+    /// </summary>
+    [HttpPost("{id:guid}/boundaries/split")]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> SplitBoundaryAsync(Guid id, [FromBody] SplitPartitionBoundaryDto request, CancellationToken cancellationToken)
+    {
+        var result = await appService.SplitBoundaryAsync(id, request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(Result.Success())
+            : BadRequest(Result.Failure(result.Error!));
+    }
+
+    /// <summary>
+    /// 合并分区边界。
+    /// </summary>
+    [HttpPost("{id:guid}/boundaries/merge")]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> MergeBoundaryAsync(Guid id, [FromBody] MergePartitionBoundaryDto request, CancellationToken cancellationToken)
+    {
+        var result = await appService.MergeBoundaryAsync(id, request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(Result.Success())
+            : BadRequest(Result.Failure(result.Error!));
+    }
+
+    /// <summary>
     /// 获取指定的分区配置草稿详情。
     /// </summary>
     [HttpGet("{id:guid}")]
