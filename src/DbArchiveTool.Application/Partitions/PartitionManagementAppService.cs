@@ -13,6 +13,9 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
     private readonly IPartitionMetadataRepository repository;
     private readonly IPartitionCommandScriptGenerator scriptGenerator;
     private readonly IPartitionAuditLogRepository auditLogRepository;
+    private readonly IPartitionExecutionTaskRepository taskRepository;
+    private readonly IPartitionExecutionLogRepository logRepository;
+    private readonly IPartitionExecutionDispatcher dispatcher;
     private readonly PartitionValueParser valueParser;
     private readonly ILogger<PartitionManagementAppService> logger;
 
@@ -20,12 +23,18 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
         IPartitionMetadataRepository repository,
         IPartitionCommandScriptGenerator scriptGenerator,
         IPartitionAuditLogRepository auditLogRepository,
+        IPartitionExecutionTaskRepository taskRepository,
+        IPartitionExecutionLogRepository logRepository,
+        IPartitionExecutionDispatcher dispatcher,
         PartitionValueParser valueParser,
         ILogger<PartitionManagementAppService> logger)
     {
         this.repository = repository;
         this.scriptGenerator = scriptGenerator;
         this.auditLogRepository = auditLogRepository;
+        this.taskRepository = taskRepository;
+        this.logRepository = logRepository;
+        this.dispatcher = dispatcher;
         this.valueParser = valueParser;
         this.logger = logger;
     }
@@ -141,38 +150,103 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
             return Result.Failure("该边界值已存在于分区函数中。");
         }
 
-        // 5. 生成DDL脚本
-        var scriptResult = scriptGenerator.GenerateSplitScript(config, parseResult.Value);
-        if (!scriptResult.IsSuccess || string.IsNullOrEmpty(scriptResult.Value))
+        // 5. 生成DDL脚本 - 针对单个边界值且可能指定了文件组
+        string ddlScript;
+        
+        if (!string.IsNullOrWhiteSpace(request.FilegroupName))
         {
-            logger.LogError(
-                "Failed to generate split script for table {Schema}.{Table}: {Error}",
-                request.SchemaName,
-                request.TableName,
-                scriptResult.Error);
-            return Result.Failure($"生成DDL脚本失败: {scriptResult.Error}");
+            // 用户指定了文件组,使用指定的文件组
+            var literal = newValue.ToLiteral();
+            ddlScript = $@"-- 添加分区边界值到指定文件组
+BEGIN TRY
+    BEGIN TRANSACTION
+    ALTER PARTITION SCHEME [{config.PartitionSchemeName}] NEXT USED [{request.FilegroupName}];
+    ALTER PARTITION FUNCTION [{config.PartitionFunctionName}]() SPLIT RANGE ({literal});
+    COMMIT TRANSACTION
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    RAISERROR ('分区拆分失败: %s', 16, 1, @ErrorMessage);
+END CATCH
+";
+        }
+        else
+        {
+            // 用户未指定文件组,使用配置中的默认文件组
+            var scriptResult = scriptGenerator.GenerateSplitScript(config, parseResult.Value);
+            if (!scriptResult.IsSuccess || string.IsNullOrEmpty(scriptResult.Value))
+            {
+                logger.LogError(
+                    "Failed to generate split script for table {Schema}.{Table}: {Error}",
+                    request.SchemaName,
+                    request.TableName,
+                    scriptResult.Error);
+                return Result.Failure($"生成DDL脚本失败: {scriptResult.Error}");
+            }
+            ddlScript = scriptResult.Value;
         }
 
-        var ddlScript = scriptResult.Value;
+        // 6. 准备任务上下文变量
+        var resourceId = $"{request.DataSourceId}/{request.SchemaName}/{request.TableName}";
+        var summary = $"为表 {request.SchemaName}.{request.TableName} 添加分区边界值 '{request.BoundaryValue}'";
+        var payload = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            request.SchemaName,
+            request.TableName,
+            config.PartitionFunctionName,
+            config.PartitionSchemeName,
+            request.BoundaryValue,
+            request.FilegroupName,
+            SortKey = sortKey,
+            DdlScript = ddlScript
+        });
 
         try
         {
-            // 6. 记录审计日志(包含DDL脚本)
-            var resourceId = $"{request.SchemaName}.{request.TableName}";
-            var summary = $"为已分区表 [{request.SchemaName}].[{request.TableName}] 添加边界值: {request.BoundaryValue}";
-            var payload = System.Text.Json.JsonSerializer.Serialize(new
-            {
-                DataSourceId = request.DataSourceId,
-                SchemaName = request.SchemaName,
-                TableName = request.TableName,
-                BoundaryValue = request.BoundaryValue,
-                SortKey = sortKey,
-                FilegroupName = request.FilegroupName,
-                Notes = request.Notes,
-                PartitionFunction = config.PartitionFunctionName,
-                PartitionScheme = config.PartitionSchemeName
-            });
+            // 7. 创建临时的分区配置ID（用于关联任务）
+            var tempConfigurationId = Guid.NewGuid();
 
+            // 8. 创建执行任务
+            var task = PartitionExecutionTask.Create(
+                partitionConfigurationId: tempConfigurationId,
+                dataSourceId: request.DataSourceId,
+                requestedBy: request.RequestedBy,
+                createdBy: request.RequestedBy,
+                backupReference: null,
+                notes: request.Notes,
+                priority: 0,
+                operationType: PartitionExecutionOperationType.AddBoundary,
+                archiveScheme: null,
+                archiveTargetConnection: null,
+                archiveTargetDatabase: null,
+                archiveTargetTable: null);
+
+            // 9. 保存配置快照
+            task.SaveConfigurationSnapshot(payload, request.RequestedBy);
+
+            await taskRepository.AddAsync(task, cancellationToken);
+
+            // 10. 记录初始日志
+            var initialLog = PartitionExecutionLogEntry.Create(
+                task.Id,
+                "Info",
+                "任务创建",
+                $"由 {request.RequestedBy} 发起的添加分区边界任务已创建。" +
+                $"表：{request.SchemaName}.{request.TableName}，边界值：{request.BoundaryValue}");
+
+            await logRepository.AddAsync(initialLog, cancellationToken);
+
+            // 11. 记录DDL脚本到日志
+            var scriptLog = PartitionExecutionLogEntry.Create(
+                task.Id,
+                "Info",
+                "生成DDL脚本",
+                $"已生成 ALTER PARTITION FUNCTION 脚本，长度: {ddlScript.Length} 字符");
+
+            await logRepository.AddAsync(scriptLog, cancellationToken);
+
+            // 12. 记录审计日志(包含DDL脚本)
             var auditLog = PartitionAuditLog.Create(
                 request.RequestedBy,
                 PartitionExecutionOperationType.AddBoundary.ToString(),
@@ -180,21 +254,21 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
                 resourceId,
                 summary,
                 payload,
-                "Success",
+                "Queued",
                 ddlScript);
 
             await auditLogRepository.AddAsync(auditLog, cancellationToken);
 
+            // 13. 将任务分派到执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
             logger.LogInformation(
-                "Successfully generated DDL for adding boundary {Key} to table {Schema}.{Table}. Audit log created: {AuditId}",
+                "Successfully created execution task {TaskId} for adding boundary {Key} to table {Schema}.{Table}",
+                task.Id,
                 sortKey,
                 request.SchemaName,
-                request.TableName,
-                auditLog.Id);
+                request.TableName);
 
-            // 注意: 此处仅生成脚本并记录审计日志,实际DDL执行需要:
-            // 1. 用户手动执行脚本,或
-            // 2. 通过PartitionExecutionProcessor自动执行(如果集成)
             return Result.Success();
         }
         catch (Exception ex)

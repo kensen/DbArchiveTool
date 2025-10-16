@@ -206,7 +206,8 @@
         }
         else
         {
-            <Table TItem="PartitionDetailInfo"
+            <Table @key="_partitionDetailsTableRenderKey"
+                   TItem="PartitionDetailInfo"
                    DataSource="_partitionDetails"
                    Loading="_loadingDetails"
                    Size="@TableSize.Small"
@@ -309,13 +310,12 @@
                        EditingConfiguration="_editingConfigurationDetail"
                        OnCompleted="OnPartitionConfigCompletedAsync" />
 
-<PartitionBoundaryAddDialog 
-    Visible="@_addPartitionValueModalVisible"
-    VisibleChanged="@((bool v) => _addPartitionValueModalVisible = v)"
-    ConfigurationId="@_currentOperationConfigId"
-    PartitionColumnType="@_currentOperationPartitionColumnType"
-    RequestedBy="WebUser"
-    OnCompleted="@OnBoundaryOperationCompletedAsync" />
+<PartitionBoundaryAddDrawer DataSourceId="DataSourceId"
+                            SchemaName="@_boundaryTargetSchema"
+                            TableName="@_boundaryTargetTable"
+                            Visible="@_partitionBoundaryDrawerVisible"
+                            OnClose="@OnBoundaryDrawerClosedAsync"
+                            OnSuccess="@OnBoundaryOperationCompletedAsync" />
 
 <Modal Title="拆分分区" @bind-Visible="_splitModalVisible" Width="720" OnOk="() => _splitModalVisible = false" OnCancel="() => _splitModalVisible = false">
     <Alert Type="@AlertType.Info" Message="拆分分区功能开发中" ShowIcon="true" />
@@ -364,6 +364,7 @@
     private bool _loadingDetails = false;
     private List<PartitionDetailInfo> _partitionDetails = new();
     private IEnumerable<PartitionDetailInfo> _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+    private int _partitionDetailsTableRenderKey;
     private bool _sourceServerModalVisible = false;
     private bool _targetServerModalVisible = false;
     private TargetServerConfigModel _targetServerModel = new();
@@ -372,7 +373,9 @@
     private bool _targetConnectionTestSuccess = false;
     private bool _partitionConfigModalVisible = false;
     private string PartitionConfigModalTitle { get; set; } = "分区配置向导";
-    private bool _addPartitionValueModalVisible = false;
+    private bool _partitionBoundaryDrawerVisible = false;
+    private string _boundaryTargetSchema = string.Empty;
+    private string _boundaryTargetTable = string.Empty;
     private bool _splitModalVisible = false;
     private bool _mergeModalVisible = false;
     private bool _switchModalVisible = false;
@@ -730,6 +733,7 @@
         _selectedTable = row.Data;
         _selectedTableRows = new[] { row.Data };
         _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+        _partitionDetailsTableRenderKey++;
 
         _ = InvokeAsync(async () =>
         {
@@ -848,73 +852,19 @@
         _editingConfigurationDetail = null;
     }
     
-    private Guid _currentOperationConfigId = Guid.Empty;
-    private string? _currentOperationPartitionColumnType = null;
-    
-    private async Task ShowAddPartitionValue()
+    private Task ShowAddPartitionValue()
     {
-        await GetConfigurationInfoForSelectedTableAsync();
-        _addPartitionValueModalVisible = true;
-    }
-    
-    /// <summary>
-    /// 获取选定表的配置信息(ID和分区列类型)
-    /// </summary>
-    private async Task GetConfigurationInfoForSelectedTableAsync()
-    {
-        _currentOperationConfigId = Guid.Empty;
-        _currentOperationPartitionColumnType = null;
-        
-        // 优先使用草稿
-        if (_selectedDraft != null && !_selectedDraft.IsCommitted)
+        if (_selectedTable is null)
         {
-            _currentOperationConfigId = _selectedDraft.Id;
-            // 获取草稿的详细信息以获得分区列类型
-            try
-            {
-                var detailResult = await PartitionConfigApi.GetAsync(_selectedDraft.Id);
-                if (detailResult.IsSuccess && detailResult.Value != null)
-                {
-                    _currentOperationPartitionColumnType = detailResult.Value.PartitionColumnKind.ToString();
-                }
-            }
-            catch (Exception ex)
-            {
-                Message.Error($"获取配置详情失败: {ex.Message}");
-            }
-            return;
+            Message.Warning("请选择分区表后再添加边界值。");
+            return Task.CompletedTask;
         }
-        
-        // 对于已分区表,通过API查询配置
-        if (_selectedTable != null)
-        {
-            try
-            {
-                var configsResult = await PartitionConfigApi.GetByDataSourceAsync(DataSourceId);
-                if (configsResult.IsSuccess && configsResult.Value != null)
-                {
-                    var config = configsResult.Value.FirstOrDefault(c => 
-                        c.SchemaName == _selectedTable.SchemaName && 
-                        c.TableName == _selectedTable.TableName &&
-                        c.IsCommitted);
-                    
-                    if (config != null)
-                    {
-                        _currentOperationConfigId = config.Id;
-                        // 获取详细信息
-                        var detailResult = await PartitionConfigApi.GetAsync(config.Id);
-                        if (detailResult.IsSuccess && detailResult.Value != null)
-                        {
-                            _currentOperationPartitionColumnType = detailResult.Value.PartitionColumnKind.ToString();
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Message.Error($"查询配置失败: {ex.Message}");
-            }
-        }
+
+        _boundaryTargetSchema = _selectedTable.SchemaName;
+        _boundaryTargetTable = _selectedTable.TableName;
+        _partitionBoundaryDrawerVisible = true;
+
+        return Task.CompletedTask;
     }
     
     private void ShowSplitPartition() => _splitModalVisible = true;
@@ -929,6 +879,14 @@
         {
             await LoadPartitionDetailsAsync(_selectedTable);
         }
+    }
+
+    private Task OnBoundaryDrawerClosedAsync()
+    {
+        _partitionBoundaryDrawerVisible = false;
+        _boundaryTargetSchema = string.Empty;
+        _boundaryTargetTable = string.Empty;
+        return Task.CompletedTask;
     }
     
     private async Task TestTargetServerConnection()

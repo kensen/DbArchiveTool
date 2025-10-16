@@ -1,6 +1,6 @@
-@using AntDesign
-@using DbArchiveTool.Domain.Partitions
-@using System.Text.Json
+﻿@using AntDesign
+@using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Web.Services
 
 <Drawer Visible="Visible"
         Title="@("添加分区边界值")"
@@ -50,11 +50,11 @@
                         else if (IsDateTimeType)
                         {
                             <DatePicker @bind-Value="_dateTimeValue"
-                                        Placeholder="@("选择日期时间")"
+                                        Placeholder="@("选择日期")"
                                         Picker="@DatePickerType.Date"
-                                        ShowTime="@true"
-                                        Format="yyyy-MM-dd HH:mm:ss"
+                                        Format="yyyy-MM-dd"
                                         Style="width:100%" />
+                            <div class="form-tip">日期时间类型,将自动补充时间为 00:00:00</div>
                         }
                         else if (IsGuidType)
                         {
@@ -73,21 +73,20 @@
                         }
                     </FormItem>
 
-                    <FormItem Label="文件组名称(可选)">
-                        <Select TItem="string" TItemValue="string"
-                                @bind-Value="_formModel.FilegroupName"
+                    <FormItem Label="文件组名称">
+                        <Select @bind-Value="_formModel.FilegroupName"
+                                DataSource="@_availableFilegroups"
+                                Placeholder="选择文件组"
                                 AllowClear
-                                Placeholder="选择文件组或留空使用默认"
                                 Style="width:100%">
-                            @if (_metadata.FilegroupMappings.Count > 0)
-                            {
-                                @foreach (var mapping in _metadata.FilegroupMappings.Select(m => m.FilegroupName).Distinct())
-                                {
-                                    <SelectOption Value="@mapping" Label="@mapping" />
-                                }
-                            }
                         </Select>
-                        <div class="form-tip">若不指定,将使用NEXT USED文件组。</div>
+                        <div class="form-tip">
+                            选择用于新分区的文件组,默认为最后一个分区使用的文件组
+                            @if (!string.IsNullOrEmpty(_nextUsedFilegroup))
+                            {
+                                <Text>: @_nextUsedFilegroup</Text>
+                            }
+                        </div>
                     </FormItem>
 
                     <FormItem Label="备注(可选)">
@@ -129,6 +128,14 @@
             else
             {
                 <Empty Description="@("无法获取分区元数据")" />
+
+                @if (!string.IsNullOrEmpty(_errorMessage))
+                {
+                    <Alert Message="@_errorMessage"
+                           Type="@AlertType.Error"
+                           ShowIcon="true"
+                           Style="margin-top:16px" />
+                }
             }
         </div>
     </Spin>
@@ -200,7 +207,7 @@
     public EventCallback OnSuccess { get; set; }
 
     [Inject]
-    private HttpClient Http { get; set; } = default!;
+    private PartitionManagementApiClient PartitionManagementApi { get; set; } = default!;
 
     [Inject]
     private IMessageService Message { get; set; } = default!;
@@ -211,6 +218,10 @@
     private bool _loading;
     private bool _submitting;
     private string? _errorMessage;
+    private string? _loadedSchema;
+    private string? _loadedTable;
+    private string? _nextUsedFilegroup;
+    private List<string> _availableFilegroups = new();
 
     // 类型特定的值
     private long? _intValue;
@@ -227,7 +238,23 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Visible && _metadata == null)
+        if (!Visible)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SchemaName) || string.IsNullOrWhiteSpace(TableName))
+        {
+            _metadata = null;
+            _errorMessage = "未提供有效的架构名或表名。";
+            return;
+        }
+
+        var schemaChanged = !string.Equals(_loadedSchema, SchemaName, StringComparison.OrdinalIgnoreCase);
+        var tableChanged = !string.Equals(_loadedTable, TableName, StringComparison.OrdinalIgnoreCase);
+        var shouldReload = _metadata is null || schemaChanged || tableChanged;
+
+        if (shouldReload)
         {
             await LoadMetadataAsync();
         }
@@ -240,20 +267,37 @@
 
         try
         {
-            var url = $"api/v1/archive-data-sources/{DataSourceId}/partitions/metadata?schema={Uri.EscapeDataString(SchemaName)}&table={Uri.EscapeDataString(TableName)}";
-            var response = await Http.GetAsync(url);
-
-            if (response.IsSuccessStatusCode)
+            var result = await PartitionManagementApi.GetMetadataAsync(DataSourceId, SchemaName, TableName);
+            if (result.IsSuccess && result.Value is not null)
             {
-                _metadata = await response.Content.ReadFromJsonAsync<PartitionMetadataDto>();
-                if (_metadata != null)
+                _metadata = result.Value;
+                _existingBoundaries = _metadata.Boundaries.OrderByDescending(b => b.Key).ToList();
+                _loadedSchema = SchemaName;
+                _loadedTable = TableName;
+                
+                // 填充可用文件组列表
+                _availableFilegroups = _metadata.FilegroupMappings
+                    .Select(m => m.FilegroupName)
+                    .Distinct()
+                    .OrderBy(n => n)
+                    .ToList();
+                
+                // 自动设置 NEXT USED 文件组（使用最后一个分区的文件组）
+                if (_metadata.FilegroupMappings.Count > 0)
                 {
-                    _existingBoundaries = _metadata.Boundaries.OrderByDescending(b => b.Key).ToList();
+                    var lastMapping = _metadata.FilegroupMappings[^1];
+                    _nextUsedFilegroup = lastMapping.FilegroupName;
+                    _formModel.FilegroupName = _nextUsedFilegroup;
                 }
             }
             else
             {
-                _errorMessage = $"加载分区元数据失败: {response.ReasonPhrase}";
+                _metadata = null;
+                _existingBoundaries.Clear();
+                _availableFilegroups.Clear();
+                _loadedSchema = null;
+                _loadedTable = null;
+                _errorMessage = $"加载分区元数据失败: {result.Error ?? "未知错误"}";
             }
         }
         catch (Exception ex)
@@ -326,7 +370,7 @@
 
         try
         {
-            var request = new AddBoundaryRequestDto(
+            var request = new AddPartitionBoundaryApiRequest(
                 SchemaName,
                 TableName,
                 boundaryValue!,
@@ -335,10 +379,9 @@
                 _formModel.Notes
             );
 
-            var url = $"api/v1/archive-data-sources/{DataSourceId}/partitions/boundaries";
-            var response = await Http.PostAsJsonAsync(url, request);
+            var result = await PartitionManagementApi.AddBoundaryAsync(DataSourceId, request);
 
-            if (response.IsSuccessStatusCode)
+            if (result.IsSuccess)
             {
                 Message.Success("边界值添加成功!DDL脚本已生成并记录到审计日志。");
                 ResetForm();
@@ -347,8 +390,7 @@
             }
             else
             {
-                var content = await response.Content.ReadAsStringAsync();
-                _errorMessage = $"添加边界值失败: {content}";
+                _errorMessage = $"添加边界值失败: {result.Error}";
             }
         }
         catch (Exception ex)
@@ -377,8 +419,11 @@
         _dateValue = null;
         _dateTimeValue = null;
         _errorMessage = null;
+        _loadedSchema = null;
+        _loadedTable = null;
         _existingBoundaries.Clear();
     }
+
 
     private class AddBoundaryFormModel
     {
@@ -386,28 +431,5 @@
         public string? FilegroupName { get; set; }
         public string? Notes { get; set; }
     }
-
-    // DTO定义(与后端匹配)
-    private record PartitionMetadataDto(
-        string ColumnName,
-        string ColumnType,
-        bool IsNullable,
-        bool IsRangeRight,
-        string PartitionFunctionName,
-        string PartitionSchemeName,
-        IReadOnlyList<PartitionBoundaryItemDto> Boundaries,
-        IReadOnlyList<PartitionFilegroupMappingDto> FilegroupMappings);
-
-    private record PartitionBoundaryItemDto(string Key, string LiteralValue);
-
-    private record PartitionFilegroupMappingDto(int PartitionNumber, string FilegroupName);
-
-    private record AddBoundaryRequestDto(
-        string SchemaName,
-        string TableName,
-        string BoundaryValue,
-        string? FilegroupName,
-        string? RequestedBy,
-        string? Notes);
 }
 

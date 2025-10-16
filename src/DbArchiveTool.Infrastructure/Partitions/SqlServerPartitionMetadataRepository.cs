@@ -26,7 +26,8 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
     public async Task<PartitionConfiguration?> GetConfigurationAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
-        const string sql = @"SELECT TOP 1 ps.name AS PartitionSchemeName,
+        const string sql = @"SELECT TOP 1 
+                           ps.name AS PartitionSchemeName,
                            pf.name AS PartitionFunctionName,
                            c.name AS ColumnName,
                            t.name AS ColumnType,
@@ -35,10 +36,15 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
                     FROM sys.indexes i
                     INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
                     INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
-                    INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                    INNER JOIN sys.partition_parameters pp ON pf.function_id = pp.function_id
+                    INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id 
+                        AND i.index_id = ic.index_id 
+                        AND ic.partition_ordinal > 0
                     INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
                     INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-                    WHERE i.object_id = OBJECT_ID(@FullName) AND i.index_id IN (0, 1);";
+                    WHERE i.object_id = OBJECT_ID(@FullName) 
+                        AND i.index_id IN (0, 1)
+                        AND i.type IN (0, 1);";
 
         var result = await connection.QuerySingleOrDefaultAsync(sql, new { FullName = $"[{schemaName}].[{tableName}]" });
         if (result is null)
@@ -50,7 +56,7 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
         var isNullable = Convert.ToBoolean(result.IsNullable);
         var partitionColumn = new PartitionColumn(result.ColumnName, valueKind, isNullable);
         var filegroupStrategy = PartitionFilegroupStrategy.Default("PRIMARY");
-        var isRangeRight = ((int)result.RangeType) == 1;
+        var isRangeRight = Convert.ToBoolean(result.RangeType);
 
         var boundaries = await ListBoundariesAsync(dataSourceId, schemaName, tableName, cancellationToken);
         var mappings = await ListFilegroupMappingsAsync(dataSourceId, schemaName, tableName, cancellationToken);
@@ -117,23 +123,28 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
     public async Task<IReadOnlyList<PartitionFilegroupMapping>> ListFilegroupMappingsAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
-        const string sql = @"SELECT
-                        ROW_NUMBER() OVER (ORDER BY ds2.data_space_id) AS SortKey,
-                        ds2.name AS FilegroupName
-                    FROM sys.indexes i
-                    INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
-                    INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
-                    INNER JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id
-                    INNER JOIN sys.data_spaces ds2 ON dds.destination_id = ds2.data_space_id
-                    WHERE i.object_id = OBJECT_ID(@FullName) AND i.index_id = 1;";
+        const string sql = @"
+            SELECT
+                dds.destination_id AS PartitionNumber,
+                ds.name AS FilegroupName
+            FROM sys.tables t
+            INNER JOIN sys.indexes i ON t.object_id = i.object_id
+            INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+            INNER JOIN sys.destination_data_spaces dds ON ps.data_space_id = dds.partition_scheme_id
+            INNER JOIN sys.data_spaces ds ON dds.data_space_id = ds.data_space_id
+            WHERE t.object_id = OBJECT_ID(@FullName) 
+                AND i.index_id IN (0, 1)
+            ORDER BY dds.destination_id;";
 
         var rows = await connection.QueryAsync(sql, new { FullName = $"[{schemaName}].[{tableName}]" });
         var mappings = new List<PartitionFilegroupMapping>();
+        var sortKey = 1;
         foreach (var row in rows)
         {
-            var boundaryKey = $"{row.SortKey:D4}";
+            var boundaryKey = $"{sortKey:D4}";
             var filegroupName = (string)row.FilegroupName;
             mappings.Add(PartitionFilegroupMapping.Create(boundaryKey, filegroupName));
+            sortKey++;
         }
 
         return mappings;
@@ -143,6 +154,17 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
     public async Task<PartitionSafetyRule?> GetSafetyRuleAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+        
+        // 检查表是否存在
+        const string checkTableSql = @"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_NAME = 'PartitionSafetyRules' AND TABLE_SCHEMA = 'dbo'";
+        
+        var tableExists = await connection.ExecuteScalarAsync<int>(checkTableSql) > 0;
+        if (!tableExists)
+        {
+            return null;
+        }
+
         const string sql = @"SELECT TOP 1 RequiresEmptyPartition, ExecutionWindowHint
                     FROM PartitionSafetyRules
                     WHERE SchemaName = @SchemaName AND TableName = @TableName";
