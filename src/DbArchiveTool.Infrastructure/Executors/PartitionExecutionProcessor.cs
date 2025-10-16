@@ -555,6 +555,7 @@ internal sealed class PartitionExecutionProcessor
 
                 var detailMessage =
                     $"成功将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表，所有索引已在分区方案上重建。\r\n" +
+                    $"表总行数：{conversionResult.TotalRows:N0} 行\r\n" +
                     $"已删除索引：{droppedSummary}\r\n" +
                     $"已重建索引：{recreatedSummary}\r\n" +
                     $"自动对齐索引：{alignmentSummary}";

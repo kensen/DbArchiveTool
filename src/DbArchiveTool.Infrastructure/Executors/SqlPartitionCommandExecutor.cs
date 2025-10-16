@@ -498,6 +498,7 @@ internal sealed class SqlPartitionCommandExecutor
     /// <summary>
     /// 将普通表转换为分区表（保存所有索引定义，删除所有索引，修改分区列，然后在分区方案上重建所有索引）。
     /// <para>执行顺序（严格遵循 SQL Server 分区最佳实践）：</para>
+    /// <para>0. 统计表的总行数（用于日志记录）</para>
     /// <para>1. 查询并保存所有索引定义</para>
     /// <para>2. 删除所有非聚集索引（保留聚集索引）</para>
     /// <para>3. 删除聚集索引（此时表上没有任何索引）</para>
@@ -536,14 +537,32 @@ internal sealed class SqlPartitionCommandExecutor
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
+            // 查询表的总行数(使用系统视图,比 COUNT(*) 快很多,尤其是大表)
+            // 索引类型: 0=Heap, 1=Clustered, 5=Clustered Columnstore
+            var rowCountSql = $@"
+                SELECT ISNULL(SUM(ps.row_count), 0) AS [RowCount]
+                FROM sys.tables t
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                INNER JOIN sys.dm_db_partition_stats ps ON i.object_id = ps.object_id AND i.index_id = ps.index_id
+                WHERE s.name = @SchemaName
+                  AND t.name = @TableName
+                  AND i.type IN (0, 1, 5)";
+            
+            var totalRows = await sqlExecutor.QuerySingleAsync<long>(
+                connection, 
+                rowCountSql, 
+                new { SchemaName = configuration.SchemaName, TableName = configuration.TableName },
+                transaction: transaction);
+
             logger.LogInformation(
-                "开始将表 {Schema}.{Table} 转换为分区表（遵循 SQL Server 分区最佳实践）...",
-                configuration.SchemaName, configuration.TableName);
+                "开始将表 {Schema}.{Table} 转换为分区表（遵循 SQL Server 分区最佳实践），当前表总行数：{TotalRows:N0} 行...",
+                configuration.SchemaName, configuration.TableName, totalRows);
 
             await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
 
-            // ============== 步骤 1: 查询并保存所有索引定义 ==============
-            logger.LogInformation("步骤 1/4: 查询表的所有索引定义...");
+            // ============== 步骤 1/5: 查询并保存所有索引定义 ==============
+            logger.LogInformation("步骤 1/5: 查询表的所有索引定义...");
             var queryIndexesSql = templateProvider.GetTemplate("QueryTableIndexes.sql");
             var indexes = (await sqlExecutor.QueryAsync<Models.TableIndexDefinition>(
                 connection,
@@ -657,8 +676,8 @@ internal sealed class SqlPartitionCommandExecutor
             var droppedIndexes = new List<string>();
             var recreatedIndexes = new List<string>();
 
-            // ============== 步骤 2: 删除所有非聚集索引（保留聚集索引） ==============
-            logger.LogInformation("步骤 2/4: 删除所有非聚集索引（保留聚集索引 {ClusteredIndex}）...", clusteredIndex.IndexName);
+            // ============== 步骤 2/5: 删除所有非聚集索引（保留聚集索引） ==============
+            logger.LogInformation("步骤 2/5: 删除所有非聚集索引（保留聚集索引 {ClusteredIndex}）...", clusteredIndex.IndexName);
             foreach (var index in nonClusteredIndexes)
             {
                 var dropSql = index.GetDropSql(configuration.SchemaName, configuration.TableName);
@@ -738,8 +757,38 @@ internal sealed class SqlPartitionCommandExecutor
                 configuration.SchemaName, configuration.TableName,
                 indexes.Count, nonClusteredIndexes.Count);
 
+            // 验证转换后的行数（确保数据完整性，使用系统视图快速统计）
+            var finalRowCountSql = $@"
+                SELECT ISNULL(SUM(ps.row_count), 0) AS TotalRows
+                FROM sys.tables t
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+                INNER JOIN sys.indexes i ON t.object_id = i.object_id
+                INNER JOIN sys.dm_db_partition_stats ps ON i.object_id = ps.object_id AND i.index_id = ps.index_id
+                WHERE s.name = @SchemaName
+                  AND t.name = @TableName
+                  AND i.type IN (0, 1, 5)";
+            
+            var finalRowCount = await sqlExecutor.QuerySingleAsync<long>(
+                connection, 
+                finalRowCountSql,
+                new { SchemaName = configuration.SchemaName, TableName = configuration.TableName },
+                transaction: transaction);
+
+            if (finalRowCount != totalRows)
+            {
+                logger.LogWarning(
+                    "⚠️ 警告：转换前后行数不一致！转换前：{BeforeRows:N0} 行，转换后：{AfterRows:N0} 行，差异：{Diff:N0} 行",
+                    totalRows, finalRowCount, finalRowCount - totalRows);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "✓ 数据完整性验证通过：转换前后行数一致，共 {TotalRows:N0} 行。",
+                    totalRows);
+            }
+
             await transaction.CommitAsync(cancellationToken);
-            return PartitionConversionResult.Success(droppedIndexes, recreatedIndexes, autoAlignmentChanges, partitionColumnAltered);
+            return PartitionConversionResult.Success(droppedIndexes, recreatedIndexes, autoAlignmentChanges, partitionColumnAltered, totalRows);
         }
         catch (Exception ex)
         {
@@ -1103,17 +1152,19 @@ internal sealed record PartitionConversionResult(
     IReadOnlyList<string> DroppedIndexNames,
     IReadOnlyList<string> RecreatedIndexNames,
     IReadOnlyList<IndexAlignmentChange> AutoAlignedIndexes,
-    bool PartitionColumnAlteredToNotNull)
+    bool PartitionColumnAlteredToNotNull,
+    long TotalRows)
 {
     public static PartitionConversionResult Skipped() =>
-        new(false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<IndexAlignmentChange>(), false);
+        new(false, Array.Empty<string>(), Array.Empty<string>(), Array.Empty<IndexAlignmentChange>(), false, 0);
 
     public static PartitionConversionResult Success(
         IReadOnlyList<string> droppedIndexNames,
         IReadOnlyList<string> recreatedIndexNames,
         IReadOnlyList<IndexAlignmentChange> autoAlignedIndexes,
-        bool partitionColumnAlteredToNotNull) =>
-        new(true, droppedIndexNames, recreatedIndexNames, autoAlignedIndexes, partitionColumnAlteredToNotNull);
+        bool partitionColumnAlteredToNotNull,
+        long totalRows) =>
+        new(true, droppedIndexNames, recreatedIndexNames, autoAlignedIndexes, partitionColumnAlteredToNotNull, totalRows);
 }
 
 internal sealed record IndexAlignmentChange(

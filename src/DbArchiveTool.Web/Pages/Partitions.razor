@@ -432,13 +432,22 @@
             {
                 await InvokeAsync(async () =>
                 {
-                    await LoadPartitionTablesAsync();
-                    await LoadConfigurationDraftsAsync();
-                    if (_selectedTable is not null)
+                    try
                     {
-                        await LoadPartitionDetailsAsync(_selectedTable);
+                        await LoadPartitionTablesAsync();
+                        await LoadConfigurationDraftsAsync();
+                        if (_selectedTable is not null)
+                        {
+                            // 自动刷新时静默处理错误,避免弹出提示
+                            await LoadPartitionDetailsAsync(_selectedTable, suppressErrorMessage: true);
+                        }
+                        StateHasChanged();
                     }
-                    StateHasChanged();
+                    catch (Exception)
+                    {
+                        // 静默处理刷新时的错误,避免在表转换过程中弹出错误提示
+                        // 下次刷新会重试
+                    }
                 });
 
                 var draft = _configurationDrafts.FirstOrDefault(d => d.Id == configurationId);
@@ -695,7 +704,7 @@
         }
     }
 
-    private async Task LoadPartitionDetailsAsync(PartitionTableInfo table)
+    private async Task LoadPartitionDetailsAsync(PartitionTableInfo table, bool suppressErrorMessage = false)
     {
         _loadingDetails = true;
         _partitionDetails = new List<PartitionDetailInfo>();
@@ -718,7 +727,11 @@
         }
         catch (Exception ex)
         {
-            Message.Error($"加载分区明细失败: {ex.Message}");
+            if (!suppressErrorMessage)
+            {
+                Message.Error($"加载分区明细失败: {ex.Message}");
+            }
+            // 静默失败时仍然清空列表,下次刷新会重试
         }
         finally
         {
