@@ -496,12 +496,14 @@ internal sealed class SqlPartitionCommandExecutor
     }
 
     /// <summary>
-    /// 将普通表转换为分区表（保存所有索引定义，删除所有索引，然后在分区方案上重建所有索引）。
+    /// 将普通表转换为分区表（保存所有索引定义，删除所有索引，修改分区列，然后在分区方案上重建所有索引）。
     /// <para>执行顺序（严格遵循 SQL Server 分区最佳实践）：</para>
     /// <para>1. 查询并保存所有索引定义</para>
     /// <para>2. 删除所有非聚集索引（保留聚集索引）</para>
-    /// <para>3. 重建聚集索引到分区方案（此时表变为分区表）</para>
-    /// <para>4. 重建所有非聚集索引</para>
+    /// <para>3. 删除聚集索引（此时表上没有任何索引）</para>
+    /// <para>3.5. 修改分区列为 NOT NULL（如果需要，此时所有索引已删除，不会报依赖错误）</para>
+    /// <para>4. 重建聚集索引到分区方案（此时表变为分区表）</para>
+    /// <para>5. 重建所有非聚集索引</para>
     /// </summary>
     public async Task<PartitionConversionResult> ConvertToPartitionedTableAsync(
         Guid dataSourceId,
@@ -587,9 +589,13 @@ internal sealed class SqlPartitionCommandExecutor
             var autoAlignmentChanges = new List<IndexAlignmentChange>();
             var partitionColumnAltered = false;
 
+            // 检查分区列可空性，但稍后在删除所有索引后再执行 ALTER COLUMN
+            PartitionColumnMetadata? columnMetadata = null;
+            bool needsAlterColumn = false;
+
             if (configuration.RequirePartitionColumnNotNull)
             {
-                var columnMetadata = await GetPartitionColumnMetadataAsync(
+                columnMetadata = await GetPartitionColumnMetadataAsync(
                     connection,
                     transaction,
                     configuration.SchemaName,
@@ -616,14 +622,13 @@ internal sealed class SqlPartitionCommandExecutor
                             $"分区列 {configuration.PartitionColumn.Name} 仍存在 {nullableCount} 条 NULL 数据，无法自动转换为 NOT NULL。请清理数据或关闭去可空选项后重试。");
                     }
 
-                    var alterSql = $"ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] ALTER COLUMN [{configuration.PartitionColumn.Name}] {BuildColumnTypeDefinition(columnMetadata)} NOT NULL";
-                    await sqlExecutor.ExecuteAsync(connection, alterSql, transaction: transaction, timeoutSeconds: 300);
+                    // 标记需要修改列，但稍后在删除索引后再执行
+                    needsAlterColumn = true;
                     logger.LogInformation(
-                        "已将分区列 {Schema}.{Table}.{Column} 转换为 NOT NULL。",
+                        "分区列 {Schema}.{Table}.{Column} 当前为 NULL，将在删除索引后转换为 NOT NULL。",
                         configuration.SchemaName,
                         configuration.TableName,
                         configuration.PartitionColumn.Name);
-                    partitionColumnAltered = true;
                 }
             }
 
@@ -667,8 +672,8 @@ internal sealed class SqlPartitionCommandExecutor
 
             logger.LogInformation("已删除 {Count} 个非聚集索引。", nonClusteredIndexes.Count);
 
-            // ============== 步骤 3: 重建聚集索引到分区方案（关键步骤：表变为分区表） ==============
-            logger.LogInformation("步骤 3/4: 重建聚集索引到分区方案（表将变为分区表）...");
+            // ============== 步骤 3: 删除聚集索引 ==============
+            logger.LogInformation("步骤 3/5: 删除聚集索引（为 ALTER COLUMN 做准备）...");
             var clusteredDropSql = clusteredIndex.GetDropSql(configuration.SchemaName, configuration.TableName);
             logger.LogInformation("  删除聚集索引：{IndexName} ({Type})", clusteredIndex.IndexName, clusteredIndex.GetDescription());
             logger.LogDebug("  执行 SQL: {Sql}", clusteredDropSql);
@@ -677,6 +682,24 @@ internal sealed class SqlPartitionCommandExecutor
             logger.LogInformation("  ✓ 已删除聚集索引 {IndexName}", clusteredIndex.IndexName);
             droppedIndexes.Add(clusteredIndex.IndexName);
 
+            // ============== 步骤 3.5: 修改分区列为 NOT NULL（如果需要，此时所有索引已删除） ==============
+            if (needsAlterColumn && columnMetadata is not null)
+            {
+                logger.LogInformation("步骤 3.5/5: 修改分区列为 NOT NULL（所有索引已删除）...");
+                var alterSql = $"ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] ALTER COLUMN [{configuration.PartitionColumn.Name}] {BuildColumnTypeDefinition(columnMetadata)} NOT NULL";
+                logger.LogDebug("  执行 SQL: {Sql}", alterSql);
+                
+                await sqlExecutor.ExecuteAsync(connection, alterSql, transaction: transaction, timeoutSeconds: 300);
+                logger.LogInformation(
+                    "  ✓ 已将分区列 {Schema}.{Table}.{Column} 转换为 NOT NULL。",
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    configuration.PartitionColumn.Name);
+                partitionColumnAltered = true;
+            }
+
+            // ============== 步骤 4: 重建聚集索引到分区方案（关键步骤：表变为分区表） ==============
+            logger.LogInformation("步骤 4/5: 重建聚集索引到分区方案（表将变为分区表）...");
             var clusteredCreateSql = clusteredIndex.GetCreateSql(
                 configuration.SchemaName,
                 configuration.TableName,
@@ -691,8 +714,8 @@ internal sealed class SqlPartitionCommandExecutor
             logger.LogInformation("  ✓ 已重建聚集索引 {IndexName}，表已变为分区表", clusteredIndex.IndexName);
             recreatedIndexes.Add(clusteredIndex.IndexName);
 
-            // ============== 步骤 4: 重建所有非聚集索引 ==============
-            logger.LogInformation("步骤 4/4: 重建所有非聚集索引（按 IndexId 正序）...");
+            // ============== 步骤 5: 重建所有非聚集索引 ==============
+            logger.LogInformation("步骤 5/5: 重建所有非聚集索引（按 IndexId 正序）...");
             var indexesToCreate = nonClusteredIndexes.OrderBy(i => i.IndexId).ToList();
             foreach (var index in indexesToCreate)
             {
