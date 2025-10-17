@@ -1,0 +1,1136 @@
+﻿@using AntDesign
+@using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components.Web
+
+<Drawer Visible="Visible"
+        Title="@("拆分分区")"
+        Width="720"
+        Placement="DrawerPlacement.Right"
+        Closable="true"
+        MaskClosable="false"
+        OnClose="HandleClose">
+    <Spin Spinning="@_loading">
+        <div class="split-wizard-body">
+            @if (_metadata != null)
+            {
+                <!-- 元数据信息卡片 -->
+                <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:24px;">
+                    <DescriptionsItem Title="表名">@($"{SchemaName}.{TableName}")</DescriptionsItem>
+                    <DescriptionsItem Title="分区列">@_metadata.ColumnName (@_metadata.ColumnType)</DescriptionsItem>
+                    <DescriptionsItem Title="分区函数">@_metadata.PartitionFunctionName</DescriptionsItem>
+                    <DescriptionsItem Title="分区方案">@_metadata.PartitionSchemeName</DescriptionsItem>
+                    <DescriptionsItem Title="当前边界数">@_metadata.Boundaries.Count</DescriptionsItem>
+                </Descriptions>
+
+                <!-- 步骤导航 -->
+                <Steps Current="@_currentStep" Size="@StepsSize.Small" Style="margin-bottom:24px;">
+                    <Step Title="设置边界" Description="设置新的边界值" />
+                    <Step Title="确认执行" Description="预览并提交任务" />
+                </Steps>
+
+                <!-- 当前选中的分区信息 -->
+                @if (_currentBoundary is not null)
+                {
+                    <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                        <MessageTemplate>
+                            <div>
+                                <strong>当前分区边界:</strong> @_currentBoundary.LiteralValue
+                                @if (_nextBoundary is not null)
+                                {
+                                    <span> (下一个边界: @_nextBoundary.LiteralValue)</span>
+                                }
+                            </div>
+                            <div style="margin-top:8px;font-size:12px;color:#666;">
+                                拆分后,此边界区间将被新边界值分割为两个分区。新边界值必须位于当前边界和下一个边界之间。
+                            </div>
+                        </MessageTemplate>
+                    </Alert>
+                }
+                
+                <!-- varchar字段特殊提示 -->
+                @if (IsTextType)
+                {
+                    <Alert Message="字符串类型字段拆分限制" Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;">
+                        <MessageTemplate>
+                            <div>
+                                对于无规律的字符串(varchar/nvarchar)字段,拆分操作可能不太适用。
+                            </div>
+                            <div style="margin-top:4px;">
+                                建议使用 <strong>"添加分区边界值"</strong> 功能来手动添加所需的边界值。
+                            </div>
+                        </MessageTemplate>
+                    </Alert>
+                }
+
+                <!-- 步骤内容 -->
+                @if (_currentStep == 0)
+                {
+                    <!-- Step 1: 设置新边界 -->
+                    <div class="step-content">
+                        <Form Model="_formModel" Layout="FormLayout.Vertical">
+                            <FormItem Label="生成方式">
+                                <RadioGroup @bind-Value="_generationMode" ButtonStyle="@RadioButtonStyle.Solid">
+                                    <Radio RadioButton Value="@GenerationMode.Single">单个值</Radio>
+                                    <Radio RadioButton Value="@GenerationMode.Batch">批量生成</Radio>
+                                </RadioGroup>
+                            </FormItem>
+
+                            @if (_generationMode == GenerationMode.Single)
+                            {
+                                <FormItem Label="* 新边界值" Required>
+                                @if (IsIntegerType)
+                                {
+                                    <AntDesign.InputNumber TValue="long?"
+                                                           @bind-Value="_intValue"
+                                                           Placeholder="请输入整数值"
+                                                           Style="width:100%" />
+                                    <div class="form-tip">新边界值必须位于所选分区的范围内</div>
+                                }
+                                else if (IsBigIntType)
+                                {
+                                    <AntDesign.InputNumber TValue="long?"
+                                                           @bind-Value="_bigIntValue"
+                                                           Placeholder="请输入长整数值"
+                                                           Style="width:100%" />
+                                    <div class="form-tip">新边界值必须位于所选分区的范围内</div>
+                                }
+                                else if (IsDateType || IsDateTimeType)
+                                {
+                                    <DatePicker @bind-Value="_dateValue"
+                                                Placeholder="@("选择日期")"
+                                                Picker="@DatePickerType.Date"
+                                                Format="yyyy-MM-dd"
+                                                Style="width:100%" />
+                                    <div class="form-tip">新边界值必须位于所选分区的日期范围内</div>
+                                }
+                                else
+                                {
+                                    <Input @bind-Value="_formModel.NewBoundaryValue"
+                                           Placeholder="@GetPlaceholderText()"
+                                           Style="width:100%" />
+                                    <div class="form-tip">新边界值必须位于所选分区的范围内</div>
+                                }
+                                </FormItem>
+                            }
+                            else
+                            {
+                                @if (IsIntegerType || IsBigIntType)
+                                {
+                                    <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                        <MessageTemplate>
+                                            已自动填充当前边界区间作为起始/结束值,您可以调整步长来批量生成中间边界。
+                                        </MessageTemplate>
+                                    </Alert>
+                                    <FormItem Label="起始值" Required>
+                                        <Input @bind-Value="_generator.StartValue"
+                                               Placeholder="起始值"
+                                               Style="width:100%" />
+                                    </FormItem>
+                                    <FormItem Label="结束值" Required>
+                                        <Input @bind-Value="_generator.EndValue"
+                                               Placeholder="结束值"
+                                               Style="width:100%" />
+                                    </FormItem>
+                                    <FormItem Label="步长" Required>
+                                        <Input @bind-Value="_generator.StepValue"
+                                               Placeholder="步长"
+                                               Style="width:100%" />
+                                        <div class="form-tip">每次递增的数值</div>
+                                    </FormItem>
+                                    <FormItem>
+                                        <Button Type="@ButtonType.Primary" OnClick="GenerateNumericBoundaries">
+                                            <Icon Type="thunderbolt" /> 生成边界值
+                                        </Button>
+                                    </FormItem>
+                                }
+                                else if (IsDateType || IsDateTimeType)
+                                {
+                                    <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                        <MessageTemplate>
+                                            已自动填充当前边界区间作为起始/结束日期,您可以选择生成粒度来批量生成中间边界。
+                                        </MessageTemplate>
+                                    </Alert>
+                                    <FormItem Label="起始日期" Required>
+                                        <DatePicker @bind-Value="_generator.StartDate"
+                                                    Placeholder="@("选择起始日期")"
+                                                    Picker="@DatePickerType.Month"
+                                                    Format="yyyy-MM"
+                                                    Style="width:100%" />
+                                    </FormItem>
+                                    <FormItem Label="结束日期" Required>
+                                        <DatePicker @bind-Value="_generator.EndDate"
+                                                    Placeholder="@("选择结束日期")"
+                                                    Picker="@DatePickerType.Month"
+                                                    Format="yyyy-MM"
+                                                    Style="width:100%" />
+                                    </FormItem>
+                                    <FormItem Label="生成粒度" Required>
+                                        <RadioGroup @bind-Value="_generator.DateGranularity" ButtonStyle="@RadioButtonStyle.Solid">
+                                            <Radio RadioButton Value="@("month")">按月</Radio>
+                                            <Radio RadioButton Value="@("year")">按年</Radio>
+                                        </RadioGroup>
+                                        <div class="form-tip">按月: 每月1号 | 按年: 每年1月1号</div>
+                                    </FormItem>
+                                    <FormItem>
+                                        <Button Type="@ButtonType.Primary" OnClick="GenerateDateBoundaries">
+                                            <Icon Type="thunderbolt" /> 生成边界值
+                                        </Button>
+                                    </FormItem>
+                                }
+                                else
+                                {
+                                    <Alert Message="当前列类型不支持批量生成,请使用单个值模式或使用'添加分区边界值'功能" Type="@AlertType.Warning" ShowIcon="true" />
+                                }
+
+                                @if (_generatedBoundaries.Count > 0)
+                                {
+                                    <Divider>待拆分边界值 (@_generatedBoundaries.Count 个)</Divider>
+                                    <div class="generated-boundaries-container">
+                                        <div class="generated-boundaries">
+                                            @foreach (var boundary in _generatedBoundaries.OrderBy(b => b))
+                                            {
+                                                <Tag Closable OnClose="@(() => RemoveGeneratedBoundary(boundary))">@boundary</Tag>
+                                            }
+                                        </div>
+                                        <div class="generated-actions">
+                                            <Button Size="@ButtonSize.Small" OnClick="ClearGeneratedBoundaries">清空</Button>
+                                        </div>
+                                    </div>
+                                }
+                            }
+
+                            <FormItem Label="文件组名称">
+                                <Select @bind-Value="_formModel.FilegroupName"
+                                        DataSource="@_availableFilegroups"
+                                        Placeholder="选择文件组"
+                                        AllowClear
+                                        Style="width:100%">
+                                </Select>
+                                <div class="form-tip">
+                                    选择用于新分区的文件组，留空则继承原分区的文件组
+                                </div>
+                            </FormItem>
+
+                            @if (_showPreview)
+                            {
+                                <Divider>拆分预览</Divider>
+                                <Alert Message="拆分后将产生以下分区结构" Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <ul>
+                                            <li><strong>左侧分区:</strong> [原起始, @GetBoundaryValueForDisplay())</li>
+                                            <li><strong>右侧分区:</strong> [@GetBoundaryValueForDisplay(), 原结束)</li>
+                                        </ul>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+                        </Form>
+
+                        @if (!string.IsNullOrEmpty(_validationError))
+                        {
+                            <Alert Message="@_validationError"
+                                   Type="@AlertType.Error"
+                                   Closable
+                                   OnClose="() => _validationError = null"
+                                   Style="margin-top:16px" />
+                        }
+                    </div>
+                }
+                else if (_currentStep == 1)
+                {
+                    <!-- Step 2: 确认执行 -->
+                    <div class="step-content">
+                        @if (_preview != null)
+                        {
+                            <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:16px;">
+                                <DescriptionsItem Title="操作类型">拆分分区</DescriptionsItem>
+                                <DescriptionsItem Title="表名">@($"{SchemaName}.{TableName}")</DescriptionsItem>
+                                @if (_generationMode == GenerationMode.Single)
+                                {
+                                    <DescriptionsItem Title="新边界值">@GetBoundaryValueForDisplay()</DescriptionsItem>
+                                }
+                                else
+                                {
+                                    <DescriptionsItem Title="新边界值">@($"{_generatedBoundaries.Count} 个边界值")</DescriptionsItem>
+                                }
+                                <DescriptionsItem Title="文件组">@(_formModel.FilegroupName ?? "(继承)")</DescriptionsItem>
+                            </Descriptions>
+
+                            @if (_generationMode == GenerationMode.Batch && _generatedBoundaries.Count > 0)
+                            {
+                                <Divider>待拆分的边界值列表</Divider>
+                                <div class="generated-boundaries" style="margin-bottom:16px;">
+                                    @foreach (var boundary in _generatedBoundaries.OrderBy(b => b))
+                                    {
+                                        <Tag>@boundary</Tag>
+                                    }
+                                </div>
+                            }
+
+                            <Divider>SQL 脚本预览</Divider>
+                            <div class="sql-preview">
+                                <pre>@_preview.Script</pre>
+                            </div>
+
+                            @if (_preview.RiskWarnings.Any())
+                            {
+                                <Alert Message="风险提示" Type="@AlertType.Warning" ShowIcon="true" Style="margin-top:16px;">
+                                    <MessageTemplate>
+                                        <ul>
+                                            @foreach (var warning in _preview.RiskWarnings)
+                                            {
+                                                <li>@warning</li>
+                                            }
+                                        </ul>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+
+                            <Form Model="_formModel" Layout="FormLayout.Vertical" Style="margin-top:16px;">
+                                <FormItem>
+                                    <Checkbox @bind-Checked="_formModel.BackupConfirmed">
+                                        我已确认已对数据库进行备份，可以执行该操作
+                                    </Checkbox>
+                                </FormItem>
+
+                                <FormItem Label="备注(可选)">
+                                    <Input TextAreaRows="3"
+                                           @bind-Value="_formModel.Notes"
+                                           Placeholder="添加操作备注..."
+                                           MaxLength="500" />
+                                </FormItem>
+                            </Form>
+                        }
+                        else if (_loadingPreview)
+                        {
+                            <Skeleton Active />
+                        }
+                        else
+                        {
+                            <Empty Description="@("无法加载预览信息")" />
+                        }
+
+                        @if (!string.IsNullOrEmpty(_validationError))
+                        {
+                            <Alert Message="@_validationError"
+                                   Type="@AlertType.Error"
+                                   Closable
+                                   OnClose="() => _validationError = null"
+                                   Style="margin-top:16px" />
+                        }
+                    </div>
+                }
+            }
+            else if (_loading)
+            {
+                <Empty Description="@("正在加载分区元数据")" />
+            }
+            else
+            {
+                <Empty Description="@("无法获取分区元数据")" />
+
+                @if (!string.IsNullOrEmpty(_errorMessage))
+                {
+                    <Alert Message="@_errorMessage"
+                           Type="@AlertType.Error"
+                           ShowIcon="true"
+                           Style="margin-top:16px" />
+                }
+            }
+        </div>
+    </Spin>
+
+    <div class="drawer-footer">
+        <Space>
+            @if (_currentStep > 0)
+            {
+                <Button OnClick="@PreviousStep">上一步</Button>
+            }
+            <Button OnClick="@(async () => await HandleClose())">取消</Button>
+            
+            @if (_currentStep < 1)
+            {
+                <Button Type="@ButtonType.Primary"
+                        Disabled="@(!CanProceedToNextStep())"
+                        OnClick="@NextStep">
+                    下一步
+                </Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary"
+                        Loading="@_submitting"
+                        Disabled="@(!CanSubmit())"
+                        OnClick="@(async () => await HandleSubmit())">
+                    提交
+                </Button>
+            }
+        </Space>
+    </div>
+</Drawer>
+
+<style>
+    .split-wizard-body {
+        padding: 0 24px 24px 24px;
+    }
+
+    .drawer-footer {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        border-top: 1px solid #f0f0f0;
+        padding: 10px 24px;
+        background: #fff;
+        text-align: right;
+    }
+
+    .form-tip {
+        font-size: 12px;
+        color: #999;
+        margin-top: 4px;
+    }
+
+    .step-content {
+        min-height: 300px;
+    }
+
+    .sql-preview {
+        background: #f5f5f5;
+        border: 1px solid #d9d9d9;
+        border-radius: 4px;
+        padding: 12px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .sql-preview pre {
+        margin: 0;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+
+    .generated-boundaries-container {
+        border: 1px dashed #d9d9d9;
+        border-radius: 4px;
+        padding: 12px;
+        background-color: #fafafa;
+        margin-bottom: 16px;
+    }
+
+    .generated-boundaries {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+        min-height: 32px;
+    }
+
+    .generated-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+</style>
+
+@code {
+    /// <summary>数据源ID</summary>
+    [Parameter]
+    public Guid DataSourceId { get; set; }
+
+    /// <summary>架构名</summary>
+    [Parameter]
+    public string SchemaName { get; set; } = string.Empty;
+
+    /// <summary>表名</summary>
+    [Parameter]
+    public string TableName { get; set; } = string.Empty;
+
+    /// <summary>预选的分区边界值(从主页面传入)</summary>
+    [Parameter]
+    public string? PreSelectedBoundaryKey { get; set; }
+
+    /// <summary>是否可见</summary>
+    [Parameter]
+    public bool Visible { get; set; }
+
+    /// <summary>关闭回调</summary>
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    /// <summary>提交成功回调</summary>
+    [Parameter]
+    public EventCallback OnSuccess { get; set; }
+
+    [Inject]
+    private PartitionManagementApiClient PartitionManagementApi { get; set; } = default!;
+
+    [Inject]
+    private IMessageService Message { get; set; } = default!;
+
+    private PartitionMetadataDto? _metadata;
+    private SplitFormModel _formModel = new();
+    private PartitionCommandPreviewDto? _preview;
+    private BoundaryGenerator _generator = new();
+    private readonly List<string> _generatedBoundaries = new();
+    private GenerationMode _generationMode = GenerationMode.Single;
+    private bool _loading;
+    private bool _loadingPreview;
+    private bool _submitting;
+    private bool _showPreview;
+    private string? _errorMessage;
+    private string? _validationError;
+    private string? _loadedSchema;
+    private string? _loadedTable;
+    private List<string> _availableFilegroups = new();
+    private int _currentStep = 0;
+
+    // 类型特定的值
+    private long? _intValue;
+    private long? _bigIntValue;
+    private DateTime? _dateValue;
+
+    // 当前边界和下一个边界(用于验证和智能建议)
+    private PartitionBoundaryItemDto? _currentBoundary;
+    private PartitionBoundaryItemDto? _nextBoundary;
+
+    // 类型判断
+    private bool IsIntegerType => _metadata?.ColumnType.Equals("int", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsBigIntType => _metadata?.ColumnType.Equals("bigint", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsDateType => _metadata?.ColumnType.Equals("date", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsDateTimeType => _metadata?.ColumnType.Contains("datetime", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsVarCharType => _metadata?.ColumnType.Equals("varchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsNVarCharType => _metadata?.ColumnType.Equals("nvarchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsCharType => _metadata?.ColumnType.Equals("char", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsNCharType => _metadata?.ColumnType.Equals("nchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsTextType =>
+        IsVarCharType ||
+        IsNVarCharType ||
+        IsCharType ||
+        IsNCharType ||
+        (_metadata?.ColumnType.Equals("text", StringComparison.OrdinalIgnoreCase) ?? false) ||
+        (_metadata?.ColumnType.Equals("ntext", StringComparison.OrdinalIgnoreCase) ?? false);
+    private bool IsGuidType => _metadata?.ColumnType.Equals("uniqueidentifier", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Visible)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SchemaName) || string.IsNullOrWhiteSpace(TableName))
+        {
+            _metadata = null;
+            _errorMessage = "未提供有效的架构名或表名。";
+            return;
+        }
+
+        var schemaChanged = !string.Equals(_loadedSchema, SchemaName, StringComparison.OrdinalIgnoreCase);
+        var tableChanged = !string.Equals(_loadedTable, TableName, StringComparison.OrdinalIgnoreCase);
+        var shouldReload = _metadata is null || schemaChanged || tableChanged;
+
+        if (shouldReload)
+        {
+            await LoadMetadataAsync();
+        }
+    }
+
+    private async Task LoadMetadataAsync()
+    {
+        _loading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var result = await PartitionManagementApi.GetMetadataAsync(DataSourceId, SchemaName, TableName);
+            if (result.IsSuccess && result.Value is not null)
+            {
+                _metadata = result.Value;
+                _loadedSchema = SchemaName;
+                _loadedTable = TableName;
+                _formModel = new();
+                _generator = new();
+                _generatedBoundaries.Clear();
+                _generationMode = GenerationMode.Single;
+                _currentStep = 0;
+                _intValue = null;
+                _bigIntValue = null;
+                _dateValue = null;
+                _showPreview = false;
+                
+                // 填充可用文件组列表
+                _availableFilegroups = _metadata.FilegroupMappings
+                    .Select(m => m.FilegroupName)
+                    .Distinct()
+                    .OrderBy(n => n)
+                    .ToList();
+
+                // 找到当前选中的边界和下一个边界
+                FindCurrentAndNextBoundaries();
+            }
+            else
+            {
+                _metadata = null;
+                _availableFilegroups.Clear();
+                _loadedSchema = null;
+                _loadedTable = null;
+                _currentBoundary = null;
+                _nextBoundary = null;
+                _errorMessage = $"加载分区元数据失败: {result.Error ?? "未知错误"}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"加载分区元数据时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    /// <summary>
+    /// 根据PreSelectedBoundaryKey查找当前边界和下一个边界
+    /// </summary>
+    private void FindCurrentAndNextBoundaries()
+    {
+        if (_metadata is null || string.IsNullOrEmpty(PreSelectedBoundaryKey))
+        {
+            _currentBoundary = null;
+            _nextBoundary = null;
+            return;
+        }
+
+        // 找到当前选中的边界(使用LINQ而不是FindIndex,因为IReadOnlyList没有FindIndex方法)
+        var currentIndex = -1;
+        for (var i = 0; i < _metadata.Boundaries.Count; i++)
+        {
+            if (_metadata.Boundaries[i].Key == PreSelectedBoundaryKey)
+            {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        if (currentIndex < 0)
+        {
+            _currentBoundary = null;
+            _nextBoundary = null;
+            return;
+        }
+
+        _currentBoundary = _metadata.Boundaries[currentIndex];
+        
+        // 找到下一个边界(如果存在)
+        if (currentIndex + 1 < _metadata.Boundaries.Count)
+        {
+            _nextBoundary = _metadata.Boundaries[currentIndex + 1];
+        }
+        else
+        {
+            _nextBoundary = null;
+        }
+
+        // 智能填充批量生成的起始/结束值
+        InitializeSmartBoundaryHints();
+    }
+
+    /// <summary>
+    /// 智能初始化批量生成的提示值(当前边界 -> 下一个边界)
+    /// </summary>
+    private void InitializeSmartBoundaryHints()
+    {
+        if (_currentBoundary is null) return;
+
+        if (IsIntegerType || IsBigIntType)
+        {
+            // 数值类型: 自动填充起始/结束值
+            _generator.StartValue = _currentBoundary.LiteralValue;
+            if (_nextBoundary is not null)
+            {
+                _generator.EndValue = _nextBoundary.LiteralValue;
+            }
+        }
+        else if (IsDateType || IsDateTimeType)
+        {
+            // 日期类型: 解析并填充
+            if (DateTime.TryParse(_currentBoundary.LiteralValue, out var currentDate))
+            {
+                _generator.StartDate = currentDate;
+            }
+            if (_nextBoundary is not null && DateTime.TryParse(_nextBoundary.LiteralValue, out var nextDate))
+            {
+                _generator.EndDate = nextDate;
+            }
+        }
+    }
+
+    private string GetPlaceholderText()
+    {
+        if (_metadata == null) return "请输入边界值";
+
+        return _metadata.ColumnType.ToLower() switch
+        {
+            "varchar" or "nvarchar" or "char" or "nchar" => "请输入字符串值",
+            "decimal" or "numeric" or "money" => "请输入数值",
+            "uniqueidentifier" => "请输入GUID",
+            _ => "请输入边界值"
+        };
+    }
+
+    private string GetBoundaryValueForDisplay()
+    {
+        if (IsIntegerType && _intValue.HasValue)
+        {
+            return _intValue.Value.ToString();
+        }
+        else if (IsBigIntType && _bigIntValue.HasValue)
+        {
+            return _bigIntValue.Value.ToString();
+        }
+        else if ((IsDateType || IsDateTimeType) && _dateValue.HasValue)
+        {
+            return _dateValue.Value.ToString("yyyy-MM-dd");
+        }
+        else
+        {
+            return _formModel.NewBoundaryValue ?? string.Empty;
+        }
+    }
+
+    private bool CanProceedToNextStep()
+    {
+        return _currentStep switch
+        {
+            0 => _generationMode == GenerationMode.Single 
+                ? !string.IsNullOrWhiteSpace(GetBoundaryValueForDisplay())
+                : _generatedBoundaries.Count > 0,
+            _ => false
+        };
+    }
+
+    private bool CanSubmit()
+    {
+        return _preview != null && _formModel.BackupConfirmed && !_submitting;
+    }
+
+    private async Task NextStep()
+    {
+        _validationError = null;
+
+        if (_currentStep == 0)
+        {
+            // Step 1 验证并加载预览
+            if (_generationMode == GenerationMode.Single)
+            {
+                var boundaryValue = GetBoundaryValueForDisplay();
+                if (string.IsNullOrWhiteSpace(boundaryValue))
+                {
+                    _validationError = "请输入新的边界值";
+                    return;
+                }
+
+                // 验证边界值格式和范围
+                if (!ValidateBoundaryValue(boundaryValue))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                // 批量模式验证
+                if (_generatedBoundaries.Count == 0)
+                {
+                    _validationError = "请先生成边界值";
+                    return;
+                }
+
+                // 验证每个生成的边界值
+                foreach (var boundary in _generatedBoundaries)
+                {
+                    if (!ValidateBoundaryValue(boundary))
+                    {
+                        return;
+                    }
+                }
+            }
+
+            // 加载预览
+            await LoadPreviewAsync();
+            if (_preview == null)
+            {
+                return;
+            }
+        }
+
+        _currentStep++;
+        _showPreview = _currentStep == 0;
+    }
+
+    private void PreviousStep()
+    {
+        if (_currentStep > 0)
+        {
+            _currentStep--;
+            _validationError = null;
+            _showPreview = _currentStep == 1;
+        }
+    }
+
+    private bool ValidateBoundaryValue(string boundaryValue)
+    {
+        // 检查是否与现有边界重复
+        if (_metadata!.Boundaries.Any(b => b.LiteralValue.Equals(boundaryValue, StringComparison.Ordinal)))
+        {
+            _validationError = "该边界值已存在，无法拆分";
+            return false;
+        }
+
+        // 范围验证: 新边界必须大于当前边界
+        if (_currentBoundary is not null)
+        {
+            if (!IsBoundaryGreaterThan(boundaryValue, _currentBoundary.LiteralValue))
+            {
+                _validationError = $"新边界值必须大于当前边界值 ({_currentBoundary.LiteralValue})";
+                return false;
+            }
+        }
+
+        // 范围验证: 新边界必须小于下一个边界(如果存在)
+        if (_nextBoundary is not null)
+        {
+            if (!IsBoundaryLessThan(boundaryValue, _nextBoundary.LiteralValue))
+            {
+                _validationError = $"新边界值必须小于下一个边界值 ({_nextBoundary.LiteralValue})";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 判断 newValue 是否大于 currentValue (根据数据类型)
+    /// </summary>
+    private bool IsBoundaryGreaterThan(string newValue, string currentValue)
+    {
+        if (IsIntegerType || IsBigIntType)
+        {
+            if (long.TryParse(newValue, out var newNum) && long.TryParse(currentValue, out var currentNum))
+            {
+                return newNum > currentNum;
+            }
+        }
+        else if (IsDateType || IsDateTimeType)
+        {
+            if (DateTime.TryParse(newValue, out var newDate) && DateTime.TryParse(currentValue, out var currentDate))
+            {
+                return newDate > currentDate;
+            }
+        }
+        else
+        {
+            // 字符串类型使用字典序比较
+            return string.Compare(newValue, currentValue, StringComparison.Ordinal) > 0;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 判断 newValue 是否小于 nextValue (根据数据类型)
+    /// </summary>
+    private bool IsBoundaryLessThan(string newValue, string nextValue)
+    {
+        if (IsIntegerType || IsBigIntType)
+        {
+            if (long.TryParse(newValue, out var newNum) && long.TryParse(nextValue, out var nextNum))
+            {
+                return newNum < nextNum;
+            }
+        }
+        else if (IsDateType || IsDateTimeType)
+        {
+            if (DateTime.TryParse(newValue, out var newDate) && DateTime.TryParse(nextValue, out var nextDate))
+            {
+                return newDate < nextDate;
+            }
+        }
+        else
+        {
+            // 字符串类型使用字典序比较
+            return string.Compare(newValue, nextValue, StringComparison.Ordinal) < 0;
+        }
+
+        return false;
+    }
+
+    private async Task LoadPreviewAsync()
+    {
+        _loadingPreview = true;
+        _validationError = null;
+
+        try
+        {
+            // 收集所有要拆分的边界值
+            var boundariesToSplit = _generationMode == GenerationMode.Single
+                ? new[] { GetBoundaryValueForDisplay() }
+                : _generatedBoundaries.OrderBy(b => b).ToArray();
+
+            var request = new SplitPartitionRequest(
+                DataSourceId,
+                SchemaName,
+                TableName,
+                boundariesToSplit,
+                false,
+                "WebUser" // TODO: 从认证上下文获取
+            );
+
+            var result = await PartitionManagementApi.PreviewSplitAsync(DataSourceId, request);
+            if (result.IsSuccess && result.Value != null)
+            {
+                _preview = result.Value;
+            }
+            else
+            {
+                _validationError = $"加载预览失败: {result.Error}";
+                _preview = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _validationError = $"加载预览时发生异常: {ex.Message}";
+            _preview = null;
+        }
+        finally
+        {
+            _loadingPreview = false;
+        }
+    }
+
+    private async Task HandleSubmit()
+    {
+        _validationError = null;
+        _submitting = true;
+
+        try
+        {
+            // 收集所有要拆分的边界值
+            var boundariesToSplit = _generationMode == GenerationMode.Single
+                ? new[] { GetBoundaryValueForDisplay() }
+                : _generatedBoundaries.OrderBy(b => b).ToArray();
+
+            var request = new SplitPartitionRequest(
+                DataSourceId,
+                SchemaName,
+                TableName,
+                boundariesToSplit,
+                _formModel.BackupConfirmed,
+                "WebUser" // TODO: 从认证上下文获取
+            );
+
+            // 1. 执行拆分,创建命令
+            var executeResult = await PartitionManagementApi.ExecuteSplitAsync(DataSourceId, request);
+            if (!executeResult.IsSuccess)
+            {
+                _validationError = $"提交拆分任务失败: {executeResult.Error}";
+                return;
+            }
+
+            var commandId = executeResult.Value;
+            
+            // 2. 自动审批命令,加入执行队列(参照"添加边界值"的直接执行模式)
+            var approveResult = await PartitionManagementApi.ApproveAsync(DataSourceId, commandId, "WebUser");
+            if (!approveResult.IsSuccess)
+            {
+                _validationError = $"命令已创建(ID: {commandId}),但自动审批失败: {approveResult.Error}。请前往任务监控页面手动审批。";
+                Message.Warning($"命令ID: {commandId}");
+                return;
+            }
+
+            var countMsg = boundariesToSplit.Length > 1 ? $"({boundariesToSplit.Length}个边界值)" : string.Empty;
+            Message.Success($"拆分任务{countMsg}已提交并加入执行队列!命令ID: {commandId}");
+            await OnSuccess.InvokeAsync();
+            await HandleClose();
+        }
+        catch (Exception ex)
+        {
+            _validationError = $"提交时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task HandleClose()
+    {
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private void ResetForm()
+    {
+        _metadata = null;
+        _formModel = new();
+        _preview = null;
+        _generator = new();
+        _generatedBoundaries.Clear();
+        _generationMode = GenerationMode.Single;
+        _currentStep = 0;
+        _intValue = null;
+        _bigIntValue = null;
+        _dateValue = null;
+        _showPreview = false;
+        _errorMessage = null;
+        _validationError = null;
+        _loadedSchema = null;
+        _loadedTable = null;
+        _availableFilegroups.Clear();
+    }
+
+    private class SplitFormModel
+    {
+        public string? NewBoundaryValue { get; set; }
+        public string? FilegroupName { get; set; }
+        public bool BackupConfirmed { get; set; }
+        public string? Notes { get; set; }
+    }
+
+    private enum GenerationMode
+    {
+        Single,
+        Batch
+    }
+
+    private sealed class BoundaryGenerator
+    {
+        public string StartValue { get; set; } = string.Empty;
+        public string EndValue { get; set; } = string.Empty;
+        public string StepValue { get; set; } = string.Empty;
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
+        public string DateGranularity { get; set; } = "month";
+    }
+
+    private void RemoveGeneratedBoundary(string boundary)
+    {
+        _generatedBoundaries.Remove(boundary);
+    }
+
+    private void ClearGeneratedBoundaries()
+    {
+        _generatedBoundaries.Clear();
+    }
+
+    private void GenerateNumericBoundaries()
+    {
+        if (string.IsNullOrWhiteSpace(_generator.StartValue) ||
+            string.IsNullOrWhiteSpace(_generator.EndValue) ||
+            string.IsNullOrWhiteSpace(_generator.StepValue))
+        {
+            Message.Warning("请填写起始值、结束值和步长");
+            return;
+        }
+
+        if (!long.TryParse(_generator.StartValue, out var start) ||
+            !long.TryParse(_generator.EndValue, out var end) ||
+            !long.TryParse(_generator.StepValue, out var step))
+        {
+            Message.Warning("请输入有效的数值");
+            return;
+        }
+
+        if (step <= 0)
+        {
+            Message.Warning("步长必须大于0");
+            return;
+        }
+
+        if (end <= start)
+        {
+            Message.Warning("结束值必须大于起始值");
+            return;
+        }
+
+        _generatedBoundaries.Clear();
+
+        // 生成边界值: 从 start+step 开始,到 end 之前(不包含end本身)
+        for (var current = start + step; current < end; current += step)
+        {
+            var value = current.ToString();
+            
+            // 检查是否已存在
+            if (_metadata!.Boundaries.Any(b => b.LiteralValue.Equals(value, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            _generatedBoundaries.Add(value);
+        }
+
+        if (_generatedBoundaries.Count == 0)
+        {
+            Message.Warning("没有生成新的边界值,可能已存在或范围设置不合理");
+        }
+        else
+        {
+            Message.Success($"成功生成 {_generatedBoundaries.Count} 个边界值");
+        }
+    }
+
+    private void GenerateDateBoundaries()
+    {
+        if (!_generator.StartDate.HasValue || !_generator.EndDate.HasValue)
+        {
+            Message.Warning("请选择起始与结束日期");
+            return;
+        }
+
+        var start = _generator.StartDate.Value;
+        var end = _generator.EndDate.Value;
+
+        if (end <= start)
+        {
+            Message.Warning("结束日期必须大于起始日期");
+            return;
+        }
+
+        var isYearly = string.Equals(_generator.DateGranularity, "year", StringComparison.OrdinalIgnoreCase);
+        _generatedBoundaries.Clear();
+
+        var current = new DateTime(start.Year, start.Month, 1);
+        
+        // 跳过起始日期本身,从下一个单位开始
+        current = isYearly ? current.AddYears(1) : current.AddMonths(1);
+
+        while (current < end)
+        {
+            var boundaryDate = new DateTime(current.Year, current.Month, 1);
+            var value = boundaryDate.ToString("yyyy-MM-dd");
+
+            // 检查是否已存在
+            var existsInPartition = IsDateType
+                ? _metadata!.Boundaries.Any(b => b.LiteralValue.Equals(value, StringComparison.Ordinal))
+                : _metadata!.Boundaries.Any(b => b.LiteralValue.StartsWith(value, StringComparison.Ordinal));
+
+            if (!existsInPartition)
+            {
+                _generatedBoundaries.Add(value);
+            }
+
+            current = isYearly ? boundaryDate.AddYears(1) : boundaryDate.AddMonths(1);
+        }
+
+        if (_generatedBoundaries.Count == 0)
+        {
+            Message.Warning("没有生成新的边界值,可能已存在");
+        }
+        else
+        {
+            Message.Success($"成功生成 {_generatedBoundaries.Count} 个边界值");
+        }
+    }
+}

@@ -317,9 +317,13 @@
                             OnClose="@OnBoundaryDrawerClosedAsync"
                             OnSuccess="@OnBoundaryOperationCompletedAsync" />
 
-<Modal Title="拆分分区" @bind-Visible="_splitModalVisible" Width="720" OnOk="() => _splitModalVisible = false" OnCancel="() => _splitModalVisible = false">
-    <Alert Type="@AlertType.Info" Message="拆分分区功能开发中" ShowIcon="true" />
-</Modal>
+<PartitionSplitWizard DataSourceId="DataSourceId"
+                      SchemaName="@_boundaryTargetSchema"
+                      TableName="@_boundaryTargetTable"
+                      PreSelectedBoundaryKey="@_preSelectedBoundaryKey"
+                      Visible="@_splitModalVisible"
+                      OnClose="@OnSplitWizardClosedAsync"
+                      OnSuccess="@OnSplitOperationCompletedAsync" />
 
 <Modal Title="合并分区" @bind-Visible="_mergeModalVisible" Width="720" OnOk="() => _mergeModalVisible = false" OnCancel="() => _mergeModalVisible = false">
     <Alert Type="@AlertType.Info" Message="合并分区功能开发中" ShowIcon="true" />
@@ -376,6 +380,7 @@
     private bool _partitionBoundaryDrawerVisible = false;
     private string _boundaryTargetSchema = string.Empty;
     private string _boundaryTargetTable = string.Empty;
+    private string _preSelectedBoundaryKey = string.Empty;
     private bool _splitModalVisible = false;
     private bool _mergeModalVisible = false;
     private bool _switchModalVisible = false;
@@ -880,7 +885,28 @@
         return Task.CompletedTask;
     }
     
-    private void ShowSplitPartition() => _splitModalVisible = true;
+    private void ShowSplitPartition()
+    {
+        if (_selectedTable is null || !_selectedPartitionRows.Any())
+        {
+            Message.Warning("请先选择一个分区");
+            return;
+        }
+
+        // 验证只能选择一个分区
+        if (_selectedPartitionRows.Count() > 1)
+        {
+            Message.Warning("只能选择一个分区进行拆分操作");
+            return;
+        }
+
+        _boundaryTargetSchema = _selectedTable.SchemaName;
+        _boundaryTargetTable = _selectedTable.TableName;
+        // 获取第一个选中的分区边界值
+        var firstSelected = _selectedPartitionRows.First();
+        _preSelectedBoundaryKey = firstSelected.BoundaryValue ?? string.Empty;
+        _splitModalVisible = true;
+    }
     private void ShowMergePartition() => _mergeModalVisible = true;
     private void ShowSwitchPartition() => _switchModalVisible = true;
     private void ViewTableDetails(PartitionTableInfo table) { }
@@ -900,6 +926,29 @@
         _boundaryTargetSchema = string.Empty;
         _boundaryTargetTable = string.Empty;
         return Task.CompletedTask;
+    }
+
+    private Task OnSplitWizardClosedAsync()
+    {
+        _splitModalVisible = false;
+        _boundaryTargetSchema = string.Empty;
+        _boundaryTargetTable = string.Empty;
+        _preSelectedBoundaryKey = string.Empty;
+        return Task.CompletedTask;
+    }
+
+    private async Task OnSplitOperationCompletedAsync()
+    {
+        _splitModalVisible = false;
+        _boundaryTargetSchema = string.Empty;
+        _boundaryTargetTable = string.Empty;
+        _preSelectedBoundaryKey = string.Empty;
+        
+        // 刷新分区详情
+        if (_selectedTable is not null)
+        {
+            await LoadPartitionDetailsAsync(_selectedTable);
+        }
     }
     
     private async Task TestTargetServerConnection()

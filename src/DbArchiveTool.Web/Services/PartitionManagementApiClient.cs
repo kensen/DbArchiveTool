@@ -79,9 +79,8 @@ public sealed class PartitionManagementApiClient
 
     public async Task<Result<PartitionCommandPreviewDto>> PreviewSplitAsync(Guid dataSourceId, SplitPartitionRequest request, CancellationToken cancellationToken = default)
     {
-        var url = $"api/v1/archive-data-sources/{dataSourceId}/partition-commands/preview";
-        var payload = new SplitPartitionApiRequest(request.SchemaName, request.TableName, request.Boundaries, request.BackupConfirmed, request.RequestedBy);
-        var response = await httpClient.PostAsJsonAsync(url, payload, cancellationToken);
+        var url = "api/v1/partition-commands/split/preview";
+        var response = await httpClient.PostAsJsonAsync(url, request, cancellationToken);
         if (response.IsSuccessStatusCode)
         {
             var dto = await response.Content.ReadFromJsonAsync<PartitionCommandPreviewDto>(cancellationToken: cancellationToken);
@@ -99,23 +98,24 @@ public sealed class PartitionManagementApiClient
 
     public async Task<Result<Guid>> ExecuteSplitAsync(Guid dataSourceId, SplitPartitionRequest request, CancellationToken cancellationToken = default)
     {
-        var url = $"api/v1/archive-data-sources/{dataSourceId}/partition-commands/split";
-        var payload = new SplitPartitionApiRequest(request.SchemaName, request.TableName, request.Boundaries, request.BackupConfirmed, request.RequestedBy);
-        var response = await httpClient.PostAsJsonAsync(url, payload, cancellationToken);
+        var url = "api/v1/partition-commands/split/execute";
+        var response = await httpClient.PostAsJsonAsync(url, request, cancellationToken);
         if (response.IsSuccessStatusCode)
         {
-            var id = await response.Content.ReadFromJsonAsync<Guid>(cancellationToken: cancellationToken);
-            if (id == Guid.Empty)
+            var responseData = await response.Content.ReadFromJsonAsync<ExecuteCommandResponse>(cancellationToken: cancellationToken);
+            if (responseData is null || responseData.CommandId == Guid.Empty)
             {
                 return Result<Guid>.Failure("接口未返回有效的命令标识。");
             }
 
-            return Result<Guid>.Success(id);
+            return Result<Guid>.Success(responseData.CommandId);
         }
 
         var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(cancellationToken: cancellationToken);
         return Result<Guid>.Failure(problem?.Detail ?? "创建拆分命令失败");
     }
+
+    private sealed record ExecuteCommandResponse(Guid CommandId);
 
     public async Task<Result> ApproveAsync(Guid dataSourceId, Guid commandId, string approver, CancellationToken cancellationToken = default)
     {
