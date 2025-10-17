@@ -36,14 +36,22 @@
 - [ ] 迁移旧数据展示：`Unknown` 类型兼容显示
 
 ## 5. 前端 - 分区管理子控件
-- [ ] `PartitionBoundaryAddDialog` 组件 + 表单验证 + API 对接
+- [x] `PartitionBoundaryAddDrawer` 组件 + 表单验证 + API 对接（✅ 2025-10-17 完成）
+  - [x] 单值添加表单与提交
+  - [x] 批量生成边界值（日期范围/数值序列）
+  - [x] 边界值预览与删除（Tag 组件集成）
+  - [x] 文件组选择与自动分配
+  - [x] 前端验证（顺序、格式、重复）
+  - [x] 后端 API 调用与错误处理
+  - [x] 成功后刷新分区明细列表
 - [ ] `PartitionSplitWizard` 组件（Step UI、预览、执行调用）
 - [ ] `PartitionMergeWizard` 组件
 - [ ] `PartitionArchiveWizard` 组件（方案选择 + 分区切换实现 + BCP/BulkCopy 占位）
-- [ ] 主页面整合按钮、刷新逻辑、操作权限控制
+- [x] 主页面整合按钮、刷新逻辑、操作权限控制（添加分区值按钮已集成）
 - [ ] 对应的 UI 单元/集成测试（BUnit / Playwright）
 
 ## 6. 测试与文档
+- [x] 更新 `分区边界值功能 TODO.md` 完成情况（✅ 2025-10-17）
 - [ ] 更新 `分区边界值明细管理功能规划设计.md` 实际完成情况
 - [ ] 编写操作手册或 README 附录说明新功能
 - [ ] 新增/更新 CI 管道脚本（若需）确保新测试运行

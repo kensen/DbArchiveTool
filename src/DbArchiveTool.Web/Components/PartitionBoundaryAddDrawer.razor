@@ -1,6 +1,7 @@
 ﻿@using AntDesign
 @using DbArchiveTool.Application.Partitions
 @using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components.Web
 
 <Drawer Visible="Visible"
         Title="@("添加分区边界值")"
@@ -22,7 +23,16 @@
                 </Descriptions>
 
                 <Form Model="_formModel" Layout="FormLayout.Vertical">
-                    <FormItem Label="边界值" Required>
+                    <FormItem Label="生成方式">
+                        <RadioGroup @bind-Value="_generationMode" ButtonStyle="@RadioButtonStyle.Solid">
+                            <Radio RadioButton Value="@GenerationMode.Single">单个值</Radio>
+                            <Radio RadioButton Value="@GenerationMode.Batch">批量生成</Radio>
+                        </RadioGroup>
+                        </FormItem>
+
+                    @if (_generationMode == GenerationMode.Single)
+                    {
+                        <FormItem Label="* 边界值" Required>
                         @if (IsIntegerType)
                         {
                             <AntDesign.InputNumber TValue="long?"
@@ -71,7 +81,114 @@
                                    Placeholder="@GetPlaceholderText()"
                                    Style="width:100%" />
                         }
-                    </FormItem>
+                        </FormItem>
+                    }
+                    else
+                    {
+                        @if (IsIntegerType || IsBigIntType)
+                        {
+                            <FormItem Label="起始值" Required>
+                                <Input @bind-Value="_generator.StartValue"
+                                       Placeholder="起始值"
+                                       Style="width:100%" />
+                            </FormItem>
+                            <FormItem Label="结束值" Required>
+                                <Input @bind-Value="_generator.EndValue"
+                                       Placeholder="结束值"
+                                       Style="width:100%" />
+                            </FormItem>
+                            <FormItem Label="步长" Required>
+                                <Input @bind-Value="_generator.StepValue"
+                                       Placeholder="步长"
+                                       Style="width:100%" />
+                                <div class="form-tip">每次递增的数值</div>
+                            </FormItem>
+                            <FormItem>
+                                <Button Type="@ButtonType.Primary" OnClick="GenerateNumericBoundaries">
+                                    <Icon Type="thunderbolt" /> 生成边界值
+                                </Button>
+                            </FormItem>
+                        }
+                        else if (IsDateType || IsDateTimeType)
+                        {
+                            <FormItem Label="起始日期" Required>
+                                <DatePicker @bind-Value="_generator.StartDate"
+                                            Placeholder="@("选择起始日期")"
+                                            Picker="@DatePickerType.Month"
+                                            Format="yyyy-MM"
+                                            Style="width:100%" />
+                            </FormItem>
+                            <FormItem Label="结束日期" Required>
+                                <DatePicker @bind-Value="_generator.EndDate"
+                                            Placeholder="@("选择结束日期")"
+                                            Picker="@DatePickerType.Month"
+                                            Format="yyyy-MM"
+                                            Style="width:100%" />
+                            </FormItem>
+                            <FormItem Label="生成粒度" Required>
+                                <RadioGroup @bind-Value="_generator.DateGranularity" ButtonStyle="@RadioButtonStyle.Solid">
+                                    <Radio RadioButton Value="@("month")">按月</Radio>
+                                    <Radio RadioButton Value="@("year")">按年</Radio>
+                                </RadioGroup>
+                                <div class="form-tip">按月: 每月1号 | 按年: 每年1月1号</div>
+                            </FormItem>
+                            <FormItem>
+                                <Button Type="@ButtonType.Primary" OnClick="GenerateDateBoundaries">
+                                    <Icon Type="thunderbolt" /> 生成边界值
+                                </Button>
+                            </FormItem>
+                        }
+                        else if (IsTextType)
+                        {
+                            <FormItem Label="边界值">
+                                <div class="text-boundary-input">
+                                    <Input @bind-Value="_generator.TextValue"
+                                           Placeholder="输入文本值后按 Enter 添加"
+                                           Style="flex:1"
+                                           @onkeypress="HandleTextBoundaryKeyPress" />
+                                    <Button Type="@ButtonType.Primary" OnClick="@(() => AddTextBoundary(_generator.TextValue))">添加</Button>
+                                </div>
+                                <div class="form-tip">每次输入一个值, 按回车或点击“添加”按钮</div>
+                            </FormItem>
+                        }
+                        else if (IsGuidType)
+                        {
+                            <FormItem Label="生成数量">
+                                <AntDesign.InputNumber TValue="int"
+                                                       @bind-Value="_generator.GuidCount"
+                                                       Min="1"
+                                                       Max="100"
+                                                       Placeholder="生成GUID数量"
+                                                       Style="width:100%" />
+                                <div class="form-tip">批量生成随机GUID (1-100个)</div>
+                            </FormItem>
+                            <FormItem>
+                                <Button Type="@ButtonType.Primary" OnClick="GenerateGuids">
+                                    <Icon Type="thunderbolt" /> 生成GUID
+                                </Button>
+                            </FormItem>
+                        }
+                        else
+                        {
+                            <Alert Message="当前列类型暂不支持批量生成, 请切换为单个值模式." Type="@AlertType.Warning" ShowIcon="true" />
+                        }
+                    }
+
+                    @if (_generationMode == GenerationMode.Batch && _generatedBoundaries.Count > 0)
+                    {
+                        <Divider>待提交边界值 (@_generatedBoundaries.Count 个)</Divider>
+                        <div class="generated-boundaries-container">
+                            <div class="generated-boundaries">
+                                @foreach (var boundary in _generatedBoundaries.OrderBy(b => b))
+                                {
+                                    <Tag Closable OnClose="@(() => RemoveGeneratedBoundary(boundary))">@boundary</Tag>
+                                }
+                            </div>
+                            <div class="generated-actions">
+                                <Button Size="@ButtonSize.Small" OnClick="ClearGeneratedBoundaries">清空</Button>
+                            </div>
+                        </div>
+                    }
 
                     <FormItem Label="文件组名称">
                         <Select @bind-Value="_formModel.FilegroupName"
@@ -145,9 +262,16 @@
             <Button OnClick="@(async () => await HandleClose())">取消</Button>
             <Button Type="@ButtonType.Primary"
                     Loading="@_submitting"
-                    Disabled="@(_metadata == null || _submitting)"
+                    Disabled="@(_metadata == null || _submitting || (_generationMode == GenerationMode.Batch && _generatedBoundaries.Count == 0))"
                     OnClick="@(async () => await HandleSubmit())">
-                提交
+                @if (_generationMode == GenerationMode.Batch && _generatedBoundaries.Count > 0)
+                {
+                    <span>批量提交 (@_generatedBoundaries.Count 个)</span>
+                }
+                else
+                {
+                    <span>提交</span>
+                }
             </Button>
         </Space>
     </div>
@@ -178,6 +302,33 @@
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
+    }
+
+    .generated-boundaries-container {
+        border: 1px dashed #d9d9d9;
+        border-radius: 4px;
+        padding: 12px;
+        background-color: #fafafa;
+        margin-bottom: 16px;
+    }
+
+    .generated-boundaries {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+        min-height: 32px;
+    }
+
+    .generated-actions {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    .text-boundary-input {
+        display: flex;
+        gap: 8px;
+        width: 100%;
     }
 </style>
 
@@ -222,6 +373,9 @@
     private string? _loadedTable;
     private string? _nextUsedFilegroup;
     private List<string> _availableFilegroups = new();
+    private BoundaryGenerator _generator = new();
+    private readonly List<string> _generatedBoundaries = new();
+    private GenerationMode _generationMode = GenerationMode.Single;
 
     // 类型特定的值
     private long? _intValue;
@@ -235,6 +389,17 @@
     private bool IsDateType => _metadata?.ColumnType.Equals("date", StringComparison.OrdinalIgnoreCase) ?? false;
     private bool IsDateTimeType => _metadata?.ColumnType.Contains("datetime", StringComparison.OrdinalIgnoreCase) ?? false;
     private bool IsGuidType => _metadata?.ColumnType.Equals("uniqueidentifier", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsVarCharType => _metadata?.ColumnType.Equals("varchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsNVarCharType => _metadata?.ColumnType.Equals("nvarchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsCharType => _metadata?.ColumnType.Equals("char", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsNCharType => _metadata?.ColumnType.Equals("nchar", StringComparison.OrdinalIgnoreCase) ?? false;
+    private bool IsTextType =>
+        IsVarCharType ||
+        IsNVarCharType ||
+        IsCharType ||
+        IsNCharType ||
+        (_metadata?.ColumnType.Equals("text", StringComparison.OrdinalIgnoreCase) ?? false) ||
+        (_metadata?.ColumnType.Equals("ntext", StringComparison.OrdinalIgnoreCase) ?? false);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -269,15 +434,23 @@
         {
             var result = await PartitionManagementApi.GetMetadataAsync(DataSourceId, SchemaName, TableName);
             if (result.IsSuccess && result.Value is not null)
-            {
-                _metadata = result.Value;
-                _existingBoundaries = _metadata.Boundaries.OrderByDescending(b => b.Key).ToList();
-                _loadedSchema = SchemaName;
-                _loadedTable = TableName;
-                
-                // 填充可用文件组列表
-                _availableFilegroups = _metadata.FilegroupMappings
-                    .Select(m => m.FilegroupName)
+                {
+                    _metadata = result.Value;
+                    _existingBoundaries = _metadata.Boundaries.OrderByDescending(b => b.Key).ToList();
+                    _loadedSchema = SchemaName;
+                    _loadedTable = TableName;
+                    _formModel = new();
+                    _generator = new();
+                    _generatedBoundaries.Clear();
+                    _generationMode = GenerationMode.Single;
+                    _intValue = null;
+                    _bigIntValue = null;
+                    _dateValue = null;
+                    _dateTimeValue = null;
+                    
+                    // 填充可用文件组列表
+                    _availableFilegroups = _metadata.FilegroupMappings
+                        .Select(m => m.FilegroupName)
                     .Distinct()
                     .OrderBy(n => n)
                     .ToList();
@@ -333,9 +506,200 @@
         _formModel.BoundaryValue = Guid.NewGuid().ToString();
     }
 
+    private void GenerateNumericBoundaries()
+    {
+        if (string.IsNullOrWhiteSpace(_generator.StartValue) ||
+            string.IsNullOrWhiteSpace(_generator.EndValue) ||
+            string.IsNullOrWhiteSpace(_generator.StepValue))
+        {
+            Message.Warning("请填写起始值、结束值和步长");
+            return;
+        }
+
+        if (!long.TryParse(_generator.StartValue, out var start) ||
+            !long.TryParse(_generator.EndValue, out var end) ||
+            !long.TryParse(_generator.StepValue, out var step))
+        {
+            Message.Warning("请输入有效的数值");
+            return;
+        }
+
+        if (step <= 0)
+        {
+            Message.Warning("步长必须大于0");
+            return;
+        }
+
+        if (end <= start)
+        {
+            Message.Warning("结束值必须大于起始值");
+            return;
+        }
+
+        _generatedBoundaries.Clear();
+
+        for (var current = start + step; current <= end; current += step)
+        {
+            var value = current.ToString();
+            if (!_generatedBoundaries.Contains(value) &&
+                !_existingBoundaries.Any(b => b.LiteralValue.Equals(value, StringComparison.Ordinal)))
+            {
+                _generatedBoundaries.Add(value);
+            }
+        }
+
+        if (_generatedBoundaries.Count == 0)
+        {
+            Message.Warning("没有生成新的边界值, 可能已存在或范围设置不合理");
+        }
+        else
+        {
+            Message.Success($"成功生成 {_generatedBoundaries.Count} 个边界值");
+        }
+    }
+
+    private void GenerateDateBoundaries()
+    {
+        if (!_generator.StartDate.HasValue || !_generator.EndDate.HasValue)
+        {
+            Message.Warning("请选择起始与结束日期");
+            return;
+        }
+
+        var start = _generator.StartDate.Value;
+        var end = _generator.EndDate.Value;
+
+        if (end <= start)
+        {
+            Message.Warning("结束日期必须大于起始日期");
+            return;
+        }
+
+        var isYearly = string.Equals(_generator.DateGranularity, "year", StringComparison.OrdinalIgnoreCase);
+        _generatedBoundaries.Clear();
+
+        var current = new DateTime(start.Year, start.Month, 1);
+        while (current <= end)
+        {
+            var boundaryDate = new DateTime(current.Year, current.Month, 1);
+            var value = boundaryDate.ToString("yyyy-MM-dd");
+
+            var existsInGenerated = _generatedBoundaries.Contains(value);
+            var existsInPartition = IsDateType
+                ? _existingBoundaries.Any(b => b.LiteralValue.Equals(value, StringComparison.Ordinal))
+                : _existingBoundaries.Any(b => b.LiteralValue.StartsWith(value, StringComparison.Ordinal));
+
+            if (!existsInGenerated && !existsInPartition)
+            {
+                _generatedBoundaries.Add(value);
+            }
+
+            current = isYearly ? boundaryDate.AddYears(1) : boundaryDate.AddMonths(1);
+        }
+
+        if (_generatedBoundaries.Count == 0)
+        {
+            Message.Warning("没有生成新的边界值, 可能已存在");
+        }
+        else
+        {
+            Message.Success($"成功生成 {_generatedBoundaries.Count} 个边界值");
+        }
+    }
+
+    private void AddTextBoundary(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            Message.Warning("请输入文本值");
+            return;
+        }
+
+        var trimmed = value.Trim();
+
+        if (_generatedBoundaries.Contains(trimmed))
+        {
+            Message.Warning("该值已在待提交列表中");
+            return;
+        }
+
+        if (_existingBoundaries.Any(b => b.LiteralValue.Equals(trimmed, StringComparison.Ordinal)))
+        {
+            Message.Warning("该值已存在于分区边界中");
+            return;
+        }
+
+        _generatedBoundaries.Add(trimmed);
+        _generator.TextValue = string.Empty;
+        Message.Success($"已添加: {trimmed}");
+    }
+
+    private void GenerateGuids()
+    {
+        if (_generator.GuidCount <= 0 || _generator.GuidCount > 100)
+        {
+            Message.Warning("生成数量必须在1-100之间");
+            return;
+        }
+
+        var addedCount = 0;
+        for (var i = 0; i < _generator.GuidCount; i++)
+        {
+            var guid = Guid.NewGuid().ToString();
+            if (_generatedBoundaries.Contains(guid) ||
+                _existingBoundaries.Any(b => b.LiteralValue.Equals(guid, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            _generatedBoundaries.Add(guid);
+            addedCount++;
+        }
+
+        if (addedCount == 0)
+        {
+            Message.Warning("没有生成新的GUID, 可能已存在");
+        }
+        else
+        {
+            Message.Success($"成功生成 {addedCount} 个GUID");
+        }
+    }
+
+    private void RemoveGeneratedBoundary(string boundary)
+    {
+        _generatedBoundaries.Remove(boundary);
+    }
+
+    private void ClearGeneratedBoundaries()
+    {
+        _generatedBoundaries.Clear();
+    }
+
+    private void HandleTextBoundaryKeyPress(KeyboardEventArgs args)
+    {
+        if (string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase))
+        {
+            AddTextBoundary(_generator.TextValue);
+        }
+    }
+
     private async Task HandleSubmit()
     {
-        // 根据类型构建边界值字符串
+        _errorMessage = null;
+
+        if (_generationMode == GenerationMode.Single)
+        {
+            await SubmitSingleBoundaryAsync();
+        }
+        else
+        {
+            await SubmitBatchBoundariesAsync();
+        }
+    }
+
+    private async Task SubmitSingleBoundaryAsync()
+    {
         string? boundaryValue = null;
 
         if (IsIntegerType && _intValue.HasValue)
@@ -366,7 +730,6 @@
         }
 
         _submitting = true;
-        _errorMessage = null;
 
         try
         {
@@ -384,9 +747,8 @@
             if (result.IsSuccess)
             {
                 Message.Success("边界值添加成功!DDL脚本已生成并记录到审计日志。");
-                ResetForm();
                 await OnSuccess.InvokeAsync();
-                await OnClose.InvokeAsync();
+                await HandleClose();
             }
             else
             {
@@ -396,6 +758,68 @@
         catch (Exception ex)
         {
             _errorMessage = $"提交时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task SubmitBatchBoundariesAsync()
+    {
+        if (_generatedBoundaries.Count == 0)
+        {
+            _errorMessage = "请先生成边界值";
+            return;
+        }
+
+        _submitting = true;
+        var successCount = 0;
+        var failCount = 0;
+
+        try
+        {
+            foreach (var boundaryValue in _generatedBoundaries.OrderBy(b => b, StringComparer.Ordinal))
+            {
+                try
+                {
+                    var request = new AddPartitionBoundaryApiRequest(
+                        SchemaName,
+                        TableName,
+                        boundaryValue,
+                        _formModel.FilegroupName,
+                        "WebUser",
+                        _formModel.Notes
+                    );
+
+                    var result = await PartitionManagementApi.AddBoundaryAsync(DataSourceId, request);
+
+                    if (result.IsSuccess)
+                    {
+                        successCount++;
+                    }
+                    else
+                    {
+                        failCount++;
+                    }
+                }
+                catch
+                {
+                    failCount++;
+                }
+            }
+
+            if (successCount > 0)
+            {
+                var failSuffix = failCount > 0 ? $"，{failCount} 个失败" : string.Empty;
+                Message.Success($"成功添加 {successCount} 个边界值{failSuffix}");
+                await OnSuccess.InvokeAsync();
+                await HandleClose();
+            }
+            else
+            {
+                _errorMessage = "批量添加失败";
+            }
         }
         finally
         {
@@ -414,6 +838,9 @@
         // 重置状态
         _metadata = null;
         _formModel = new();
+        _generator = new();
+        _generatedBoundaries.Clear();
+        _generationMode = GenerationMode.Single;
         _intValue = null;
         _bigIntValue = null;
         _dateValue = null;
@@ -422,14 +849,33 @@
         _loadedSchema = null;
         _loadedTable = null;
         _existingBoundaries.Clear();
+        _availableFilegroups.Clear();
+        _nextUsedFilegroup = null;
     }
-
 
     private class AddBoundaryFormModel
     {
         public string? BoundaryValue { get; set; }
         public string? FilegroupName { get; set; }
         public string? Notes { get; set; }
+    }
+
+    private enum GenerationMode
+    {
+        Single,
+        Batch
+    }
+
+    private sealed class BoundaryGenerator
+    {
+        public string StartValue { get; set; } = string.Empty;
+        public string EndValue { get; set; } = string.Empty;
+        public string StepValue { get; set; } = string.Empty;
+        public DateTime? StartDate { get; set; }
+        public DateTime? EndDate { get; set; }
+        public string DateGranularity { get; set; } = "month";
+        public string TextValue { get; set; } = string.Empty;
+        public int GuidCount { get; set; } = 10;
     }
 }
 
