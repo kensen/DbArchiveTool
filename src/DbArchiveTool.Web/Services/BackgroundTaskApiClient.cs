@@ -12,18 +12,18 @@ namespace DbArchiveTool.Web.Services;
 /// <summary>
 /// 调用后端分区执行任务接口的 API 客户端。
 /// </summary>
-public sealed class PartitionExecutionApiClient
+public sealed class BackgroundTaskApiClient
 {
     private readonly HttpClient httpClient;
 
-    public PartitionExecutionApiClient(HttpClient httpClient)
+    public BackgroundTaskApiClient(HttpClient httpClient)
     {
         this.httpClient = httpClient;
     }
 
-    public async Task<StartPartitionExecutionResponse> StartAsync(StartPartitionExecutionRequestModel request, CancellationToken cancellationToken = default)
+    public async Task<StartBackgroundTaskResponse> StartAsync(StartBackgroundTaskRequestModel request, CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.PostAsJsonAsync("api/v1/partition-executions", request, cancellationToken);
+        var response = await httpClient.PostAsJsonAsync("api/v1/background-tasks", request, cancellationToken);
         try
         {
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -33,32 +33,32 @@ public sealed class PartitionExecutionApiClient
             {
                 var errorMessage = TryGetStringProperty(doc.RootElement, "error")
                     ?? $"创建分区执行任务失败（HTTP {(int)response.StatusCode}）。";
-                return StartPartitionExecutionResponse.FromFailure(errorMessage);
+                return StartBackgroundTaskResponse.FromFailure(errorMessage);
             }
 
             // API 返回的是小写的 taskId: { "taskId": "guid-value" }
             if (TryGetStringProperty(doc.RootElement, "taskId") is { Length: > 0 } taskIdStr
                 && Guid.TryParse(taskIdStr, out var taskId))
             {
-                return StartPartitionExecutionResponse.FromSuccess(taskId);
+                return StartBackgroundTaskResponse.FromSuccess(taskId);
             }
 
-            return StartPartitionExecutionResponse.FromFailure("API 返回的任务标识缺失或格式无效。");
+            return StartBackgroundTaskResponse.FromFailure("API 返回的任务标识缺失或格式无效。");
         }
         catch (JsonException)
         {
             // JSON解析失败
-            return StartPartitionExecutionResponse.FromFailure("无法解析 API 返回内容，请检查后端日志。");
+            return StartBackgroundTaskResponse.FromFailure("无法解析 API 返回内容，请检查后端日志。");
         }
     }
 
-    public Task<PartitionExecutionTaskDetailModel?> GetAsync(Guid taskId, CancellationToken cancellationToken = default)
-        => httpClient.GetFromJsonAsync<PartitionExecutionTaskDetailModel>($"api/v1/partition-executions/{taskId}", cancellationToken);
+    public Task<BackgroundTaskDetailModel?> GetAsync(Guid taskId, CancellationToken cancellationToken = default)
+        => httpClient.GetFromJsonAsync<BackgroundTaskDetailModel>($"api/v1/background-tasks/{taskId}", cancellationToken);
 
-    public Task<List<PartitionExecutionTaskSummaryModel>?> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
+    public Task<List<BackgroundTaskSummaryModel>?> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
     {
         var query = dataSourceId.HasValue ? $"?dataSourceId={dataSourceId.Value}&maxCount={maxCount}" : $"?maxCount={maxCount}";
-        return httpClient.GetFromJsonAsync<List<PartitionExecutionTaskSummaryModel>>($"api/v1/partition-executions{query}", cancellationToken);
+        return httpClient.GetFromJsonAsync<List<BackgroundTaskSummaryModel>>($"api/v1/background-tasks{query}", cancellationToken);
     }
 
     /// <summary>
@@ -83,7 +83,7 @@ public sealed class PartitionExecutionApiClient
             query += $"&category={Uri.EscapeDataString(category)}";
         }
 
-        return httpClient.GetFromJsonAsync<GetLogsPagedResponse>($"api/v1/partition-executions/{taskId}/logs{query}", cancellationToken);
+        return httpClient.GetFromJsonAsync<GetLogsPagedResponse>($"api/v1/background-tasks/{taskId}/logs{query}", cancellationToken);
     }
 
     /// <summary>
@@ -100,8 +100,8 @@ public sealed class PartitionExecutionApiClient
         string? reason = null,
         CancellationToken cancellationToken = default)
     {
-        var request = new CancelPartitionExecutionRequestModel(cancelledBy, reason);
-        var response = await httpClient.PostAsJsonAsync($"api/v1/partition-executions/{taskId}/cancel", request, cancellationToken);
+        var request = new CancelBackgroundTaskRequestModel(cancelledBy, reason);
+        var response = await httpClient.PostAsJsonAsync($"api/v1/background-tasks/{taskId}/cancel", request, cancellationToken);
         return response.IsSuccessStatusCode;
     }
 
@@ -116,7 +116,7 @@ public sealed class PartitionExecutionApiClient
         CancellationToken cancellationToken = default)
     {
         return httpClient.GetFromJsonAsync<ExecutionWizardContextModel>(
-            $"api/v1/partition-executions/wizard/context/{configId}",
+            $"api/v1/background-tasks/wizard/context/{configId}",
             cancellationToken);
     }
 
@@ -132,7 +132,7 @@ public sealed class PartitionExecutionApiClient
 }
 
 /// <summary>发起执行的请求模型。</summary>
-public sealed record StartPartitionExecutionRequestModel(
+public sealed record StartBackgroundTaskRequestModel(
     Guid PartitionConfigurationId,
     Guid DataSourceId,
     string RequestedBy,
@@ -143,16 +143,16 @@ public sealed record StartPartitionExecutionRequestModel(
     int Priority = 0);
 
 /// <summary>取消执行的请求模型。</summary>
-public sealed record CancelPartitionExecutionRequestModel(
+public sealed record CancelBackgroundTaskRequestModel(
     string CancelledBy,
     string? Reason = null);
 
 /// <summary>分区执行任务发起响应。</summary>
-public sealed record StartPartitionExecutionResponse(bool Success, Guid? TaskId, string? Error)
+public sealed record StartBackgroundTaskResponse(bool Success, Guid? TaskId, string? Error)
 {
-    public static StartPartitionExecutionResponse FromSuccess(Guid taskId) => new(true, taskId, null);
+    public static StartBackgroundTaskResponse FromSuccess(Guid taskId) => new(true, taskId, null);
 
-    public static StartPartitionExecutionResponse FromFailure(string? error) => new(false, null, error);
+    public static StartBackgroundTaskResponse FromFailure(string? error) => new(false, null, error);
 }
 
 /// <summary>日志分页响应模型。</summary>
@@ -161,10 +161,10 @@ public sealed class GetLogsPagedResponse
     public int PageIndex { get; set; }
     public int PageSize { get; set; }
     public int TotalCount { get; set; }
-    public List<PartitionExecutionLogModel> Items { get; set; } = new();
+    public List<BackgroundTaskLogModel> Items { get; set; } = new();
 }
 
-public class PartitionExecutionTaskSummaryModel
+public class BackgroundTaskSummaryModel
 {
     public Guid Id { get; set; }
     public Guid PartitionConfigurationId { get; set; }
@@ -173,7 +173,7 @@ public class PartitionExecutionTaskSummaryModel
     public string DataSourceName { get; set; } = string.Empty;
     public string SourceTable { get; set; } = string.Empty;
     public string TargetTable { get; set; } = string.Empty;
-    public PartitionExecutionOperationType OperationType { get; set; } = PartitionExecutionOperationType.Unknown;
+    public BackgroundTaskOperationType OperationType { get; set; } = BackgroundTaskOperationType.Unknown;
     public string? ArchiveScheme { get; set; }
     public string? ArchiveTargetConnection { get; set; }
     public string? ArchiveTargetDatabase { get; set; }
@@ -189,13 +189,13 @@ public class PartitionExecutionTaskSummaryModel
     public string? BackupReference { get; set; }
 }
 
-public sealed class PartitionExecutionTaskDetailModel : PartitionExecutionTaskSummaryModel
+public sealed class BackgroundTaskDetailModel : BackgroundTaskSummaryModel
 {
     public string? SummaryJson { get; set; }
     public string? Notes { get; set; }
 }
 
-public sealed class PartitionExecutionLogModel
+public sealed class BackgroundTaskLogModel
 {
     public Guid Id { get; set; }
     public Guid ExecutionTaskId { get; set; }

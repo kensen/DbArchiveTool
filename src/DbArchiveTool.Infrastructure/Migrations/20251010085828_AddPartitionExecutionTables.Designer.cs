@@ -306,7 +306,7 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.ToTable("PartitionCommand", (string)null);
                 });
 
-            modelBuilder.Entity("DbArchiveTool.Domain.Partitions.PartitionExecutionLogEntry", b =>
+            modelBuilder.Entity("DbArchiveTool.Domain.Partitions.BackgroundTaskLogEntry", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -359,10 +359,10 @@ namespace DbArchiveTool.Infrastructure.Migrations
 
                     b.HasIndex("ExecutionTaskId", "LogTimeUtc");
 
-                    b.ToTable("PartitionExecutionLog", (string)null);
+                    b.ToTable("BackgroundTaskLog", (string)null);
                 });
 
-            modelBuilder.Entity("DbArchiveTool.Domain.Partitions.PartitionExecutionTask", b =>
+            modelBuilder.Entity("DbArchiveTool.Domain.Partitions.BackgroundTask", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -446,7 +446,7 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.HasIndex("PartitionConfigurationId", "IsDeleted")
                         .HasFilter("[IsDeleted] = 0");
 
-                    b.ToTable("PartitionExecutionTask", (string)null);
+                    b.ToTable("BackgroundTask", (string)null);
                 });
 
             modelBuilder.Entity("DbArchiveTool.Infrastructure.Persistence.Models.PartitionConfigurationBoundaryEntity", b =>

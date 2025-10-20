@@ -18,10 +18,10 @@ namespace DbArchiveTool.Infrastructure.Executors;
 /// <summary>
 /// 承担分区执行任务校验、脚本生成与实际执行的处理器。
 /// </summary>
-internal sealed class PartitionExecutionProcessor
+internal sealed class BackgroundTaskProcessor
 {
-    private readonly IPartitionExecutionTaskRepository taskRepository;
-    private readonly IPartitionExecutionLogRepository logRepository;
+    private readonly IBackgroundTaskRepository taskRepository;
+    private readonly IBackgroundTaskLogRepository logRepository;
     private readonly IPartitionConfigurationRepository configurationRepository;
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly IPermissionInspectionRepository permissionInspectionRepository;
@@ -29,11 +29,11 @@ internal sealed class PartitionExecutionProcessor
     private readonly IPartitionMetadataRepository metadataRepository;
     private readonly ISqlExecutor sqlExecutor;
     private readonly IDbConnectionFactory connectionFactory;
-    private readonly ILogger<PartitionExecutionProcessor> logger;
+    private readonly ILogger<BackgroundTaskProcessor> logger;
 
-    public PartitionExecutionProcessor(
-        IPartitionExecutionTaskRepository taskRepository,
-        IPartitionExecutionLogRepository logRepository,
+    public BackgroundTaskProcessor(
+        IBackgroundTaskRepository taskRepository,
+        IBackgroundTaskLogRepository logRepository,
         IPartitionConfigurationRepository configurationRepository,
         IDataSourceRepository dataSourceRepository,
         IPermissionInspectionRepository permissionInspectionRepository,
@@ -41,7 +41,7 @@ internal sealed class PartitionExecutionProcessor
         IPartitionMetadataRepository metadataRepository,
         ISqlExecutor sqlExecutor,
         IDbConnectionFactory connectionFactory,
-        ILogger<PartitionExecutionProcessor> logger)
+        ILogger<BackgroundTaskProcessor> logger)
     {
         this.taskRepository = taskRepository;
         this.logRepository = logRepository;
@@ -65,7 +65,7 @@ internal sealed class PartitionExecutionProcessor
         }
 
         // 对于"添加分区边界值"操作,使用简化的执行流程
-        if (task.OperationType == PartitionExecutionOperationType.AddBoundary)
+        if (task.OperationType == BackgroundTaskOperationType.AddBoundary)
         {
             await ExecuteAddBoundaryAsync(task, cancellationToken);
             return;
@@ -83,7 +83,7 @@ internal sealed class PartitionExecutionProcessor
             await AppendLogAsync(task.Id, "Info", "任务启动", $"任务由 {task.RequestedBy} 发起，操作类型：{task.OperationType}。", cancellationToken);
 
             task.MarkValidating("SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Validation, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Validation, "SYSTEM");
             task.UpdateProgress(0.05, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
@@ -91,7 +91,7 @@ internal sealed class PartitionExecutionProcessor
             var stepWatch = Stopwatch.StartNew();
             
             // 判断任务执行模式：基于草稿 vs 基于快照
-            bool useDraftMode = task.OperationType == PartitionExecutionOperationType.Unknown;
+            bool useDraftMode = task.OperationType == BackgroundTaskOperationType.Unknown;
             
             if (useDraftMode)
             {
@@ -132,7 +132,7 @@ internal sealed class PartitionExecutionProcessor
                 return;
             }
 
-            if (configuration.Boundaries.Count == 0 && task.OperationType != PartitionExecutionOperationType.AddBoundary)
+            if (configuration.Boundaries.Count == 0 && task.OperationType != BackgroundTaskOperationType.AddBoundary)
             {
                 await HandleValidationFailureAsync(task, "分区配置中未提供任何边界值。", cancellationToken);
                 return;
@@ -241,7 +241,7 @@ internal sealed class PartitionExecutionProcessor
 
             // ============== 阶段 5: 开始执行 ==============
             task.MarkRunning("SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Executing, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
             task.UpdateProgress(0.35, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
@@ -706,7 +706,7 @@ internal sealed class PartitionExecutionProcessor
             await taskRepository.UpdateAsync(task, cancellationToken);
 
             // ============== 阶段 9: 任务完成 ==============
-            task.UpdatePhase(PartitionExecutionPhases.Finalizing, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
 
             var summary = JsonSerializer.Serialize(new
             {
@@ -758,7 +758,7 @@ internal sealed class PartitionExecutionProcessor
                 }));
 
             // 根据当前状态决定是取消还是标记失败
-            if (task.Status is PartitionExecutionStatus.PendingValidation or PartitionExecutionStatus.Validating or PartitionExecutionStatus.Queued)
+            if (task.Status is BackgroundTaskStatus.PendingValidation or BackgroundTaskStatus.Validating or BackgroundTaskStatus.Queued)
             {
                 task.Cancel("SYSTEM", ex.Message);
             }
@@ -781,7 +781,7 @@ internal sealed class PartitionExecutionProcessor
         }
     }
 
-    private async Task HandleValidationFailureAsync(PartitionExecutionTask task, string reason, CancellationToken cancellationToken)
+    private async Task HandleValidationFailureAsync(BackgroundTask task, string reason, CancellationToken cancellationToken)
     {
         await AppendLogAsync(task.Id, "Warning", "校验失败", reason, cancellationToken);
         task.Cancel("SYSTEM", reason);
@@ -797,7 +797,7 @@ internal sealed class PartitionExecutionProcessor
         long? durationMs = null,
         string? extraJson = null)
     {
-        var entry = PartitionExecutionLogEntry.Create(taskId, category, title, message, durationMs, extraJson);
+        var entry = BackgroundTaskLogEntry.Create(taskId, category, title, message, durationMs, extraJson);
         return logRepository.AddAsync(entry, cancellationToken);
     }
 
@@ -817,7 +817,7 @@ internal sealed class PartitionExecutionProcessor
     /// 从任务的 ConfigurationSnapshot 构建临时的分区配置对象（仅用于执行，不持久化）
     /// </summary>
     private async Task<PartitionConfiguration?> BuildConfigurationFromSnapshotAsync(
-        PartitionExecutionTask task,
+        BackgroundTask task,
         CancellationToken cancellationToken)
     {
         try
@@ -825,11 +825,11 @@ internal sealed class PartitionExecutionProcessor
             // 根据不同的操作类型解析快照
             switch (task.OperationType)
             {
-                case PartitionExecutionOperationType.AddBoundary:
+                case BackgroundTaskOperationType.AddBoundary:
                     return await BuildConfigForAddBoundaryAsync(task, cancellationToken);
                 
-                case PartitionExecutionOperationType.SplitBoundary:
-                case PartitionExecutionOperationType.MergeBoundary:
+                case BackgroundTaskOperationType.SplitBoundary:
+                case BackgroundTaskOperationType.MergeBoundary:
                     // TODO: 后续实现拆分/合并边界的快照解析
                     logger.LogWarning("操作类型 {OperationType} 的快照解析尚未实现。", task.OperationType);
                     return null;
@@ -850,7 +850,7 @@ internal sealed class PartitionExecutionProcessor
     /// 为"添加分区边界"操作构建临时配置对象
     /// </summary>
     private async Task<PartitionConfiguration?> BuildConfigForAddBoundaryAsync(
-        PartitionExecutionTask task,
+        BackgroundTask task,
         CancellationToken cancellationToken)
     {
         // 解析快照JSON
@@ -898,7 +898,7 @@ internal sealed class PartitionExecutionProcessor
     /// <summary>
     /// 执行"添加分区边界值"操作的简化流程
     /// </summary>
-    private async Task ExecuteAddBoundaryAsync(PartitionExecutionTask task, CancellationToken cancellationToken)
+    private async Task ExecuteAddBoundaryAsync(BackgroundTask task, CancellationToken cancellationToken)
     {
         var overallStopwatch = Stopwatch.StartNew();
 
@@ -909,7 +909,7 @@ internal sealed class PartitionExecutionProcessor
                 $"任务由 {task.RequestedBy} 发起,操作类型:添加分区边界值。", cancellationToken);
 
             task.MarkValidating("SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Validation, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Validation, "SYSTEM");
             task.UpdateProgress(0.1, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
@@ -995,7 +995,7 @@ internal sealed class PartitionExecutionProcessor
 
             // ============== 阶段 5: 开始执行DDL ==============
             task.MarkRunning("SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Executing, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
             task.UpdateProgress(0.4, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
@@ -1036,7 +1036,7 @@ internal sealed class PartitionExecutionProcessor
 
                 // 注意: 必须先更新进度再标记失败
                 task.UpdateProgress(1.0, "SYSTEM");
-                task.UpdatePhase(PartitionExecutionPhases.Finalizing, "SYSTEM");
+                task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
                 task.MarkFailed("SYSTEM", ddlEx.Message);
                 await taskRepository.UpdateAsync(task, cancellationToken);
                 return;
@@ -1047,7 +1047,7 @@ internal sealed class PartitionExecutionProcessor
 
             // 注意: 必须先更新进度再标记成功,因为 MarkSucceeded 会改变状态
             task.UpdateProgress(1.0, "SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Finalizing, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
             task.MarkSucceeded("SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
@@ -1075,7 +1075,7 @@ internal sealed class PartitionExecutionProcessor
 
             // 注意: 必须先更新进度再标记失败
             task.UpdateProgress(1.0, "SYSTEM");
-            task.UpdatePhase(PartitionExecutionPhases.Finalizing, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
             task.MarkFailed("SYSTEM", ex.Message);
             await taskRepository.UpdateAsync(task, cancellationToken);
         }

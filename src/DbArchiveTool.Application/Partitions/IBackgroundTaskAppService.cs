@@ -11,19 +11,19 @@ namespace DbArchiveTool.Application.Partitions;
 /// <summary>
 /// 分区执行任务的应用服务接口。
 /// </summary>
-public interface IPartitionExecutionAppService
+public interface IBackgroundTaskAppService
 {
     /// <summary>发起执行任务。</summary>
-    Task<Result<Guid>> StartAsync(StartPartitionExecutionRequest request, CancellationToken cancellationToken = default);
+    Task<Result<Guid>> StartAsync(StartBackgroundTaskRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>获取任务详情。</summary>
-    Task<Result<PartitionExecutionTaskDetailDto>> GetAsync(Guid executionTaskId, CancellationToken cancellationToken = default);
+    Task<Result<BackgroundTaskDetailDto>> GetAsync(Guid executionTaskId, CancellationToken cancellationToken = default);
 
     /// <summary>列出近期任务。</summary>
-    Task<Result<List<PartitionExecutionTaskSummaryDto>>> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default);
+    Task<Result<List<BackgroundTaskSummaryDto>>> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default);
 
     /// <summary>获取任务日志。</summary>
-    Task<Result<List<PartitionExecutionLogDto>>> GetLogsAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default);
+    Task<Result<List<BackgroundTaskLogDto>>> GetLogsAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default);
 
     /// <summary>取消执行任务。</summary>
     Task<Result> CancelAsync(Guid executionTaskId, string cancelledBy, string? reason = null, CancellationToken cancellationToken = default);
@@ -35,7 +35,7 @@ public interface IPartitionExecutionAppService
 /// <summary>
 /// 发起执行任务的请求。
 /// </summary>
-public sealed record StartPartitionExecutionRequest(
+public sealed record StartBackgroundTaskRequest(
     Guid PartitionConfigurationId,
     Guid DataSourceId,
     string RequestedBy,
@@ -48,7 +48,7 @@ public sealed record StartPartitionExecutionRequest(
 /// <summary>
 /// 执行任务摘要。
 /// </summary>
-public class PartitionExecutionTaskSummaryDto
+public class BackgroundTaskSummaryDto
 {
     public Guid Id { get; set; }
     public Guid PartitionConfigurationId { get; set; }
@@ -57,12 +57,12 @@ public class PartitionExecutionTaskSummaryDto
     public string DataSourceName { get; set; } = string.Empty;
     public string SourceTable { get; set; } = string.Empty;
     public string TargetTable { get; set; } = string.Empty;
-    public PartitionExecutionOperationType OperationType { get; set; } = PartitionExecutionOperationType.Unknown;
+    public BackgroundTaskOperationType OperationType { get; set; } = BackgroundTaskOperationType.Unknown;
     public string? ArchiveScheme { get; set; }
     public string? ArchiveTargetConnection { get; set; }
     public string? ArchiveTargetDatabase { get; set; }
     public string? ArchiveTargetTable { get; set; }
-    public PartitionExecutionStatus Status { get; set; }
+    public BackgroundTaskStatus Status { get; set; }
     public string Phase { get; set; } = string.Empty;
     public double Progress { get; set; }
     public DateTime CreatedAtUtc { get; set; }
@@ -76,7 +76,7 @@ public class PartitionExecutionTaskSummaryDto
 /// <summary>
 /// 执行任务详情。
 /// </summary>
-public sealed class PartitionExecutionTaskDetailDto : PartitionExecutionTaskSummaryDto
+public sealed class BackgroundTaskDetailDto : BackgroundTaskSummaryDto
 {
     public string? SummaryJson { get; set; }
     public string? Notes { get; set; }
@@ -85,7 +85,7 @@ public sealed class PartitionExecutionTaskDetailDto : PartitionExecutionTaskSumm
 /// <summary>
 /// 执行日志 DTO。
 /// </summary>
-public sealed class PartitionExecutionLogDto
+public sealed class BackgroundTaskLogDto
 {
     public Guid Id { get; set; }
     public Guid ExecutionTaskId { get; set; }

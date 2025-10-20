@@ -6,13 +6,13 @@ namespace DbArchiveTool.Domain.Partitions;
 /// <summary>
 /// 记录分区执行任务的单条日志。
 /// </summary>
-public sealed class PartitionExecutionLogEntry : BaseEntity
+public sealed class BackgroundTaskLogEntry : BaseEntity
 {
-    private PartitionExecutionLogEntry()
+    private BackgroundTaskLogEntry()
     {
     }
 
-    private PartitionExecutionLogEntry(
+    private BackgroundTaskLogEntry(
         Guid executionTaskId,
         string category,
         string title,
@@ -57,7 +57,7 @@ public sealed class PartitionExecutionLogEntry : BaseEntity
     /// <summary>
     /// 创建日志记录。
     /// </summary>
-    public static PartitionExecutionLogEntry Create(
+    public static BackgroundTaskLogEntry Create(
         Guid executionTaskId,
         string category,
         string title,

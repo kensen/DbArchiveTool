@@ -8,18 +8,18 @@ using Moq;
 
 namespace DbArchiveTool.UnitTests.Partitions;
 
-public class PartitionExecutionAppServiceTests
+public class BackgroundTaskAppServiceTests
 {
     private readonly Mock<IPartitionConfigurationRepository> configurationRepository = new();
-    private readonly Mock<IPartitionExecutionTaskRepository> taskRepository = new();
-    private readonly Mock<IPartitionExecutionLogRepository> logRepository = new();
-    private readonly Mock<IPartitionExecutionDispatcher> dispatcher = new();
+    private readonly Mock<IBackgroundTaskRepository> taskRepository = new();
+    private readonly Mock<IBackgroundTaskLogRepository> logRepository = new();
+    private readonly Mock<IBackgroundTaskDispatcher> dispatcher = new();
     private readonly Mock<IDataSourceRepository> dataSourceRepository = new();
     private readonly Mock<IPermissionInspectionRepository> permissionRepository = new();
     private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
-    private readonly Mock<ILogger<PartitionExecutionAppService>> logger = new();
+    private readonly Mock<ILogger<BackgroundTaskAppService>> logger = new();
 
-    public PartitionExecutionAppServiceTests()
+    public BackgroundTaskAppServiceTests()
     {
         metadataRepository.Setup(x => x.GetTableStatisticsAsync(
                 It.IsAny<Guid>(),
@@ -151,7 +151,7 @@ public class PartitionExecutionAppServiceTests
         Assert.Null(result.Value.TableStatistics);
     }
 
-    private PartitionExecutionAppService CreateService()
+    private BackgroundTaskAppService CreateService()
         => new(configurationRepository.Object,
             taskRepository.Object,
             logRepository.Object,

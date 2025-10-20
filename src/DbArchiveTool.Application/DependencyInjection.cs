@@ -23,7 +23,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionManagementAppService, PartitionManagementAppService>();
         services.AddScoped<IPartitionCommandAppService, PartitionCommandAppService>();
         services.AddScoped<IPartitionConfigurationAppService, PartitionConfigurationAppService>();
-        services.AddScoped<IPartitionExecutionAppService, PartitionExecutionAppService>();
+        services.AddScoped<IBackgroundTaskAppService, BackgroundTaskAppService>();
         services.AddScoped<IPartitionArchiveAppService, PartitionArchiveAppService>();
         services.AddScoped<IPartitionSwitchAppService, PartitionSwitchAppService>();
         services.AddScoped<PartitionValueParser>();

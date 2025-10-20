@@ -5,9 +5,9 @@ using Xunit;
 namespace DbArchiveTool.UnitTests.Partitions;
 
 /// <summary>
-/// PartitionExecutionTask 领域模型单元测试
+/// BackgroundTask 领域模型单元测试
 /// </summary>
-public class PartitionExecutionTaskTests
+public class BackgroundTaskTests
 {
     private const string TestUser = "test-user";
     private static readonly Guid TestConfigId = Guid.NewGuid();
@@ -19,7 +19,7 @@ public class PartitionExecutionTaskTests
     public void Create_ShouldSucceed_WhenParametersValid()
     {
         // Act
-        var task = PartitionExecutionTask.Create(
+        var task = BackgroundTask.Create(
             TestConfigId,
             TestDataSourceId,
             "request-user",
@@ -36,8 +36,8 @@ public class PartitionExecutionTaskTests
         Assert.Equal("backup-20251011", task.BackupReference);
         Assert.Equal("测试任务", task.Notes);
         Assert.Equal(5, task.Priority);
-        Assert.Equal(PartitionExecutionStatus.PendingValidation, task.Status);
-        Assert.Equal(PartitionExecutionPhases.PendingValidation, task.Phase);
+        Assert.Equal(BackgroundTaskStatus.PendingValidation, task.Status);
+        Assert.Equal(BackgroundTaskPhases.PendingValidation, task.Phase);
         Assert.Equal(0d, task.Progress);
         Assert.False(task.IsCompleted);
         Assert.Null(task.QueuedAtUtc);
@@ -51,7 +51,7 @@ public class PartitionExecutionTaskTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentException>(() =>
-            PartitionExecutionTask.Create(Guid.Empty, TestDataSourceId, TestUser, TestUser));
+            BackgroundTask.Create(Guid.Empty, TestDataSourceId, TestUser, TestUser));
 
         Assert.Contains("标识符不能为空", ex.Message);
     }
@@ -61,7 +61,7 @@ public class PartitionExecutionTaskTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentException>(() =>
-            PartitionExecutionTask.Create(TestConfigId, Guid.Empty, TestUser, TestUser));
+            BackgroundTask.Create(TestConfigId, Guid.Empty, TestUser, TestUser));
 
         Assert.Contains("标识符不能为空", ex.Message);
     }
@@ -71,7 +71,7 @@ public class PartitionExecutionTaskTests
     {
         // Act & Assert
         var ex = Assert.Throws<ArgumentException>(() =>
-            PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, "", TestUser));
+            BackgroundTask.Create(TestConfigId, TestDataSourceId, "", TestUser));
 
         Assert.Contains("参数不能为空", ex.Message);
     }
@@ -84,26 +84,26 @@ public class PartitionExecutionTaskTests
     public void StatusFlow_ShouldSucceed_WhenFollowingNormalPath()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act & Assert: PendingValidation → Validating
         task.MarkValidating(TestUser);
-        Assert.Equal(PartitionExecutionStatus.Validating, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Validating, task.Status);
 
         // Act & Assert: Validating → Queued
         task.MarkQueued(TestUser);
-        Assert.Equal(PartitionExecutionStatus.Queued, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Queued, task.Status);
         Assert.NotNull(task.QueuedAtUtc);
 
         // Act & Assert: Queued → Running
         task.MarkRunning(TestUser);
-        Assert.Equal(PartitionExecutionStatus.Running, task.Status);
-        Assert.Equal(PartitionExecutionPhases.Executing, task.Phase);
+        Assert.Equal(BackgroundTaskStatus.Running, task.Status);
+        Assert.Equal(BackgroundTaskPhases.Executing, task.Phase);
         Assert.NotNull(task.StartedAtUtc);
 
         // Act & Assert: Running → Succeeded
         task.MarkSucceeded(TestUser, summaryJson: "{\"total\": 100}");
-        Assert.Equal(PartitionExecutionStatus.Succeeded, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Succeeded, task.Status);
         Assert.Equal(1d, task.Progress);
         Assert.NotNull(task.CompletedAtUtc);
         Assert.Equal("{\"total\": 100}", task.SummaryJson);
@@ -115,13 +115,13 @@ public class PartitionExecutionTaskTests
     public void StatusFlow_ShouldSucceed_WhenDirectQueueFromPending()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act: PendingValidation → Queued (跳过 Validating)
         task.MarkQueued(TestUser);
 
         // Assert
-        Assert.Equal(PartitionExecutionStatus.Queued, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Queued, task.Status);
         Assert.NotNull(task.QueuedAtUtc);
     }
 
@@ -133,7 +133,7 @@ public class PartitionExecutionTaskTests
     public void MarkFailed_ShouldSucceed_WhenRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -142,7 +142,7 @@ public class PartitionExecutionTaskTests
         task.MarkFailed(TestUser, "SQL 执行失败", summaryJson: "{\"error\": \"timeout\"}");
 
         // Assert
-        Assert.Equal(PartitionExecutionStatus.Failed, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Failed, task.Status);
         Assert.Equal("SQL 执行失败", task.FailureReason);
         Assert.Equal("{\"error\": \"timeout\"}", task.SummaryJson);
         Assert.NotNull(task.CompletedAtUtc);
@@ -153,7 +153,7 @@ public class PartitionExecutionTaskTests
     public void MarkFailed_ShouldFail_WhenAlreadySucceeded()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -170,7 +170,7 @@ public class PartitionExecutionTaskTests
     public void MarkFailed_ShouldFail_WhenAlreadyFailed()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -187,7 +187,7 @@ public class PartitionExecutionTaskTests
     public void MarkFailed_ShouldFail_WhenReasonEmpty()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -207,13 +207,13 @@ public class PartitionExecutionTaskTests
     public void Cancel_ShouldSucceed_WhenPendingValidation()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act
         task.Cancel(TestUser, "用户取消");
 
         // Assert
-        Assert.Equal(PartitionExecutionStatus.Cancelled, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Cancelled, task.Status);
         Assert.Equal("用户取消", task.FailureReason);
         Assert.NotNull(task.CompletedAtUtc);
         Assert.True(task.IsCompleted);
@@ -223,14 +223,14 @@ public class PartitionExecutionTaskTests
     public void Cancel_ShouldSucceed_WhenValidating()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
 
         // Act
         task.Cancel(TestUser);
 
         // Assert
-        Assert.Equal(PartitionExecutionStatus.Cancelled, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Cancelled, task.Status);
         Assert.Null(task.FailureReason);
     }
 
@@ -238,7 +238,7 @@ public class PartitionExecutionTaskTests
     public void Cancel_ShouldSucceed_WhenQueued()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
 
@@ -246,7 +246,7 @@ public class PartitionExecutionTaskTests
         task.Cancel(TestUser, "系统维护");
 
         // Assert
-        Assert.Equal(PartitionExecutionStatus.Cancelled, task.Status);
+        Assert.Equal(BackgroundTaskStatus.Cancelled, task.Status);
         Assert.Equal("系统维护", task.FailureReason);
     }
 
@@ -254,7 +254,7 @@ public class PartitionExecutionTaskTests
     public void Cancel_ShouldFail_WhenRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -274,7 +274,7 @@ public class PartitionExecutionTaskTests
     public void MarkValidating_ShouldFail_WhenNotPendingValidation()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
 
         // Act & Assert
@@ -288,7 +288,7 @@ public class PartitionExecutionTaskTests
     public void MarkQueued_ShouldFail_WhenRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -304,7 +304,7 @@ public class PartitionExecutionTaskTests
     public void MarkRunning_ShouldFail_WhenNotQueued()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act & Assert
         var ex = Assert.Throws<InvalidOperationException>(() =>
@@ -317,7 +317,7 @@ public class PartitionExecutionTaskTests
     public void MarkSucceeded_ShouldFail_WhenNotRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
 
@@ -336,7 +336,7 @@ public class PartitionExecutionTaskTests
     public void UpdateHeartbeat_ShouldSucceed()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         var initialHeartbeat = task.LastHeartbeatUtc;
 
         // Act
@@ -351,7 +351,7 @@ public class PartitionExecutionTaskTests
     public void UpdateProgress_ShouldSucceed_WhenRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -367,7 +367,7 @@ public class PartitionExecutionTaskTests
     public void UpdateProgress_ShouldSucceed_WhenValidating()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
 
         // Act
@@ -381,7 +381,7 @@ public class PartitionExecutionTaskTests
     public void UpdateProgress_ShouldClamp_WhenValueOutOfRange()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -399,7 +399,7 @@ public class PartitionExecutionTaskTests
     public void UpdateProgress_ShouldFail_WhenQueued()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
 
@@ -414,26 +414,26 @@ public class PartitionExecutionTaskTests
     public void UpdatePhase_ShouldSucceed()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act
-        task.UpdatePhase(PartitionExecutionPhases.RebuildingIndexes, TestUser);
+        task.UpdatePhase(BackgroundTaskPhases.RebuildingIndexes, TestUser);
 
         // Assert
-        Assert.Equal(PartitionExecutionPhases.RebuildingIndexes, task.Phase);
+        Assert.Equal(BackgroundTaskPhases.RebuildingIndexes, task.Phase);
     }
 
     [Fact]
     public void UpdatePhase_ShouldUseDefault_WhenPhaseEmpty()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
 
         // Act
         task.UpdatePhase("   ", TestUser);
 
         // Assert
-        Assert.Equal(PartitionExecutionPhases.PendingValidation, task.Phase);
+        Assert.Equal(BackgroundTaskPhases.PendingValidation, task.Phase);
     }
 
     #endregion
@@ -444,7 +444,7 @@ public class PartitionExecutionTaskTests
     public void IsCompleted_ShouldReturnTrue_WhenSucceeded()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -458,7 +458,7 @@ public class PartitionExecutionTaskTests
     public void IsCompleted_ShouldReturnTrue_WhenFailed()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -472,7 +472,7 @@ public class PartitionExecutionTaskTests
     public void IsCompleted_ShouldReturnTrue_WhenCancelled()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.Cancel(TestUser);
 
         // Assert
@@ -483,7 +483,7 @@ public class PartitionExecutionTaskTests
     public void IsCompleted_ShouldReturnFalse_WhenRunning()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -496,7 +496,7 @@ public class PartitionExecutionTaskTests
     public void MarkSucceeded_ShouldClearFailureReason()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);
@@ -512,7 +512,7 @@ public class PartitionExecutionTaskTests
     public void MarkSucceeded_ShouldSet_ProgressToOne()
     {
         // Arrange
-        var task = PartitionExecutionTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
+        var task = BackgroundTask.Create(TestConfigId, TestDataSourceId, TestUser, TestUser);
         task.MarkValidating(TestUser);
         task.MarkQueued(TestUser);
         task.MarkRunning(TestUser);

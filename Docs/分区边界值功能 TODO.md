@@ -5,8 +5,8 @@
 **优先级调整(2025-10-17)**:优先完成分区拆分/合并功能,归档功能后置。
 
 ## 0. 基础准备
-- [x] 创建后端/前端共享的操作类型枚举与 DTO 扩展（`PartitionExecutionOperationType` 等）
-- [x] 迁移脚本：为既有 `PartitionExecutionTask` 补充 `OperationType` 默认值
+- [x] 创建后端/前端共享的操作类型枚举与 DTO 扩展（`BackgroundTaskOperationType` 等）
+- [x] 迁移脚本：为既有 `BackgroundTask` 补充 `OperationType` 默认值
     - [ ] 更新任务调度平台 API 契约文档（若有独立仓库请同步 PR）
 
 ## 1. 后端 - 配置边界操作
@@ -19,7 +19,7 @@
 
 ## 2. 后端 - 数据归档（分区切换方案）
 - [x] 新建 `PartitionSwitchInspectionService`，实现结构/索引/约束检查
-- [x] 扩展 `PartitionExecutionTask`：字段 `OperationType`、归档目标信息（已在实体中实现并创建迁移）
+- [x] 扩展 `BackgroundTask`：字段 `OperationType`、归档目标信息（已在实体中实现并创建迁移）
 - [x] `PartitionSwitchAppService`：`InspectAsync` + `ArchiveBySwitchAsync`
 - [x] API：新增 `POST /archive/inspect`、`POST /archive/switch`
 - [x] 执行器：`SwitchPartitionCommandExecutor` + `SqlPartitionCommandExecutor.ExecuteSwitchWithTransactionAsync`
@@ -29,10 +29,10 @@
 ## 3. 后端 - BCP/BulkCopy 预留
 - [x] 定义接口 `PlanArchiveWithBcpAsync`、`PlanArchiveWithBulkCopyAsync`（暂返回规划中）
 - [x] API 返回占位响应并记录用户需求参数
-- [x] 在任务调度平台记录 `Planned` 状态的归档任务（通过 PartitionExecutionTask 支持）
+- [x] 在任务调度平台记录 `Planned` 状态的归档任务（通过 BackgroundTask 支持）
 
 ## 4. 前端 - 公共支持
-- [x] 扩展 `PartitionExecutionTaskSummaryModel`、`PartitionExecutionTaskDetailModel` 新字段
+- [x] 扩展 `BackgroundTaskSummaryModel`、`BackgroundTaskDetailModel` 新字段
 - [x] 任务调度页面 UI：新增“操作类型”“归档方案”“目标实例/库”列
 - [ ] 日志视图新增过滤选项及新的类别渲染
 - [ ] 迁移旧数据展示：`Unknown` 类型兼容显示
@@ -117,3 +117,4 @@
 - ✅ 添加分区值功能已完成并测试通过
 - ✅ **已完成**:分区拆分向导前端组件开发完成并编译通过
 - 📋 **下一步**:分区合并功能(预计明天 10-18 开始)
+

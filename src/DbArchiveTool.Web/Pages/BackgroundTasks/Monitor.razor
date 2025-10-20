@@ -1,5 +1,5 @@
-@page "/partition-executions/monitor"
-@page "/partition-executions/monitor/{DataSourceId:guid}"
+@page "/background-tasks/monitor"
+@page "/background-tasks/monitor/{DataSourceId:guid}"
 @attribute [ReuseTabsPage(Title = "任务调度", Closable = true)]
 @inherits MonitorBase
 
@@ -45,22 +45,22 @@
 
             <!-- 任务列表表格 -->
             <Card Title="任务列表" Size="@CardSize.Small">
-                <Table TItem="PartitionExecutionTaskSummaryModel"
+                <Table TItem="BackgroundTaskSummaryModel"
                        DataSource="@FilteredTasks"
                        Loading="@Loading"
                        Size="@TableSize.Small"
                        Bordered>
-                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="操作类型">
+                    <PropertyColumn TItem="BackgroundTaskSummaryModel" TProp="string" Title="操作类型">
                         <Template>
                             @GetOperationDisplay(context)
                         </Template>
                     </PropertyColumn>
-                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="归档方案">
+                    <PropertyColumn TItem="BackgroundTaskSummaryModel" TProp="string" Title="归档方案">
                         <Template>
                             @(string.IsNullOrWhiteSpace(context.ArchiveScheme) ? "-" : context.ArchiveScheme)
                         </Template>
                     </PropertyColumn>
-                    <PropertyColumn TItem="PartitionExecutionTaskSummaryModel" TProp="string" Title="目标实例/库">
+                    <PropertyColumn TItem="BackgroundTaskSummaryModel" TProp="string" Title="目标实例/库">
                         <Template>
                             @GetArchiveTargetDisplay(context)
                         </Template>

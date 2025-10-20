@@ -11,40 +11,40 @@ namespace DbArchiveTool.Infrastructure.Persistence;
 /// <summary>
 /// EF Core 实现的执行日志仓储。
 /// </summary>
-internal sealed class PartitionExecutionLogRepository : IPartitionExecutionLogRepository
+internal sealed class BackgroundTaskLogRepository : IBackgroundTaskLogRepository
 {
     private readonly ArchiveDbContext context;
 
-    public PartitionExecutionLogRepository(ArchiveDbContext context)
+    public BackgroundTaskLogRepository(ArchiveDbContext context)
     {
         this.context = context;
     }
 
-    public async Task AddAsync(PartitionExecutionLogEntry entry, CancellationToken cancellationToken = default)
+    public async Task AddAsync(BackgroundTaskLogEntry entry, CancellationToken cancellationToken = default)
     {
-        await context.PartitionExecutionLogs.AddAsync(entry, cancellationToken);
+        await context.BackgroundTaskLogs.AddAsync(entry, cancellationToken);
         await context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task AddRangeAsync(IReadOnlyCollection<PartitionExecutionLogEntry> entries, CancellationToken cancellationToken = default)
+    public async Task AddRangeAsync(IReadOnlyCollection<BackgroundTaskLogEntry> entries, CancellationToken cancellationToken = default)
     {
         if (entries is null || entries.Count == 0)
         {
             return;
         }
 
-        await context.PartitionExecutionLogs.AddRangeAsync(entries, cancellationToken);
+        await context.BackgroundTaskLogs.AddRangeAsync(entries, cancellationToken);
         await context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PartitionExecutionLogEntry>> ListAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<BackgroundTaskLogEntry>> ListAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default)
     {
         if (take <= 0)
         {
             take = 200;
         }
 
-        var query = context.PartitionExecutionLogs
+        var query = context.BackgroundTaskLogs
             .Where(x => x.ExecutionTaskId == executionTaskId && !x.IsDeleted);
 
         if (sinceUtc.HasValue)
@@ -59,9 +59,9 @@ internal sealed class PartitionExecutionLogRepository : IPartitionExecutionLogRe
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<PartitionExecutionLogEntry?> GetLatestAsync(Guid executionTaskId, CancellationToken cancellationToken = default)
+    public async Task<BackgroundTaskLogEntry?> GetLatestAsync(Guid executionTaskId, CancellationToken cancellationToken = default)
     {
-        return await context.PartitionExecutionLogs
+        return await context.BackgroundTaskLogs
             .Where(x => x.ExecutionTaskId == executionTaskId && !x.IsDeleted)
             .OrderByDescending(x => x.LogTimeUtc)
             .ThenByDescending(x => x.Id)

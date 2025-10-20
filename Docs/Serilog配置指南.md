@@ -1,4 +1,4 @@
-﻿# Serilog 配置指南
+# Serilog 配置指南
 
 ## 1. 安装 NuGet 包
 
@@ -174,3 +174,4 @@ Select-String -Path "logs\*.log" -Pattern "error|exception" -CaseSensitive:$fals
 # Linux/Mac
 grep -i "error\|exception" logs/*.log
 ```
+

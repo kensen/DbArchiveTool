@@ -7,19 +7,19 @@ namespace DbArchiveTool.Domain.Partitions;
 /// <summary>
 /// 表示针对某个分区配置草稿执行的后台任务。
 /// </summary>
-public sealed class PartitionExecutionTask : AggregateRoot
+public sealed class BackgroundTask : AggregateRoot
 {
-    private const string DefaultPhase = PartitionExecutionPhases.PendingValidation;
+    private const string DefaultPhase = BackgroundTaskPhases.PendingValidation;
     private const string DefaultUser = "PARTITION-EXECUTOR";
 
-    private PartitionExecutionTask()
+    private BackgroundTask()
     {
         Phase = DefaultPhase;
-        Status = PartitionExecutionStatus.PendingValidation;
+        Status = BackgroundTaskStatus.PendingValidation;
         LastHeartbeatUtc = DateTime.UtcNow;
     }
 
-    private PartitionExecutionTask(
+    private BackgroundTask(
         Guid partitionConfigurationId,
         Guid dataSourceId,
         string requestedBy,
@@ -42,7 +42,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>分区所在的归档数据源标识。</summary>
     public Guid DataSourceId { get; private set; }
     /// <summary>任务操作类型，用于调度平台区分。</summary>
-    public PartitionExecutionOperationType OperationType { get; private set; } = PartitionExecutionOperationType.Unknown;
+    public BackgroundTaskOperationType OperationType { get; private set; } = BackgroundTaskOperationType.Unknown;
 
     /// <summary>归档方案名称（如 SWITCH/BCP/BulkCopy）。</summary>
     public string? ArchiveScheme { get; private set; }
@@ -56,7 +56,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
 
 
     /// <summary>任务当前状态。</summary>
-    public PartitionExecutionStatus Status { get; private set; }
+    public BackgroundTaskStatus Status { get; private set; }
 
     /// <summary>业务阶段，例如“校验”“分区执行”“索引重建”。</summary>
     public string Phase { get; private set; } = DefaultPhase;
@@ -101,12 +101,12 @@ public sealed class PartitionExecutionTask : AggregateRoot
     public int Priority { get; private set; }
 
     /// <summary>是否允许后台继续执行（软删除标记仍继承 BaseEntity）。</summary>
-    public bool IsCompleted => Status is PartitionExecutionStatus.Succeeded or PartitionExecutionStatus.Failed or PartitionExecutionStatus.Cancelled;
+    public bool IsCompleted => Status is BackgroundTaskStatus.Succeeded or BackgroundTaskStatus.Failed or BackgroundTaskStatus.Cancelled;
 
     /// <summary>
     /// 创建新的分区执行任务。
     /// </summary>
-    public static PartitionExecutionTask Create(
+    public static BackgroundTask Create(
         Guid partitionConfigurationId,
         Guid dataSourceId,
         string requestedBy,
@@ -114,13 +114,13 @@ public sealed class PartitionExecutionTask : AggregateRoot
         string? backupReference = null,
         string? notes = null,
         int priority = 0,
-        PartitionExecutionOperationType operationType = PartitionExecutionOperationType.Unknown,
+        BackgroundTaskOperationType operationType = BackgroundTaskOperationType.Unknown,
         string? archiveScheme = null,
         string? archiveTargetConnection = null,
         string? archiveTargetDatabase = null,
         string? archiveTargetTable = null)
     {
-        var task = new PartitionExecutionTask(partitionConfigurationId, dataSourceId, requestedBy, backupReference, notes, priority);
+        var task = new BackgroundTask(partitionConfigurationId, dataSourceId, requestedBy, backupReference, notes, priority);
         task.UpdateOperationMetadata(operationType, archiveScheme, archiveTargetConnection, archiveTargetDatabase, archiveTargetTable);
         task.InitializeAudit(createdBy);
         return task;
@@ -129,20 +129,20 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>开始执行前标记为校验中。</summary>
     public void MarkValidating(string user)
     {
-        EnsureStatus(PartitionExecutionStatus.PendingValidation, nameof(MarkValidating));
-        Status = PartitionExecutionStatus.Validating;
+        EnsureStatus(BackgroundTaskStatus.PendingValidation, nameof(MarkValidating));
+        Status = BackgroundTaskStatus.Validating;
         UpdateHeartbeat(user);
     }
 
     /// <summary>校验完成后加入执行队列。</summary>
     public void MarkQueued(string user)
     {
-        if (Status is not PartitionExecutionStatus.PendingValidation and not PartitionExecutionStatus.Validating)
+        if (Status is not BackgroundTaskStatus.PendingValidation and not BackgroundTaskStatus.Validating)
         {
             throw new InvalidOperationException("只有待校验或校验中的任务才能进入队列。");
         }
 
-        Status = PartitionExecutionStatus.Queued;
+        Status = BackgroundTaskStatus.Queued;
         QueuedAtUtc = DateTime.UtcNow;
         UpdateHeartbeat(user);
     }
@@ -150,14 +150,14 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>标记任务进入执行。</summary>
     public void MarkRunning(string user)
     {
-        if (Status is not PartitionExecutionStatus.Queued)
+        if (Status is not BackgroundTaskStatus.Queued)
         {
             throw new InvalidOperationException("只有排队中的任务才能进入执行。");
         }
 
-        Status = PartitionExecutionStatus.Running;
+        Status = BackgroundTaskStatus.Running;
         StartedAtUtc = DateTime.UtcNow;
-        Phase = PartitionExecutionPhases.Executing;
+        Phase = BackgroundTaskPhases.Executing;
         UpdateHeartbeat(user);
     }
 
@@ -185,7 +185,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>更新任务进度。</summary>
     public void UpdateProgress(double progress, string user)
     {
-        if (Status is not PartitionExecutionStatus.Running and not PartitionExecutionStatus.Validating)
+        if (Status is not BackgroundTaskStatus.Running and not BackgroundTaskStatus.Validating)
         {
             throw new InvalidOperationException("仅在校验或执行阶段允许更新进度。");
         }
@@ -204,12 +204,12 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>执行成功。</summary>
     public void MarkSucceeded(string user, string? summaryJson = null)
     {
-        if (Status is not PartitionExecutionStatus.Running and not PartitionExecutionStatus.Validating)
+        if (Status is not BackgroundTaskStatus.Running and not BackgroundTaskStatus.Validating)
         {
             throw new InvalidOperationException("只有执行中的任务才能标记为成功。");
         }
 
-        Status = PartitionExecutionStatus.Succeeded;
+        Status = BackgroundTaskStatus.Succeeded;
         CompletedAtUtc = DateTime.UtcNow;
         Progress = 1d;
         SummaryJson = NormalizeOptional(summaryJson);
@@ -220,12 +220,12 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>执行失败。</summary>
     public void MarkFailed(string user, string reason, string? summaryJson = null)
     {
-        if (Status is PartitionExecutionStatus.Succeeded or PartitionExecutionStatus.Failed or PartitionExecutionStatus.Cancelled)
+        if (Status is BackgroundTaskStatus.Succeeded or BackgroundTaskStatus.Failed or BackgroundTaskStatus.Cancelled)
         {
             throw new InvalidOperationException("任务已结束，无法标记失败。");
         }
 
-        Status = PartitionExecutionStatus.Failed;
+        Status = BackgroundTaskStatus.Failed;
         CompletedAtUtc = DateTime.UtcNow;
         FailureReason = EnsureNotEmpty(reason, nameof(reason));
         SummaryJson = NormalizeOptional(summaryJson);
@@ -235,12 +235,12 @@ public sealed class PartitionExecutionTask : AggregateRoot
     /// <summary>取消任务（仅限排队前）。</summary>
     public void Cancel(string user, string? reason = null)
     {
-        if (Status is not PartitionExecutionStatus.PendingValidation and not PartitionExecutionStatus.Validating and not PartitionExecutionStatus.Queued)
+        if (Status is not BackgroundTaskStatus.PendingValidation and not BackgroundTaskStatus.Validating and not BackgroundTaskStatus.Queued)
         {
             throw new InvalidOperationException("仅允许在排队前取消任务。");
         }
 
-        Status = PartitionExecutionStatus.Cancelled;
+        Status = BackgroundTaskStatus.Cancelled;
         CompletedAtUtc = DateTime.UtcNow;
         FailureReason = NormalizeOptional(reason);
         UpdateHeartbeat(user);
@@ -248,7 +248,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
 
     /// <summary>更新任务操作类型及归档目标信息。</summary>
     public void UpdateOperationMetadata(
-        PartitionExecutionOperationType operationType,
+        BackgroundTaskOperationType operationType,
         string? archiveScheme = null,
         string? archiveTargetConnection = null,
         string? archiveTargetDatabase = null,
@@ -261,7 +261,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
         ArchiveTargetTable = NormalizeOptional(archiveTargetTable);
     }
 
-    private void EnsureStatus(PartitionExecutionStatus expected, string operation)
+    private void EnsureStatus(BackgroundTaskStatus expected, string operation)
     {
         if (Status != expected)
         {
@@ -294,7 +294,7 @@ public sealed class PartitionExecutionTask : AggregateRoot
 }
 
 /// <summary>分区执行任务状态。</summary>
-public enum PartitionExecutionStatus
+public enum BackgroundTaskStatus
 {
     PendingValidation = 0,
     Validating = 1,
@@ -306,7 +306,7 @@ public enum PartitionExecutionStatus
 }
 
 /// <summary>预设的阶段名称常量。</summary>
-public static class PartitionExecutionPhases
+public static class BackgroundTaskPhases
 {
     public const string PendingValidation = "PendingValidation";
     public const string Validation = "Validation";

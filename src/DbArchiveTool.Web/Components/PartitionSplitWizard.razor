@@ -931,7 +931,7 @@
                 "WebUser" // TODO: 从认证上下文获取
             );
 
-            // 1. 执行拆分,创建命令
+            // 执行拆分,创建任务并自动分派到执行队列
             var executeResult = await PartitionManagementApi.ExecuteSplitAsync(DataSourceId, request);
             if (!executeResult.IsSuccess)
             {
@@ -939,19 +939,10 @@
                 return;
             }
 
-            var commandId = executeResult.Value;
+            var taskId = executeResult.Value;
             
-            // 2. 自动审批命令,加入执行队列(参照"添加边界值"的直接执行模式)
-            var approveResult = await PartitionManagementApi.ApproveAsync(DataSourceId, commandId, "WebUser");
-            if (!approveResult.IsSuccess)
-            {
-                _validationError = $"命令已创建(ID: {commandId}),但自动审批失败: {approveResult.Error}。请前往任务监控页面手动审批。";
-                Message.Warning($"命令ID: {commandId}");
-                return;
-            }
-
             var countMsg = boundariesToSplit.Length > 1 ? $"({boundariesToSplit.Length}个边界值)" : string.Empty;
-            Message.Success($"拆分任务{countMsg}已提交并加入执行队列!命令ID: {commandId}");
+            Message.Success($"拆分任务{countMsg}已提交并加入执行队列!任务ID: {taskId}");
             await OnSuccess.InvokeAsync();
             await HandleClose();
         }

@@ -13,11 +13,11 @@ namespace DbArchiveTool.Infrastructure.Executors;
 /// <summary>
 /// 后台消费分区执行任务的 HostedService，支持并发控制、僵尸任务恢复、心跳监控。
 /// </summary>
-internal sealed class PartitionExecutionHostedService : BackgroundService
+internal sealed class BackgroundTaskHostedService : BackgroundService
 {
     private readonly IServiceProvider serviceProvider;
-    private readonly PartitionExecutionQueue queue;
-    private readonly ILogger<PartitionExecutionHostedService> logger;
+    private readonly BackgroundTaskQueue queue;
+    private readonly ILogger<BackgroundTaskHostedService> logger;
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> dataSourceLocks = new();
     private readonly ConcurrentDictionary<Guid, CancellationTokenSource> runningTasks = new();
     private Timer? heartbeatTimer;
@@ -27,10 +27,10 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
     private const int ZombieTaskThresholdMinutes = 5; // 僵尸任务阈值（超过5分钟无心跳）
     private const int MaxConcurrentTasksPerDataSource = 1; // 每个数据源的最大并发任务数
 
-    public PartitionExecutionHostedService(
+    public BackgroundTaskHostedService(
         IServiceProvider serviceProvider,
-        PartitionExecutionQueue queue,
-        ILogger<PartitionExecutionHostedService> logger)
+        BackgroundTaskQueue queue,
+        ILogger<BackgroundTaskHostedService> logger)
     {
         this.serviceProvider = serviceProvider;
         this.queue = queue;
@@ -42,7 +42,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("PartitionExecutionHostedService 正在启动...");
+        logger.LogInformation("BackgroundTaskHostedService 正在启动...");
 
         try
         {
@@ -52,7 +52,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
             // 2. 启动心跳定时器
             StartHeartbeatTimer(stoppingToken);
 
-            logger.LogInformation("PartitionExecutionHostedService 已启动，开始消费任务队列。");
+            logger.LogInformation("BackgroundTaskHostedService 已启动，开始消费任务队列。");
 
             // 3. 持续消费队列
             await foreach (var dispatch in queue.DequeueAsync(stoppingToken))
@@ -101,11 +101,11 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            logger.LogInformation("PartitionExecutionHostedService 收到停止信号，正常退出。");
+            logger.LogInformation("BackgroundTaskHostedService 收到停止信号，正常退出。");
         }
         catch (Exception ex)
         {
-            logger.LogCritical(ex, "PartitionExecutionHostedService 发生严重错误！");
+            logger.LogCritical(ex, "BackgroundTaskHostedService 发生严重错误！");
             throw;
         }
     }
@@ -120,8 +120,8 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
         try
         {
             using var scope = serviceProvider.CreateScope();
-            var taskRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionTaskRepository>();
-            var logRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionLogRepository>();
+            var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
+            var logRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
 
             // 使用 ListStaleAsync 查询心跳超时的任务
             var zombieThreshold = TimeSpan.FromMinutes(ZombieTaskThresholdMinutes);
@@ -140,7 +140,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
                 try
                 {
                     // 记录恢复日志
-                    var logEntry = PartitionExecutionLogEntry.Create(
+                    var logEntry = BackgroundTaskLogEntry.Create(
                         zombie.Id,
                         "Warning",
                         "僵尸任务恢复",
@@ -160,7 +160,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
                         zombie.Id, zombie.LastHeartbeatUtc);
 
                     // 可选：重新入队（根据业务需求决定是否自动重试）
-                    // await queue.EnqueueAsync(new PartitionExecutionDispatch(zombie.Id, zombie.DataSourceId), cancellationToken);
+                    // await queue.EnqueueAsync(new BackgroundTaskDispatch(zombie.Id, zombie.DataSourceId), cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -203,7 +203,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
         try
         {
             using var scope = serviceProvider.CreateScope();
-            var taskRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionTaskRepository>();
+            var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
 
             var taskIds = runningTasks.Keys.ToList();
             var updated = 0;
@@ -241,7 +241,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
     /// 处理单个任务派发
     /// </summary>
     private async Task ProcessDispatchAsync(
-        PartitionExecutionDispatch dispatch,
+        BackgroundTaskDispatch dispatch,
         SemaphoreSlim semaphore,
         CancellationToken cancellationToken)
     {
@@ -254,7 +254,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
                 taskId, dispatch.DataSourceId);
 
             using var scope = serviceProvider.CreateScope();
-            var processor = scope.ServiceProvider.GetRequiredService<PartitionExecutionProcessor>();
+            var processor = scope.ServiceProvider.GetRequiredService<BackgroundTaskProcessor>();
 
             await processor.ExecuteAsync(taskId, cancellationToken);
 
@@ -268,7 +268,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
             try
             {
                 using var scope = serviceProvider.CreateScope();
-                var taskRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionTaskRepository>();
+                var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
@@ -290,15 +290,15 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
             try
             {
                 using var scope = serviceProvider.CreateScope();
-                var taskRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionTaskRepository>();
-                var logRepository = scope.ServiceProvider.GetRequiredService<IPartitionExecutionLogRepository>();
+                var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
+                var logRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
 
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
                 {
                     // 记录错误日志
-                    var logEntry = PartitionExecutionLogEntry.Create(
+                    var logEntry = BackgroundTaskLogEntry.Create(
                         taskId,
                         "Error",
                         "HostedService 异常",
@@ -329,7 +329,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
     /// </summary>
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        logger.LogInformation("PartitionExecutionHostedService 正在停止...");
+        logger.LogInformation("BackgroundTaskHostedService 正在停止...");
 
         // 停止心跳定时器
         heartbeatTimer?.Change(Timeout.Infinite, 0);
@@ -368,7 +368,7 @@ internal sealed class PartitionExecutionHostedService : BackgroundService
         dataSourceLocks.Clear();
         runningTasks.Clear();
 
-        logger.LogInformation("PartitionExecutionHostedService 已停止。");
+        logger.LogInformation("BackgroundTaskHostedService 已停止。");
 
         await base.StopAsync(cancellationToken);
     }

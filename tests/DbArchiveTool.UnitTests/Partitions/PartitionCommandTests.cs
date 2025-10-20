@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -18,6 +19,10 @@ public class PartitionCommandTests
     private readonly Mock<IPartitionCommandRepository> commandRepository = new();
     private readonly Mock<IPartitionCommandScriptGenerator> scriptGenerator = new();
     private readonly Mock<IPartitionCommandQueue> commandQueue = new();
+    private readonly Mock<IBackgroundTaskRepository> backgroundTaskRepository = new();
+    private readonly Mock<IBackgroundTaskLogRepository> backgroundTaskLogRepository = new();
+    private readonly Mock<IPartitionAuditLogRepository> auditLogRepository = new();
+    private readonly Mock<IBackgroundTaskDispatcher> backgroundTaskDispatcher = new();
     private readonly PartitionValueParser parser = new();
     private readonly Mock<ILogger<PartitionCommandAppService>> logger = new();
 
@@ -51,7 +56,7 @@ public class PartitionCommandTests
     }
 
     [Fact]
-    public async Task ExecuteSplitAsync_Should_Persist_Command_With_InvariantPayload()
+    public async Task ExecuteSplitAsync_Should_Create_BackgroundTask_With_InvariantPayload()
     {
         var dataSourceId = Guid.NewGuid();
         var configuration = CreateConfiguration(dataSourceId, new[]
@@ -68,10 +73,22 @@ public class PartitionCommandTests
             .Setup(x => x.GenerateSplitScript(It.IsAny<PartitionConfiguration>(), It.IsAny<IReadOnlyList<PartitionValue>>()))
             .Returns(Result<string>.Success("SPLIT SCRIPT"));
 
-        PartitionCommand? captured = null;
-        commandRepository
-            .Setup(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()))
-            .Callback<PartitionCommand, CancellationToken>((cmd, _) => captured = cmd)
+        BackgroundTask? capturedTask = null;
+        backgroundTaskRepository
+            .Setup(x => x.AddAsync(It.IsAny<BackgroundTask>(), It.IsAny<CancellationToken>()))
+            .Callback<BackgroundTask, CancellationToken>((task, _) => capturedTask = task)
+            .Returns(Task.CompletedTask);
+
+        backgroundTaskLogRepository
+            .Setup(x => x.AddAsync(It.IsAny<BackgroundTaskLogEntry>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        auditLogRepository
+            .Setup(x => x.AddAsync(It.IsAny<PartitionAuditLog>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        backgroundTaskDispatcher
+            .Setup(x => x.DispatchAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         var service = CreateService();
@@ -80,9 +97,11 @@ public class PartitionCommandTests
         var result = await service.ExecuteSplitAsync(request);
 
         Assert.True(result.IsSuccess);
-        Assert.NotNull(captured);
-        Assert.Contains("\"2024-05-01\"", captured!.Payload);
-        Assert.DoesNotContain("'", captured.Payload);
+        Assert.NotNull(capturedTask);
+        Assert.Equal(dataSourceId, capturedTask!.DataSourceId);
+        Assert.Equal(BackgroundTaskOperationType.SplitBoundary, capturedTask.OperationType);
+        Assert.Contains("\"2024-05-01\"", capturedTask.ConfigurationSnapshot ?? string.Empty);
+        commandRepository.Verify(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -248,5 +267,15 @@ public class PartitionCommandTests
     }
 
     private PartitionCommandAppService CreateService()
-        => new(metadataRepository.Object, commandRepository.Object, scriptGenerator.Object, commandQueue.Object, parser, logger.Object);
+        => new(
+            metadataRepository.Object,
+            commandRepository.Object,
+            scriptGenerator.Object,
+            commandQueue.Object,
+            parser,
+            logger.Object,
+            backgroundTaskRepository.Object,
+            backgroundTaskLogRepository.Object,
+            auditLogRepository.Object,
+            backgroundTaskDispatcher.Object);
 }

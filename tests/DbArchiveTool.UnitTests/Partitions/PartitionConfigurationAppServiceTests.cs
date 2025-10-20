@@ -17,8 +17,8 @@ public class PartitionConfigurationAppServiceTests
 {
     private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
     private readonly Mock<IPartitionConfigurationRepository> configurationRepository = new();
-    private readonly Mock<IPartitionExecutionTaskRepository> taskRepository = new();
-    private readonly Mock<IPartitionExecutionLogRepository> logRepository = new();
+    private readonly Mock<IBackgroundTaskRepository> taskRepository = new();
+    private readonly Mock<IBackgroundTaskLogRepository> logRepository = new();
     private readonly Mock<IPartitionAuditLogRepository> auditRepository = new();
     private readonly Mock<IPartitionCommandScriptGenerator> scriptGenerator = new();
     private readonly PartitionValueParser parser = new();
@@ -335,10 +335,10 @@ public class PartitionConfigurationAppServiceTests
         Assert.Equal("FG_ARCHIVE", configuration.ResolveFilegroup(configuration.Boundaries.Last().SortKey));
 
         configurationRepository.Verify(x => x.UpdateAsync(configuration, It.IsAny<CancellationToken>()), Times.Once);
-        taskRepository.Verify(x => x.AddAsync(It.IsAny<PartitionExecutionTask>(), It.IsAny<CancellationToken>()), Times.Once);
-        logRepository.Verify(x => x.AddAsync(It.IsAny<PartitionExecutionLogEntry>(), It.IsAny<CancellationToken>()), Times.Once);
+        taskRepository.Verify(x => x.AddAsync(It.IsAny<BackgroundTask>(), It.IsAny<CancellationToken>()), Times.Once);
+        logRepository.Verify(x => x.AddAsync(It.IsAny<BackgroundTaskLogEntry>(), It.IsAny<CancellationToken>()), Times.Once);
         auditRepository.Verify(x => x.AddAsync(It.Is<PartitionAuditLog>(log =>
-            log.Action == PartitionExecutionOperationType.AddBoundary.ToString() &&
+            log.Action == BackgroundTaskOperationType.AddBoundary.ToString() &&
             log.ResourceId == configuration.Id.ToString() &&
             log.PayloadJson != null &&
             log.PayloadJson.Contains("FG_ARCHIVE", StringComparison.OrdinalIgnoreCase)), It.IsAny<CancellationToken>()), Times.Once);
@@ -419,7 +419,7 @@ public class PartitionConfigurationAppServiceTests
         }
         configurationRepository.Verify(x => x.UpdateAsync(configuration, It.IsAny<CancellationToken>()), Times.AtLeastOnce);
         auditRepository.Verify(x => x.AddAsync(It.Is<PartitionAuditLog>(log =>
-            log.Action == PartitionExecutionOperationType.SplitBoundary.ToString() &&
+            log.Action == BackgroundTaskOperationType.SplitBoundary.ToString() &&
             log.PayloadJson != null &&
             log.PayloadJson.Contains("FG_SPLIT", StringComparison.OrdinalIgnoreCase)), It.IsAny<CancellationToken>()), Times.Once);
     }

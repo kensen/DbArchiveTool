@@ -47,23 +47,23 @@ public static class DependencyInjection
         services.AddScoped<IPartitionMetadataRepository, SqlServerPartitionMetadataRepository>();
         services.AddScoped<IPartitionCommandRepository, PartitionCommandRepository>();
         services.AddScoped<IPartitionConfigurationRepository, PartitionConfigurationRepository>();
-        services.AddScoped<IPartitionExecutionTaskRepository, PartitionExecutionTaskRepository>();
-        services.AddScoped<IPartitionExecutionLogRepository, PartitionExecutionLogRepository>();
+        services.AddScoped<IBackgroundTaskRepository, BackgroundTaskRepository>();
+        services.AddScoped<IBackgroundTaskLogRepository, BackgroundTaskLogRepository>();
         services.AddScoped<IPartitionAuditLogRepository, PartitionAuditLogRepository>();
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<IPermissionInspectionRepository, SqlServerPermissionInspectionRepository>();
         services.AddScoped<IPartitionSwitchInspectionService, PartitionSwitchInspectionService>();
         services.AddScoped<SqlPartitionQueryService>();
         services.AddScoped<SqlPartitionCommandExecutor>();
-        services.AddScoped<PartitionExecutionProcessor>();
+        services.AddScoped<BackgroundTaskProcessor>();
         services.AddScoped<IPartitionCommandExecutor, SplitPartitionCommandExecutor>();
         services.AddScoped<IPartitionCommandExecutor, MergePartitionCommandExecutor>();
         services.AddScoped<IPartitionCommandExecutor, SwitchPartitionCommandExecutor>();
-        services.AddSingleton<PartitionExecutionQueue>();
+        services.AddSingleton<BackgroundTaskQueue>();
         services.AddSingleton<IPartitionCommandQueue, PartitionCommandQueue>();
-        services.AddHostedService<PartitionExecutionHostedService>();
+        services.AddHostedService<BackgroundTaskHostedService>();
         services.AddHostedService<PartitionCommandHostedService>();
-        services.AddSingleton<IPartitionExecutionDispatcher, PartitionExecutionDispatcher>();
+        services.AddSingleton<IBackgroundTaskDispatcher, BackgroundTaskDispatcher>();
 
         // 注册密码加密服务
         services.AddDataProtection();

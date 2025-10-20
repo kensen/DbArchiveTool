@@ -15,15 +15,15 @@ namespace DbArchiveTool.Api.Controllers.V1;
 /// 分区执行任务相关接口。
 /// </summary>
 [ApiController]
-[Route("api/v1/partition-executions")]
-public sealed class PartitionExecutionsController : ControllerBase
+[Route("api/v1/background-tasks")]
+public sealed class BackgroundTasksController : ControllerBase
 {
-    private readonly IPartitionExecutionAppService appService;
-    private readonly ILogger<PartitionExecutionsController> logger;
+    private readonly IBackgroundTaskAppService appService;
+    private readonly ILogger<BackgroundTasksController> logger;
 
-    public PartitionExecutionsController(
-        IPartitionExecutionAppService appService,
-        ILogger<PartitionExecutionsController> logger)
+    public BackgroundTasksController(
+        IBackgroundTaskAppService appService,
+        ILogger<BackgroundTasksController> logger)
     {
         this.appService = appService;
         this.logger = logger;
@@ -41,10 +41,10 @@ public sealed class PartitionExecutionsController : ControllerBase
     [ProducesResponseType(typeof(object), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Start(
-        [FromBody] StartPartitionExecutionDto dto,
+        [FromBody] StartBackgroundTaskDto dto,
         CancellationToken cancellationToken = default)
     {
-        var request = new StartPartitionExecutionRequest(
+        var request = new StartBackgroundTaskRequest(
             dto.PartitionConfigurationId,
             dto.DataSourceId,
             dto.RequestedBy,
@@ -73,7 +73,7 @@ public sealed class PartitionExecutionsController : ControllerBase
     /// <response code="200">成功获取任务详情。</response>
     /// <response code="404">任务不存在。</response>
     [HttpGet("{taskId:guid}")]
-    [ProducesResponseType(typeof(PartitionExecutionTaskDetailDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(BackgroundTaskDetailDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Get(
         Guid taskId,
@@ -99,7 +99,7 @@ public sealed class PartitionExecutionsController : ControllerBase
     /// <response code="200">成功获取任务列表。</response>
     /// <response code="400">请求参数无效。</response>
     [HttpGet]
-    [ProducesResponseType(typeof(List<PartitionExecutionTaskSummaryDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(List<BackgroundTaskSummaryDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> List(
         [FromQuery] Guid? dataSourceId,
@@ -113,7 +113,7 @@ public sealed class PartitionExecutionsController : ControllerBase
             return BadRequest(new { error = result.Error });
         }
 
-        return Ok(result.Value ?? new List<PartitionExecutionTaskSummaryDto>());
+        return Ok(result.Value ?? new List<BackgroundTaskSummaryDto>());
     }
 
     /// <summary>
@@ -128,7 +128,7 @@ public sealed class PartitionExecutionsController : ControllerBase
     /// <response code="200">成功获取日志列表。</response>
     /// <response code="400">请求参数无效。</response>
     [HttpGet("{taskId:guid}/logs")]
-    [ProducesResponseType(typeof(List<PartitionExecutionLogDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(List<BackgroundTaskLogDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> GetLogs(
         Guid taskId,
@@ -161,7 +161,7 @@ public sealed class PartitionExecutionsController : ControllerBase
             return BadRequest(new { error = result.Error });
         }
 
-        var allLogs = result.Value ?? new List<PartitionExecutionLogDto>();
+        var allLogs = result.Value ?? new List<BackgroundTaskLogDto>();
 
         // 分类过滤
         if (!string.IsNullOrWhiteSpace(category))
@@ -201,7 +201,7 @@ public sealed class PartitionExecutionsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Cancel(
         Guid taskId,
-        [FromBody] CancelPartitionExecutionDto dto,
+        [FromBody] CancelBackgroundTaskDto dto,
         CancellationToken cancellationToken = default)
     {
         var result = await appService.CancelAsync(taskId, dto.CancelledBy, dto.Reason, cancellationToken);

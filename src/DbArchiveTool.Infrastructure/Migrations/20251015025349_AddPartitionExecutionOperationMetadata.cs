@@ -12,35 +12,35 @@ namespace DbArchiveTool.Infrastructure.Migrations
         {
             migrationBuilder.AddColumn<string>(
                 name: "ArchiveScheme",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(128)",
                 maxLength: 128,
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
                 name: "ArchiveTargetConnection",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(512)",
                 maxLength: 512,
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
                 name: "ArchiveTargetDatabase",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(128)",
                 maxLength: 128,
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
                 name: "ArchiveTargetTable",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(256)",
                 maxLength: 256,
                 nullable: true);
 
             migrationBuilder.AddColumn<int>(
                 name: "OperationType",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "int",
                 nullable: false,
                 defaultValue: 0);
@@ -51,23 +51,23 @@ namespace DbArchiveTool.Infrastructure.Migrations
         {
             migrationBuilder.DropColumn(
                 name: "ArchiveScheme",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "ArchiveTargetConnection",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "ArchiveTargetDatabase",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "ArchiveTargetTable",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "OperationType",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
         }
     }
 }

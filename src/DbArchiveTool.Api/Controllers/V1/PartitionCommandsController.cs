@@ -71,7 +71,7 @@ public class PartitionCommandsController : ControllerBase
     /// 审批分区命令,审批通过后将自动加入执行队列。
     /// </summary>
     /// <param name="commandId">命令ID</param>
-    /// <param name="approver">审批人</param>
+    /// <param name="request">审批请求,包含审批人信息</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns>操作结果</returns>
     [HttpPost("{commandId:guid}/approve")]
@@ -79,10 +79,10 @@ public class PartitionCommandsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Approve(
         Guid commandId,
-        [FromBody] string approver,
+        [FromBody] ApproveRequest request,
         CancellationToken cancellationToken = default)
     {
-        var result = await appService.ApproveAsync(commandId, approver, cancellationToken);
+        var result = await appService.ApproveAsync(commandId, request.Approver, cancellationToken);
         if (!result.IsSuccess)
         {
             logger.LogWarning("Approve command {CommandId} failed: {Error}", commandId, result.Error);
@@ -139,6 +139,11 @@ public class PartitionCommandsController : ControllerBase
 
         return Ok(result.Value);
     }
+
+    /// <summary>
+    /// 审批请求参数
+    /// </summary>
+    public record ApproveRequest(string Approver);
 
     /// <summary>
     /// 拒绝请求参数

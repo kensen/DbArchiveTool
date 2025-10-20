@@ -7,11 +7,11 @@ using Moq;
 
 namespace DbArchiveTool.IntegrationTests;
 
-public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplicationFactory>
+public class BackgroundTaskContextEndpointTests : IClassFixture<ApiWebApplicationFactory>
 {
     private readonly ApiWebApplicationFactory factory;
 
-    public PartitionExecutionContextEndpointTests(ApiWebApplicationFactory factory)
+    public BackgroundTaskContextEndpointTests(ApiWebApplicationFactory factory)
     {
         this.factory = factory;
     }
@@ -71,7 +71,7 @@ public class PartitionExecutionContextEndpointTests : IClassFixture<ApiWebApplic
             });
         }).CreateClient();
 
-        var response = await client.GetAsync($"api/v1/partition-executions/wizard/context/{configId}");
+        var response = await client.GetAsync($"api/v1/background-tasks/wizard/context/{configId}");
         response.EnsureSuccessStatusCode();
 
         var context = await response.Content.ReadFromJsonAsync<ExecutionWizardContextResponse>();

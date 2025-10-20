@@ -16,26 +16,26 @@ namespace DbArchiveTool.Application.Partitions;
 /// <summary>
 /// 分区执行任务的应用服务实现。
 /// </summary>
-internal sealed class PartitionExecutionAppService : IPartitionExecutionAppService
+internal sealed class BackgroundTaskAppService : IBackgroundTaskAppService
 {
     private readonly IPartitionConfigurationRepository configurationRepository;
-    private readonly IPartitionExecutionTaskRepository taskRepository;
-    private readonly IPartitionExecutionLogRepository logRepository;
-    private readonly IPartitionExecutionDispatcher dispatcher;
+    private readonly IBackgroundTaskRepository taskRepository;
+    private readonly IBackgroundTaskLogRepository logRepository;
+    private readonly IBackgroundTaskDispatcher dispatcher;
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly IPermissionInspectionRepository permissionInspectionRepository;
     private readonly IPartitionMetadataRepository metadataRepository;
-    private readonly ILogger<PartitionExecutionAppService> logger;
+    private readonly ILogger<BackgroundTaskAppService> logger;
 
-    public PartitionExecutionAppService(
+    public BackgroundTaskAppService(
         IPartitionConfigurationRepository configurationRepository,
-        IPartitionExecutionTaskRepository taskRepository,
-        IPartitionExecutionLogRepository logRepository,
-        IPartitionExecutionDispatcher dispatcher,
+        IBackgroundTaskRepository taskRepository,
+        IBackgroundTaskLogRepository logRepository,
+        IBackgroundTaskDispatcher dispatcher,
         IDataSourceRepository dataSourceRepository,
         IPermissionInspectionRepository permissionInspectionRepository,
         IPartitionMetadataRepository metadataRepository,
-        ILogger<PartitionExecutionAppService> logger)
+        ILogger<BackgroundTaskAppService> logger)
     {
         this.configurationRepository = configurationRepository;
         this.taskRepository = taskRepository;
@@ -47,7 +47,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         this.logger = logger;
     }
 
-    public async Task<Result<Guid>> StartAsync(StartPartitionExecutionRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<Guid>> StartAsync(StartBackgroundTaskRequest request, CancellationToken cancellationToken = default)
     {
         // 1. 基础参数校验
         var validation = ValidateStartRequest(request);
@@ -165,7 +165,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         }
 
         // 8. 创建执行任务
-        var task = PartitionExecutionTask.Create(
+        var task = BackgroundTask.Create(
             configuration.Id,
             configuration.ArchiveDataSourceId,
             request.RequestedBy,
@@ -179,7 +179,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             await taskRepository.AddAsync(task, cancellationToken);
 
             // 9. 记录初始日志
-            var initialLog = PartitionExecutionLogEntry.Create(
+            var initialLog = BackgroundTaskLogEntry.Create(
                 task.Id,
                 "Info",
                 "任务创建",
@@ -221,17 +221,17 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         }
     }
 
-    public async Task<Result<PartitionExecutionTaskDetailDto>> GetAsync(Guid executionTaskId, CancellationToken cancellationToken = default)
+    public async Task<Result<BackgroundTaskDetailDto>> GetAsync(Guid executionTaskId, CancellationToken cancellationToken = default)
     {
         if (executionTaskId == Guid.Empty)
         {
-            return Result<PartitionExecutionTaskDetailDto>.Failure("任务标识不能为空。");
+            return Result<BackgroundTaskDetailDto>.Failure("任务标识不能为空。");
         }
 
         var task = await taskRepository.GetByIdAsync(executionTaskId, cancellationToken);
         if (task is null)
         {
-            return Result<PartitionExecutionTaskDetailDto>.Failure("未找到分区执行任务。");
+            return Result<BackgroundTaskDetailDto>.Failure("未找到分区执行任务。");
         }
 
         var dto = MapToDetail(task);
@@ -244,10 +244,10 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
                 : string.Empty;
         }
 
-        return Result<PartitionExecutionTaskDetailDto>.Success(dto);
+        return Result<BackgroundTaskDetailDto>.Success(dto);
     }
 
-    public async Task<Result<List<PartitionExecutionTaskSummaryDto>>> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
+    public async Task<Result<List<BackgroundTaskSummaryDto>>> ListAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
     {
         var tasks = await taskRepository.ListRecentAsync(dataSourceId, maxCount, cancellationToken);
 
@@ -297,14 +297,14 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             return summary;
         }).ToList();
 
-        return Result<List<PartitionExecutionTaskSummaryDto>>.Success(items);
+        return Result<List<BackgroundTaskSummaryDto>>.Success(items);
     }
 
-    public async Task<Result<List<PartitionExecutionLogDto>>> GetLogsAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default)
+    public async Task<Result<List<BackgroundTaskLogDto>>> GetLogsAsync(Guid executionTaskId, DateTime? sinceUtc, int take, CancellationToken cancellationToken = default)
     {
         if (executionTaskId == Guid.Empty)
         {
-            return Result<List<PartitionExecutionLogDto>>.Failure("任务标识不能为空。");
+            return Result<List<BackgroundTaskLogDto>>.Failure("任务标识不能为空。");
         }
 
         if (sinceUtc.HasValue && sinceUtc.Value.Kind != DateTimeKind.Utc)
@@ -313,7 +313,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         }
 
         var logs = await logRepository.ListAsync(executionTaskId, sinceUtc, take, cancellationToken);
-        var dtos = logs.Select(x => new PartitionExecutionLogDto
+        var dtos = logs.Select(x => new BackgroundTaskLogDto
         {
             Id = x.Id,
             ExecutionTaskId = x.ExecutionTaskId,
@@ -325,7 +325,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             ExtraJson = x.ExtraJson
         }).ToList();
 
-        return Result<List<PartitionExecutionLogDto>>.Success(dtos);
+        return Result<List<BackgroundTaskLogDto>>.Success(dtos);
     }
 
     /// <inheritdoc />
@@ -366,7 +366,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         }
 
         // 4. 检查任务是否已在运行(运行中的任务只能标记为取消,可能需要等待当前步骤完成)
-        if (task.Status == PartitionExecutionStatus.Running)
+        if (task.Status == BackgroundTaskStatus.Running)
         {
             logger.LogInformation("任务正在运行，将标记为取消中，等待当前步骤完成: Phase={Phase}", task.Phase);
             // 运行中的任务可以被取消,但需要等待当前步骤完成
@@ -384,7 +384,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         logger.LogInformation("任务取消状态已保存");
 
         // 7. 记录取消日志
-        var log = PartitionExecutionLogEntry.Create(
+        var log = BackgroundTaskLogEntry.Create(
             task.Id,
             "Cancel",
             "任务已取消",
@@ -534,17 +534,17 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
     /// <summary>
     /// 获取状态显示名称(中文)。
     /// </summary>
-    private static string GetStatusDisplayName(PartitionExecutionStatus status)
+    private static string GetStatusDisplayName(BackgroundTaskStatus status)
     {
         return status switch
         {
-            PartitionExecutionStatus.PendingValidation => "待校验",
-            PartitionExecutionStatus.Validating => "校验中",
-            PartitionExecutionStatus.Queued => "已排队",
-            PartitionExecutionStatus.Running => "执行中",
-            PartitionExecutionStatus.Succeeded => "已成功",
-            PartitionExecutionStatus.Failed => "已失败",
-            PartitionExecutionStatus.Cancelled => "已取消",
+            BackgroundTaskStatus.PendingValidation => "待校验",
+            BackgroundTaskStatus.Validating => "校验中",
+            BackgroundTaskStatus.Queued => "已排队",
+            BackgroundTaskStatus.Running => "执行中",
+            BackgroundTaskStatus.Succeeded => "已成功",
+            BackgroundTaskStatus.Failed => "已失败",
+            BackgroundTaskStatus.Cancelled => "已取消",
             _ => status.ToString()
         };
     }
@@ -578,7 +578,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         return null;
     }
 
-    private static Result ValidateStartRequest(StartPartitionExecutionRequest request)
+    private static Result ValidateStartRequest(StartBackgroundTaskRequest request)
     {
         if (request is null)
         {
@@ -608,9 +608,9 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         return Result.Success();
     }
 
-    private static PartitionExecutionTaskSummaryDto MapToSummary(PartitionExecutionTask task)
+    private static BackgroundTaskSummaryDto MapToSummary(BackgroundTask task)
     {
-        return new PartitionExecutionTaskSummaryDto
+        return new BackgroundTaskSummaryDto
         {
             Id = task.Id,
             PartitionConfigurationId = task.PartitionConfigurationId,
@@ -648,10 +648,10 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
             cancellationToken);
     }
 
-    private static PartitionExecutionTaskDetailDto MapToDetail(PartitionExecutionTask task)
+    private static BackgroundTaskDetailDto MapToDetail(BackgroundTask task)
     {
         var summary = MapToSummary(task);
-        return new PartitionExecutionTaskDetailDto
+        return new BackgroundTaskDetailDto
         {
             Id = summary.Id,
             PartitionConfigurationId = summary.PartitionConfigurationId,
@@ -673,7 +673,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
     /// <summary>
     /// 构造权限检查日志，便于在监控页面展示详细权限信息。
     /// </summary>
-    private static PartitionExecutionLogEntry BuildPermissionLog(
+    private static BackgroundTaskLogEntry BuildPermissionLog(
         Guid taskId,
         ArchiveDataSource dataSource,
         string schemaName,
@@ -696,7 +696,7 @@ internal sealed class PartitionExecutionAppService : IPartitionExecutionAppServi
         var category = allGranted ? "Info" : "Error";
         var title = allGranted ? "权限检查通过" : "权限检查失败";
 
-        return PartitionExecutionLogEntry.Create(
+        return BackgroundTaskLogEntry.Create(
             taskId,
             category,
             title,

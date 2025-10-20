@@ -637,7 +637,7 @@
     /// </summary>
     private void NavigateToExecutionWizard(Guid configId)
     {
-        Navigation.NavigateTo($"/partition-executions/wizard/{configId}");
+        Navigation.NavigateTo($"/background-tasks/wizard/{configId}");
     }
 
     /// <summary>
@@ -645,7 +645,7 @@
     /// </summary>
     private void NavigateToTaskMonitor(Guid taskId)
     {
-        Navigation.NavigateTo($"/partition-executions/monitor?taskId={taskId}");
+        Navigation.NavigateTo($"/background-tasks/monitor?taskId={taskId}");
     }
 
     /// <summary>

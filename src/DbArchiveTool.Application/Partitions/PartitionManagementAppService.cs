@@ -13,9 +13,9 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
     private readonly IPartitionMetadataRepository repository;
     private readonly IPartitionCommandScriptGenerator scriptGenerator;
     private readonly IPartitionAuditLogRepository auditLogRepository;
-    private readonly IPartitionExecutionTaskRepository taskRepository;
-    private readonly IPartitionExecutionLogRepository logRepository;
-    private readonly IPartitionExecutionDispatcher dispatcher;
+    private readonly IBackgroundTaskRepository taskRepository;
+    private readonly IBackgroundTaskLogRepository logRepository;
+    private readonly IBackgroundTaskDispatcher dispatcher;
     private readonly PartitionValueParser valueParser;
     private readonly ILogger<PartitionManagementAppService> logger;
 
@@ -23,9 +23,9 @@ internal sealed class PartitionManagementAppService : IPartitionManagementAppSer
         IPartitionMetadataRepository repository,
         IPartitionCommandScriptGenerator scriptGenerator,
         IPartitionAuditLogRepository auditLogRepository,
-        IPartitionExecutionTaskRepository taskRepository,
-        IPartitionExecutionLogRepository logRepository,
-        IPartitionExecutionDispatcher dispatcher,
+        IBackgroundTaskRepository taskRepository,
+        IBackgroundTaskLogRepository logRepository,
+        IBackgroundTaskDispatcher dispatcher,
         PartitionValueParser valueParser,
         ILogger<PartitionManagementAppService> logger)
     {
@@ -208,7 +208,7 @@ END CATCH
             var tempConfigurationId = Guid.NewGuid();
 
             // 8. 创建执行任务
-            var task = PartitionExecutionTask.Create(
+            var task = BackgroundTask.Create(
                 partitionConfigurationId: tempConfigurationId,
                 dataSourceId: request.DataSourceId,
                 requestedBy: request.RequestedBy,
@@ -216,7 +216,7 @@ END CATCH
                 backupReference: null,
                 notes: request.Notes,
                 priority: 0,
-                operationType: PartitionExecutionOperationType.AddBoundary,
+                operationType: BackgroundTaskOperationType.AddBoundary,
                 archiveScheme: null,
                 archiveTargetConnection: null,
                 archiveTargetDatabase: null,
@@ -228,7 +228,7 @@ END CATCH
             await taskRepository.AddAsync(task, cancellationToken);
 
             // 10. 记录初始日志
-            var initialLog = PartitionExecutionLogEntry.Create(
+            var initialLog = BackgroundTaskLogEntry.Create(
                 task.Id,
                 "Info",
                 "任务创建",
@@ -238,7 +238,7 @@ END CATCH
             await logRepository.AddAsync(initialLog, cancellationToken);
 
             // 11. 记录DDL脚本到日志
-            var scriptLog = PartitionExecutionLogEntry.Create(
+            var scriptLog = BackgroundTaskLogEntry.Create(
                 task.Id,
                 "Info",
                 "生成DDL脚本",
@@ -249,7 +249,7 @@ END CATCH
             // 12. 记录审计日志(包含DDL脚本)
             var auditLog = PartitionAuditLog.Create(
                 request.RequestedBy,
-                PartitionExecutionOperationType.AddBoundary.ToString(),
+                BackgroundTaskOperationType.AddBoundary.ToString(),
                 "PartitionedTable",
                 resourceId,
                 summary,

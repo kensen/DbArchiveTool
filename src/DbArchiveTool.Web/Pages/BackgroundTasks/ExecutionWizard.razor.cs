@@ -8,7 +8,7 @@ using System.Linq;
 using OneOf;
 using DbArchiveTool.Web.Core;
 
-namespace DbArchiveTool.Web.Pages.PartitionExecutions;
+namespace DbArchiveTool.Web.Pages.BackgroundTasks;
 
 /// <summary>
 /// 执行向导页面 - Code Behind
@@ -17,7 +17,7 @@ public partial class ExecutionWizard
 {
     [Parameter] public Guid ConfigId { get; set; }
 
-    [Inject] private PartitionExecutionApiClient ApiClient { get; set; } = default!;
+    [Inject] private BackgroundTaskApiClient ApiClient { get; set; } = default!;
     [Inject] private NavigationManager Navigation { get; set; } = default!;
     [Inject] private IMessageService Message { get; set; } = default!;
     [Inject] private ReuseTabsService ReuseTabsService { get; set; } = default!;
@@ -507,7 +507,7 @@ public partial class ExecutionWizard
         Submitting = true;
         try
         {
-            var request = new StartPartitionExecutionRequestModel(
+            var request = new StartBackgroundTaskRequestModel(
                 PartitionConfigurationId: ConfigId,
                 DataSourceId: Context.DataSourceId,
                 RequestedBy: RequestedBy,
@@ -568,7 +568,7 @@ public partial class ExecutionWizard
         try
         {
             // 关闭当前向导标签页（这会自动激活前一个标签）
-            var currentPath = $"/partition-executions/wizard/{ConfigId}";
+            var currentPath = $"/background-tasks/wizard/{ConfigId}";
             ReuseTabsService.ClosePage(currentPath);
         }
         catch (Exception ex)
@@ -581,8 +581,8 @@ public partial class ExecutionWizard
     {
         // 先导航到监控页面
         var targetUrl = ExecutionTaskId.HasValue 
-            ? $"/partition-executions/monitor?taskId={ExecutionTaskId.Value}" 
-            : "/partition-executions/monitor";
+            ? $"/background-tasks/monitor?taskId={ExecutionTaskId.Value}" 
+            : "/background-tasks/monitor";
         
         Navigation.NavigateTo(targetUrl);
         
@@ -598,7 +598,7 @@ public partial class ExecutionWizard
                 try
                 {
                     // 关闭当前向导标签页
-                    var currentPath = $"/partition-executions/wizard/{ConfigId}";
+                    var currentPath = $"/background-tasks/wizard/{ConfigId}";
                     ReuseTabsService.ClosePage(currentPath);
                 }
                 catch (Exception ex)
@@ -633,7 +633,7 @@ public partial class ExecutionWizard
             try
             {
                 // 关闭当前向导标签页
-                var currentPath = $"/partition-executions/wizard/{ConfigId}";
+                var currentPath = $"/background-tasks/wizard/{ConfigId}";
                 ReuseTabsService.ClosePage(currentPath);
             }
             catch (Exception ex)

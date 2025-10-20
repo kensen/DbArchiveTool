@@ -2,8 +2,9 @@
 using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.Logging;
 
-namespace DbArchiveTool.Web.Pages.PartitionExecutions;
+namespace DbArchiveTool.Web.Pages.BackgroundTasks;
 
 /// <summary>
 /// 任务调度监控页面 - 代码逻辑部分
@@ -12,7 +13,7 @@ public partial class MonitorBase : ComponentBase, IDisposable
 {
     #region 依赖注入
 
-    [Inject] private PartitionExecutionApiClient ExecutionApi { get; set; } = default!;
+    [Inject] private BackgroundTaskApiClient ExecutionApi { get; set; } = default!;
     [Inject] private MessageService Message { get; set; } = default!;
     [Inject] private ILogger<MonitorBase> Logger { get; set; } = default!;
 
@@ -48,12 +49,12 @@ public partial class MonitorBase : ComponentBase, IDisposable
     /// <summary>
     /// 所有任务列表
     /// </summary>
-    protected List<PartitionExecutionTaskSummaryModel> AllTasks { get; set; } = new();
+    protected List<BackgroundTaskSummaryModel> AllTasks { get; set; } = new();
 
     /// <summary>
     /// 过滤后的任务列表
     /// </summary>
-    protected List<PartitionExecutionTaskSummaryModel> FilteredTasks { get; set; } = new();
+    protected List<BackgroundTaskSummaryModel> FilteredTasks { get; set; } = new();
 
     /// <summary>
     /// 任务详情抽屉是否可见
@@ -63,7 +64,7 @@ public partial class MonitorBase : ComponentBase, IDisposable
     /// <summary>
     /// 当前查看的任务详情
     /// </summary>
-    protected PartitionExecutionTaskDetailModel? TaskDetail { get; set; }
+    protected BackgroundTaskDetailModel? TaskDetail { get; set; }
 
     /// <summary>
     /// 日志查看抽屉是否可见
@@ -122,7 +123,7 @@ public partial class MonitorBase : ComponentBase, IDisposable
 
             // 调用 API 获取任务列表 (默认获取最近 100 条)
             var tasks = await ExecutionApi.ListAsync(DataSourceId, maxCount: 100);
-            AllTasks = tasks?.ToList() ?? new List<PartitionExecutionTaskSummaryModel>();
+            AllTasks = tasks?.ToList() ?? new List<BackgroundTaskSummaryModel>();
 
             // 应用筛选
             ApplyFilter();
@@ -349,17 +350,17 @@ public partial class MonitorBase : ComponentBase, IDisposable
     /// <summary>
     /// 根据操作类型返回显示文本。
     /// </summary>
-    protected string GetOperationDisplay(PartitionExecutionTaskSummaryModel task)
+    protected string GetOperationDisplay(BackgroundTaskSummaryModel task)
     {
         return task.OperationType switch
         {
-            PartitionExecutionOperationType.AddBoundary => "添加分区值",
-            PartitionExecutionOperationType.SplitBoundary => "拆分分区",
-            PartitionExecutionOperationType.MergeBoundary => "合并分区",
-            PartitionExecutionOperationType.ArchiveSwitch => "归档（分区切换）",
-            PartitionExecutionOperationType.ArchiveBcp => "归档（BCP 规划中）",
-            PartitionExecutionOperationType.ArchiveBulkCopy => "归档（BulkCopy 规划中）",
-            PartitionExecutionOperationType.Custom => "自定义任务",
+            BackgroundTaskOperationType.AddBoundary => "添加分区值",
+            BackgroundTaskOperationType.SplitBoundary => "拆分分区",
+            BackgroundTaskOperationType.MergeBoundary => "合并分区",
+            BackgroundTaskOperationType.ArchiveSwitch => "归档（分区切换）",
+            BackgroundTaskOperationType.ArchiveBcp => "归档（BCP 规划中）",
+            BackgroundTaskOperationType.ArchiveBulkCopy => "归档（BulkCopy 规划中）",
+            BackgroundTaskOperationType.Custom => "自定义任务",
             _ => string.IsNullOrWhiteSpace(task.TaskType) ? "未知任务" : task.TaskType
         };
     }
@@ -367,7 +368,7 @@ public partial class MonitorBase : ComponentBase, IDisposable
     /// <summary>
     /// 获取归档目标显示信息。
     /// </summary>
-    protected string GetArchiveTargetDisplay(PartitionExecutionTaskSummaryModel task)
+    protected string GetArchiveTargetDisplay(BackgroundTaskSummaryModel task)
     {
         if (string.IsNullOrWhiteSpace(task.ArchiveTargetDatabase) &&
             string.IsNullOrWhiteSpace(task.ArchiveTargetTable))

@@ -6,7 +6,7 @@ namespace DbArchiveTool.Shared.Partitions;
 /// 标识分区执行/归档任务的操作类型，便于任务调度平台与前端展示。
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter))]
-public enum PartitionExecutionOperationType
+public enum BackgroundTaskOperationType
 {
     Unknown = 0,
 

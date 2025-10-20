@@ -119,16 +119,80 @@ public sealed class PartitionManagementApiClient
 
     public async Task<Result> ApproveAsync(Guid dataSourceId, Guid commandId, string approver, CancellationToken cancellationToken = default)
     {
-        var url = $"api/v1/archive-data-sources/{dataSourceId}/partition-commands/{commandId}/approve";
-        var response = await httpClient.PostAsJsonAsync(url, new ApprovePartitionCommandApiRequest(approver), cancellationToken);
-        return response.IsSuccessStatusCode ? Result.Success() : Result.Failure("命令审批失败");
+        var url = $"api/v1/partition-commands/{commandId}/approve";
+        
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync(url, new ApprovePartitionCommandApiRequest(approver), cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                return Result.Success();
+            }
+
+            // 读取详细错误信息
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            try
+            {
+                var problem = System.Text.Json.JsonSerializer.Deserialize<HttpValidationProblemDetails>(responseText);
+                if (!string.IsNullOrWhiteSpace(problem?.Detail))
+                {
+                    return Result.Failure(problem.Detail);
+                }
+            }
+            catch
+            {
+                // 忽略 JSON 解析失败
+            }
+
+            var errorMessage = string.IsNullOrWhiteSpace(responseText)
+                ? $"命令审批失败 ({(int)response.StatusCode} {response.ReasonPhrase})"
+                : responseText;
+
+            return Result.Failure(errorMessage);
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure($"调用审批接口失败: {ex.Message}");
+        }
     }
 
     public async Task<Result> RejectAsync(Guid dataSourceId, Guid commandId, string approver, string reason, CancellationToken cancellationToken = default)
     {
-        var url = $"api/v1/archive-data-sources/{dataSourceId}/partition-commands/{commandId}/reject";
-        var response = await httpClient.PostAsJsonAsync(url, new RejectPartitionCommandApiRequest(approver, reason), cancellationToken);
-        return response.IsSuccessStatusCode ? Result.Success() : Result.Failure("命令拒绝失败");
+        var url = $"api/v1/partition-commands/{commandId}/reject";
+        
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync(url, new RejectPartitionCommandApiRequest(approver, reason), cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                return Result.Success();
+            }
+
+            // 读取详细错误信息
+            var responseText = await response.Content.ReadAsStringAsync(cancellationToken);
+            try
+            {
+                var problem = System.Text.Json.JsonSerializer.Deserialize<HttpValidationProblemDetails>(responseText);
+                if (!string.IsNullOrWhiteSpace(problem?.Detail))
+                {
+                    return Result.Failure(problem.Detail);
+                }
+            }
+            catch
+            {
+                // 忽略 JSON 解析失败
+            }
+
+            var errorMessage = string.IsNullOrWhiteSpace(responseText)
+                ? $"命令拒绝失败 ({(int)response.StatusCode} {response.ReasonPhrase})"
+                : responseText;
+
+            return Result.Failure(errorMessage);
+        }
+        catch (Exception ex)
+        {
+            return Result.Failure($"调用拒绝接口失败: {ex.Message}");
+        }
     }
 
     public async Task<Result> AddBoundaryAsync(Guid dataSourceId, AddPartitionBoundaryApiRequest request, CancellationToken cancellationToken = default)

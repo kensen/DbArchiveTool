@@ -167,7 +167,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
 
         var audit = PartitionAuditLog.Create(
             request.RequestedBy,
-            PartitionExecutionOperationType.ArchiveSwitch.ToString(),
+            BackgroundTaskOperationType.ArchiveSwitch.ToString(),
             nameof(PartitionConfiguration),
             configuration.Id.ToString(),
             "提交分区切换任务",

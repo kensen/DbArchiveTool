@@ -13,13 +13,13 @@ namespace DbArchiveTool.Infrastructure.Migrations
         {
             migrationBuilder.AddColumn<string>(
                 name: "ConfigurationSnapshot",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(max)",
                 nullable: true);
 
             migrationBuilder.AddColumn<string>(
                 name: "LastCheckpoint",
-                table: "PartitionExecutionTask",
+                table: "BackgroundTask",
                 type: "nvarchar(max)",
                 nullable: true);
 
@@ -42,11 +42,11 @@ namespace DbArchiveTool.Infrastructure.Migrations
         {
             migrationBuilder.DropColumn(
                 name: "ConfigurationSnapshot",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "LastCheckpoint",
-                table: "PartitionExecutionTask");
+                table: "BackgroundTask");
 
             migrationBuilder.DropColumn(
                 name: "ExecutionStage",

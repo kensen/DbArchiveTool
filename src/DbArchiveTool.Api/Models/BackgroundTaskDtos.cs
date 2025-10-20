@@ -5,7 +5,7 @@ namespace DbArchiveTool.Api.Models;
 /// <summary>
 /// 发起分区执行的请求体。
 /// </summary>
-public sealed record StartPartitionExecutionDto(
+public sealed record StartBackgroundTaskDto(
     Guid PartitionConfigurationId,
     Guid DataSourceId,
     string RequestedBy,
@@ -18,6 +18,6 @@ public sealed record StartPartitionExecutionDto(
 /// <summary>
 /// 取消分区执行任务的请求体。
 /// </summary>
-public sealed record CancelPartitionExecutionDto(
+public sealed record CancelBackgroundTaskDto(
     string CancelledBy,
     string? Reason = null);

@@ -18,6 +18,10 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
     private readonly IPartitionCommandQueue commandQueue;
     private readonly PartitionValueParser parser;
     private readonly ILogger<PartitionCommandAppService> logger;
+    private readonly IBackgroundTaskRepository taskRepository;
+    private readonly IBackgroundTaskLogRepository logRepository;
+    private readonly IPartitionAuditLogRepository auditLogRepository;
+    private readonly IBackgroundTaskDispatcher dispatcher;
 
     public PartitionCommandAppService(
         IPartitionMetadataRepository metadataRepository,
@@ -25,7 +29,11 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         IPartitionCommandScriptGenerator scriptGenerator,
         IPartitionCommandQueue commandQueue,
         PartitionValueParser parser,
-        ILogger<PartitionCommandAppService> logger)
+        ILogger<PartitionCommandAppService> logger,
+        IBackgroundTaskRepository taskRepository,
+        IBackgroundTaskLogRepository logRepository,
+        IPartitionAuditLogRepository auditLogRepository,
+        IBackgroundTaskDispatcher dispatcher)
     {
         this.metadataRepository = metadataRepository;
         this.commandRepository = commandRepository;
@@ -33,6 +41,10 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         this.commandQueue = commandQueue;
         this.parser = parser;
         this.logger = logger;
+        this.taskRepository = taskRepository;
+        this.logRepository = logRepository;
+        this.auditLogRepository = auditLogRepository;
+        this.dispatcher = dispatcher;
     }
 
     /// <inheritdoc />
@@ -94,19 +106,100 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         }
 
         var script = preview.Value!.Script;
+        var boundaryValues = values.Value!.Select(v => v.ToInvariantString()).ToArray();
+        
+        // 准备任务上下文
+        var resourceId = $"{request.DataSourceId}/{request.SchemaName}/{request.TableName}";
+        var boundariesDisplay = boundaryValues.Length == 1 
+            ? $"'{boundaryValues[0]}'" 
+            : $"{boundaryValues.Length} 个边界值 ({string.Join(", ", boundaryValues.Take(3))}{(boundaryValues.Length > 3 ? "..." : "")})";
+        var summary = $"拆分表 {request.SchemaName}.{request.TableName} 的分区边界: {boundariesDisplay}";
+        
         var payload = JsonSerializer.Serialize(new
         {
             request.SchemaName,
             request.TableName,
-            Boundaries = values.Value!.Select(v => v.ToInvariantString()).ToArray()
+            configuration.PartitionFunctionName,
+            configuration.PartitionSchemeName,
+            Boundaries = boundaryValues,
+            DdlScript = script,
+            request.BackupConfirmed
         });
 
-        var command = PartitionCommand.CreateSplit(request.DataSourceId, request.SchemaName, request.TableName, script, payload, request.RequestedBy);
+        try
+        {
+            // 创建临时的分区配置ID（用于关联任务）
+            var tempConfigurationId = Guid.NewGuid();
 
-        await commandRepository.AddAsync(command, cancellationToken);
-        logger.LogInformation("Partition split command {CommandId} created for {Schema}.{Table}", command.Id, request.SchemaName, request.TableName);
+            // 创建执行任务 (使用 SplitBoundary 操作类型)
+            var task = BackgroundTask.Create(
+                partitionConfigurationId: tempConfigurationId,
+                dataSourceId: request.DataSourceId,
+                requestedBy: request.RequestedBy,
+                createdBy: request.RequestedBy,
+                backupReference: null,
+                notes: $"批量拆分 {boundaryValues.Length} 个边界值",
+                priority: 0,
+                operationType: Shared.Partitions.BackgroundTaskOperationType.SplitBoundary,
+                archiveScheme: null,
+                archiveTargetConnection: null,
+                archiveTargetDatabase: null,
+                archiveTargetTable: null);
 
-        return Result<Guid>.Success(command.Id);
+            // 保存配置快照
+            task.SaveConfigurationSnapshot(payload, request.RequestedBy);
+
+            await taskRepository.AddAsync(task, cancellationToken);
+
+            // 记录初始日志
+            var initialLog = BackgroundTaskLogEntry.Create(
+                task.Id,
+                "Info",
+                "任务创建",
+                $"由 {request.RequestedBy} 发起的分区拆分任务已创建。" +
+                $"表：{request.SchemaName}.{request.TableName}，边界值数量：{boundaryValues.Length}");
+
+            await logRepository.AddAsync(initialLog, cancellationToken);
+
+            // 记录DDL脚本到日志
+            var scriptLog = BackgroundTaskLogEntry.Create(
+                task.Id,
+                "Info",
+                "生成DDL脚本",
+                $"已生成 ALTER PARTITION FUNCTION 脚本，长度: {script.Length} 字符，包含 {boundaryValues.Length} 个 SPLIT 操作");
+
+            await logRepository.AddAsync(scriptLog, cancellationToken);
+
+            // 记录审计日志
+            var auditLog = PartitionAuditLog.Create(
+                request.RequestedBy,
+                Shared.Partitions.BackgroundTaskOperationType.SplitBoundary.ToString(),
+                "PartitionedTable",
+                resourceId,
+                summary,
+                payload,
+                "Queued",
+                script);
+
+            await auditLogRepository.AddAsync(auditLog, cancellationToken);
+
+            // 将任务分派到执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
+            logger.LogInformation(
+                "Successfully created execution task {TaskId} for splitting boundaries in table {Schema}.{Table}, boundary count: {Count}",
+                task.Id,
+                request.SchemaName,
+                request.TableName,
+                boundaryValues.Length);
+
+            return Result<Guid>.Success(task.Id);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create split task for table {Schema}.{Table}", request.SchemaName, request.TableName);
+            return Result<Guid>.Failure("创建拆分任务时发生异常,请稍后重试。");
+        }
     }
 
     public async Task<Result> ApproveAsync(Guid commandId, string approver, CancellationToken cancellationToken = default)

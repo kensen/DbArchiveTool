@@ -12,7 +12,7 @@ namespace DbArchiveTool.Infrastructure.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
-                name: "PartitionExecutionLog",
+                name: "BackgroundTaskLog",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -31,11 +31,11 @@ namespace DbArchiveTool.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_PartitionExecutionLog", x => x.Id);
+                    table.PrimaryKey("PK_BackgroundTaskLog", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
-                name: "PartitionExecutionTask",
+                name: "BackgroundTask",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -62,22 +62,22 @@ namespace DbArchiveTool.Infrastructure.Migrations
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_PartitionExecutionTask", x => x.Id);
+                    table.PrimaryKey("PK_BackgroundTask", x => x.Id);
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_PartitionExecutionLog_ExecutionTaskId_LogTimeUtc",
-                table: "PartitionExecutionLog",
+                name: "IX_BackgroundTaskLog_ExecutionTaskId_LogTimeUtc",
+                table: "BackgroundTaskLog",
                 columns: new[] { "ExecutionTaskId", "LogTimeUtc" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_PartitionExecutionTask_DataSourceId_Status",
-                table: "PartitionExecutionTask",
+                name: "IX_BackgroundTask_DataSourceId_Status",
+                table: "BackgroundTask",
                 columns: new[] { "DataSourceId", "Status" });
 
             migrationBuilder.CreateIndex(
-                name: "IX_PartitionExecutionTask_PartitionConfigurationId_IsDeleted",
-                table: "PartitionExecutionTask",
+                name: "IX_BackgroundTask_PartitionConfigurationId_IsDeleted",
+                table: "BackgroundTask",
                 columns: new[] { "PartitionConfigurationId", "IsDeleted" },
                 filter: "[IsDeleted] = 0");
         }
@@ -86,10 +86,10 @@ namespace DbArchiveTool.Infrastructure.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "PartitionExecutionLog");
+                name: "BackgroundTaskLog");
 
             migrationBuilder.DropTable(
-                name: "PartitionExecutionTask");
+                name: "BackgroundTask");
         }
     }
 }

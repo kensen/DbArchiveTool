@@ -19,8 +19,8 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
     public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
     public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
-    public DbSet<PartitionExecutionTask> PartitionExecutionTasks => Set<PartitionExecutionTask>();
-    public DbSet<PartitionExecutionLogEntry> PartitionExecutionLogs => Set<PartitionExecutionLogEntry>();
+    public DbSet<BackgroundTask> BackgroundTasks => Set<BackgroundTask>();
+    public DbSet<BackgroundTaskLogEntry> BackgroundTaskLogs => Set<BackgroundTaskLogEntry>();
     public DbSet<PartitionAuditLog> PartitionAuditLogs => Set<PartitionAuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -144,15 +144,15 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.FilegroupName).IsRequired().HasMaxLength(128);
         });
 
-        modelBuilder.Entity<PartitionExecutionTask>(builder =>
+        modelBuilder.Entity<BackgroundTask>(builder =>
         {
-            builder.ToTable("PartitionExecutionTask");
+            builder.ToTable("BackgroundTask");
             builder.HasKey(x => x.Id);
             builder.Property(x => x.PartitionConfigurationId).IsRequired();
             builder.Property(x => x.DataSourceId).IsRequired();
             builder.Property(x => x.OperationType)
                 .HasConversion<int>()
-                .HasDefaultValue(PartitionExecutionOperationType.Unknown)
+                .HasDefaultValue(BackgroundTaskOperationType.Unknown)
                 .IsRequired();
             builder.Property(x => x.ArchiveScheme).HasMaxLength(128);
             builder.Property(x => x.ArchiveTargetConnection).HasMaxLength(512);
@@ -176,9 +176,9 @@ public sealed class ArchiveDbContext : DbContext
                 .HasFilter("[IsDeleted] = 0");
         });
 
-        modelBuilder.Entity<PartitionExecutionLogEntry>(builder =>
+        modelBuilder.Entity<BackgroundTaskLogEntry>(builder =>
         {
-            builder.ToTable("PartitionExecutionLog");
+            builder.ToTable("BackgroundTaskLog");
             builder.HasKey(x => x.Id);
             builder.Property(x => x.ExecutionTaskId).IsRequired();
             builder.Property(x => x.LogTimeUtc).IsRequired();

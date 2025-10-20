@@ -11,51 +11,51 @@ namespace DbArchiveTool.Infrastructure.Persistence;
 /// <summary>
 /// EF Core 实现的分区执行任务仓储。
 /// </summary>
-internal sealed class PartitionExecutionTaskRepository : IPartitionExecutionTaskRepository
+internal sealed class BackgroundTaskRepository : IBackgroundTaskRepository
 {
-    private static readonly PartitionExecutionStatus[] ActiveStatuses =
+    private static readonly BackgroundTaskStatus[] ActiveStatuses =
     {
-        PartitionExecutionStatus.PendingValidation,
-        PartitionExecutionStatus.Validating,
-        PartitionExecutionStatus.Queued,
-        PartitionExecutionStatus.Running
+        BackgroundTaskStatus.PendingValidation,
+        BackgroundTaskStatus.Validating,
+        BackgroundTaskStatus.Queued,
+        BackgroundTaskStatus.Running
     };
 
-    private static readonly PartitionExecutionStatus[] MonitorStatuses =
+    private static readonly BackgroundTaskStatus[] MonitorStatuses =
     {
-        PartitionExecutionStatus.Validating,
-        PartitionExecutionStatus.Queued,
-        PartitionExecutionStatus.Running
+        BackgroundTaskStatus.Validating,
+        BackgroundTaskStatus.Queued,
+        BackgroundTaskStatus.Running
     };
 
     private readonly ArchiveDbContext context;
 
-    public PartitionExecutionTaskRepository(ArchiveDbContext context)
+    public BackgroundTaskRepository(ArchiveDbContext context)
     {
         this.context = context;
     }
 
-    public async Task AddAsync(PartitionExecutionTask task, CancellationToken cancellationToken = default)
+    public async Task AddAsync(BackgroundTask task, CancellationToken cancellationToken = default)
     {
-        await context.PartitionExecutionTasks.AddAsync(task, cancellationToken);
+        await context.BackgroundTasks.AddAsync(task, cancellationToken);
         await context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task UpdateAsync(PartitionExecutionTask task, CancellationToken cancellationToken = default)
+    public async Task UpdateAsync(BackgroundTask task, CancellationToken cancellationToken = default)
     {
-        context.PartitionExecutionTasks.Update(task);
+        context.BackgroundTasks.Update(task);
         await context.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<PartitionExecutionTask?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
+    public async Task<BackgroundTask?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
-        return await context.PartitionExecutionTasks
+        return await context.BackgroundTasks
             .FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, cancellationToken);
     }
 
     public async Task<bool> HasActiveTaskAsync(Guid dataSourceId, CancellationToken cancellationToken = default)
     {
-        return await context.PartitionExecutionTasks
+        return await context.BackgroundTasks
             .AnyAsync(
                 x => x.DataSourceId == dataSourceId &&
                      !x.IsDeleted &&
@@ -63,14 +63,14 @@ internal sealed class PartitionExecutionTaskRepository : IPartitionExecutionTask
                 cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PartitionExecutionTask>> ListRecentAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<BackgroundTask>> ListRecentAsync(Guid? dataSourceId, int maxCount, CancellationToken cancellationToken = default)
     {
         if (maxCount <= 0)
         {
             maxCount = 20;
         }
 
-        var query = context.PartitionExecutionTasks
+        var query = context.BackgroundTasks
             .Where(x => !x.IsDeleted);
 
         if (dataSourceId.HasValue && dataSourceId.Value != Guid.Empty)
@@ -84,7 +84,7 @@ internal sealed class PartitionExecutionTaskRepository : IPartitionExecutionTask
             .ToListAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<PartitionExecutionTask>> ListStaleAsync(TimeSpan heartbeatTimeout, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<BackgroundTask>> ListStaleAsync(TimeSpan heartbeatTimeout, CancellationToken cancellationToken = default)
     {
         if (heartbeatTimeout <= TimeSpan.Zero)
         {
@@ -92,7 +92,7 @@ internal sealed class PartitionExecutionTaskRepository : IPartitionExecutionTask
         }
 
         var threshold = DateTime.UtcNow - heartbeatTimeout;
-        return await context.PartitionExecutionTasks
+        return await context.BackgroundTasks
             .Where(x => !x.IsDeleted &&
                         MonitorStatuses.Contains(x.Status) &&
                         x.LastHeartbeatUtc < threshold)

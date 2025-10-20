@@ -20,8 +20,8 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
     private readonly IPartitionMetadataRepository metadataRepository;
     private readonly IPartitionConfigurationRepository configurationRepository;
-    private readonly IPartitionExecutionTaskRepository executionTaskRepository;
-    private readonly IPartitionExecutionLogRepository executionLogRepository;
+    private readonly IBackgroundTaskRepository executionTaskRepository;
+    private readonly IBackgroundTaskLogRepository executionLogRepository;
     private readonly IPartitionAuditLogRepository auditLogRepository;
     private readonly IPartitionCommandScriptGenerator scriptGenerator;
     private readonly PartitionValueParser valueParser;
@@ -30,8 +30,8 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
     public PartitionConfigurationAppService(
         IPartitionMetadataRepository metadataRepository,
         IPartitionConfigurationRepository configurationRepository,
-        IPartitionExecutionTaskRepository executionTaskRepository,
-        IPartitionExecutionLogRepository executionLogRepository,
+        IBackgroundTaskRepository executionTaskRepository,
+        IBackgroundTaskLogRepository executionLogRepository,
         IPartitionAuditLogRepository auditLogRepository,
         IPartitionCommandScriptGenerator scriptGenerator,
         PartitionValueParser valueParser,
@@ -218,7 +218,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             await RecordBoundaryOperationAsync(
                 configuration,
-                PartitionExecutionOperationType.AddBoundary,
+                BackgroundTaskOperationType.AddBoundary,
                 request.RequestedBy,
                 "新增分区边界",
                 message,
@@ -302,7 +302,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             // 5. 记录审计日志
             await RecordBoundaryOperationAsync(
                 configuration,
-                PartitionExecutionOperationType.AddBoundary,
+                BackgroundTaskOperationType.AddBoundary,
                 request.RequestedBy,
                 "添加分区边界值",
                 $"为已分区表 [{configuration.SchemaName}].[{configuration.TableName}] 添加边界值: {request.BoundaryValue}",
@@ -316,7 +316,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
                 configuration.Id);
 
             // 注意:此处仅生成脚本并记录审计,实际DDL执行由用户通过执行任务触发
-            // 或者可以集成到PartitionExecutionProcessor中自动执行
+            // 或者可以集成到BackgroundTaskProcessor中自动执行
             return Result.Success();
         }
         catch (Exception ex)
@@ -404,7 +404,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             await RecordBoundaryOperationAsync(
                 configuration,
-                PartitionExecutionOperationType.SplitBoundary,
+                BackgroundTaskOperationType.SplitBoundary,
                 request.RequestedBy,
                 "拆分分区边界",
                 splitMessage,
@@ -460,7 +460,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             await RecordBoundaryOperationAsync(
                 configuration,
-                PartitionExecutionOperationType.MergeBoundary,
+                BackgroundTaskOperationType.MergeBoundary,
                 request.RequestedBy,
                 "合并分区边界",
                 mergeMessage,
@@ -936,7 +936,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
     private async Task RecordBoundaryOperationAsync(
         PartitionConfiguration configuration,
-        PartitionExecutionOperationType operationType,
+        BackgroundTaskOperationType operationType,
         string requestedBy,
         string title,
         string message,
@@ -951,7 +951,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
                 ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
                 : $"{configuration.SchemaName}.{configuration.TableName}";
 
-            var task = PartitionExecutionTask.Create(
+            var task = BackgroundTask.Create(
                 configuration.Id,
                 configuration.ArchiveDataSourceId,
                 requestedBy,
@@ -965,7 +965,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
 
             await executionTaskRepository.AddAsync(task, cancellationToken);
 
-            var log = PartitionExecutionLogEntry.Create(task.Id, "Info", title, message);
+            var log = BackgroundTaskLogEntry.Create(task.Id, "Info", title, message);
             await executionLogRepository.AddAsync(log, cancellationToken);
 
             var payloadEnvelope = new
