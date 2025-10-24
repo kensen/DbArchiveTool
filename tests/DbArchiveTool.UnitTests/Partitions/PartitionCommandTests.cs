@@ -70,7 +70,10 @@ public class PartitionCommandTests
             .ReturnsAsync(configuration);
 
         scriptGenerator
-            .Setup(x => x.GenerateSplitScript(It.IsAny<PartitionConfiguration>(), It.IsAny<IReadOnlyList<PartitionValue>>()))
+            .Setup(x => x.GenerateSplitScript(
+                It.IsAny<PartitionConfiguration>(), 
+                It.IsAny<IReadOnlyList<PartitionValue>>(),
+                It.IsAny<string?>()))
             .Returns(Result<string>.Success("SPLIT SCRIPT"));
 
         BackgroundTask? capturedTask = null;

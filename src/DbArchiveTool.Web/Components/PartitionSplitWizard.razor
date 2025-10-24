@@ -885,7 +885,8 @@
                 TableName,
                 boundariesToSplit,
                 false,
-                "WebUser" // TODO: 从认证上下文获取
+                "WebUser", // TODO: 从认证上下文获取
+                _formModel.FilegroupName  // 传递用户选择的文件组
             );
 
             var result = await PartitionManagementApi.PreviewSplitAsync(DataSourceId, request);
@@ -928,7 +929,8 @@
                 TableName,
                 boundariesToSplit,
                 _formModel.BackupConfirmed,
-                "WebUser" // TODO: 从认证上下文获取
+                "WebUser", // TODO: 从认证上下文获取
+                _formModel.FilegroupName  // 传递用户选择的文件组
             );
 
             // 执行拆分,创建任务并自动分派到执行队列

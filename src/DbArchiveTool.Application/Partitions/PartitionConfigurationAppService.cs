@@ -271,7 +271,7 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         }
 
         // 2. 生成DDL脚本
-        var scriptResult = scriptGenerator.GenerateSplitScript(configuration, parseResult.Value);
+        var scriptResult = scriptGenerator.GenerateSplitScript(configuration, parseResult.Value, null);
         if (!scriptResult.IsSuccess || string.IsNullOrEmpty(scriptResult.Value))
         {
             logger.LogError(

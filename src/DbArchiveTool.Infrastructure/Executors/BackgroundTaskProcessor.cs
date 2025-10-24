@@ -64,10 +64,16 @@ internal sealed class BackgroundTaskProcessor
             return;
         }
 
-        // 对于"添加分区边界值"操作,使用简化的执行流程
+        // 对于"添加分区边界值"和"拆分分区边界"操作,使用简化的执行流程
         if (task.OperationType == BackgroundTaskOperationType.AddBoundary)
         {
             await ExecuteAddBoundaryAsync(task, cancellationToken);
+            return;
+        }
+
+        if (task.OperationType == BackgroundTaskOperationType.SplitBoundary)
+        {
+            await ExecuteSplitBoundaryAsync(task, cancellationToken);
             return;
         }
 
@@ -543,26 +549,26 @@ internal sealed class BackgroundTaskProcessor
 
             if (conversionResult.Converted)
             {
-                var droppedSummary = conversionResult.DroppedIndexNames.Count > 0
-                    ? string.Join("、", conversionResult.DroppedIndexNames)
+                var droppedList = conversionResult.DroppedIndexNames.Count > 0
+                    ? string.Join("\n- ", conversionResult.DroppedIndexNames.Select(name => $"`{name}`"))
                     : "无";
-                var recreatedSummary = conversionResult.RecreatedIndexNames.Count > 0
-                    ? string.Join("、", conversionResult.RecreatedIndexNames)
+                var recreatedList = conversionResult.RecreatedIndexNames.Count > 0
+                    ? string.Join("\n- ", conversionResult.RecreatedIndexNames.Select(name => $"`{name}`"))
                     : "无";
-                var alignmentSummary = conversionResult.AutoAlignedIndexes.Count > 0
-                    ? string.Join("、", conversionResult.AutoAlignedIndexes.Select(a => $"{a.IndexName}({a.OriginalKeyColumns} → {a.UpdatedKeyColumns})"))
+                var alignmentList = conversionResult.AutoAlignedIndexes.Count > 0
+                    ? string.Join("\n- ", conversionResult.AutoAlignedIndexes.Select(a => $"`{a.IndexName}` (列: `{a.OriginalKeyColumns}` → `{a.UpdatedKeyColumns}`)"))
                     : "无";
 
                 var detailMessage =
-                    $"成功将表 {configuration.SchemaName}.{configuration.TableName} 转换为分区表，所有索引已在分区方案上重建。\r\n" +
-                    $"表总行数：{conversionResult.TotalRows:N0} 行\r\n" +
-                    $"已删除索引：{droppedSummary}\r\n" +
-                    $"已重建索引：{recreatedSummary}\r\n" +
-                    $"自动对齐索引：{alignmentSummary}";
+                    $"成功将表 `{configuration.SchemaName}.{configuration.TableName}` 转换为分区表，所有索引已在分区方案上重建。\n\n" +
+                    $"**表总行数:** {conversionResult.TotalRows:N0} 行\n\n" +
+                    $"**已删除索引:**\n{(conversionResult.DroppedIndexNames.Count > 0 ? "- " : "")}{droppedList}\n\n" +
+                    $"**已重建索引:**\n{(conversionResult.RecreatedIndexNames.Count > 0 ? "- " : "")}{recreatedList}\n\n" +
+                    $"**自动对齐索引:**\n{(conversionResult.AutoAlignedIndexes.Count > 0 ? "- " : "")}{alignmentList}";
 
                 if (conversionResult.PartitionColumnAlteredToNotNull)
                 {
-                    detailMessage += "\r\n分区列已自动转换为 NOT NULL。";
+                    detailMessage += "\n\n> 📌 **注意:** 分区列已自动转换为 NOT NULL。";
                 }
 
                 await AppendLogAsync(
@@ -829,8 +835,10 @@ internal sealed class BackgroundTaskProcessor
                     return await BuildConfigForAddBoundaryAsync(task, cancellationToken);
                 
                 case BackgroundTaskOperationType.SplitBoundary:
+                    return await BuildConfigForSplitBoundaryAsync(task, cancellationToken);
+                
                 case BackgroundTaskOperationType.MergeBoundary:
-                    // TODO: 后续实现拆分/合并边界的快照解析
+                    // TODO: 后续实现合并边界的快照解析
                     logger.LogWarning("操作类型 {OperationType} 的快照解析尚未实现。", task.OperationType);
                     return null;
                 
@@ -893,6 +901,54 @@ internal sealed class BackgroundTaskProcessor
         public string? FilegroupName { get; set; }
         public string SortKey { get; set; } = string.Empty;
         public string DdlScript { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 拆分边界操作的快照数据结构
+    /// </summary>
+    private sealed class SplitBoundarySnapshot
+    {
+        public string SchemaName { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public string PartitionFunctionName { get; set; } = string.Empty;
+        public string PartitionSchemeName { get; set; } = string.Empty;
+        public string[] Boundaries { get; set; } = Array.Empty<string>();
+        public string DdlScript { get; set; } = string.Empty;
+        public bool BackupConfirmed { get; set; }
+        public string? FilegroupName { get; set; }  // 用户指定的文件组
+    }
+
+    /// <summary>
+    /// 为"拆分分区边界"操作构建临时配置对象
+    /// </summary>
+    private async Task<PartitionConfiguration?> BuildConfigForSplitBoundaryAsync(
+        BackgroundTask task,
+        CancellationToken cancellationToken)
+    {
+        // 解析快照JSON
+        var snapshot = JsonSerializer.Deserialize<SplitBoundarySnapshot>(task.ConfigurationSnapshot!);
+        if (snapshot is null)
+        {
+            logger.LogError("无法解析 SplitBoundary 快照：{Snapshot}", task.ConfigurationSnapshot);
+            return null;
+        }
+
+        // 从数据库读取实际的分区元数据（这会返回完整的 PartitionConfiguration 对象）
+        var config = await metadataRepository.GetConfigurationAsync(
+            task.DataSourceId,
+            snapshot.SchemaName,
+            snapshot.TableName,
+            cancellationToken);
+
+        if (config is null)
+        {
+            logger.LogError("无法从数据库读取分区元数据：{Schema}.{Table}", snapshot.SchemaName, snapshot.TableName);
+            return null;
+        }
+
+        // 返回实际读取的配置（已包含所有现有边界和文件组信息）
+        // 注意：拆分操作与添加边界类似，都是直接操作模式，不需要草稿配置
+        return config;
     }
 
     /// <summary>
@@ -1074,6 +1130,193 @@ internal sealed class BackgroundTaskProcessor
                 durationMs: overallStopwatch.ElapsedMilliseconds);
 
             // 注意: 必须先更新进度再标记失败
+            task.UpdateProgress(1.0, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+            task.MarkFailed("SYSTEM", ex.Message);
+            await taskRepository.UpdateAsync(task, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 执行"拆分分区边界"操作的简化流程(参考添加边界的流程)
+    /// </summary>
+    private async Task ExecuteSplitBoundaryAsync(BackgroundTask task, CancellationToken cancellationToken)
+    {
+        var overallStopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            // ============== 阶段 1: 解析快照 ==============
+            await AppendLogAsync(task.Id, "Info", "任务启动", 
+                $"任务由 {task.RequestedBy} 发起,操作类型:拆分分区边界。", cancellationToken);
+
+            task.MarkValidating("SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Validation, "SYSTEM");
+            task.UpdateProgress(0.1, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(task.ConfigurationSnapshot))
+            {
+                await HandleValidationFailureAsync(task, "任务快照数据为空,无法执行。", cancellationToken);
+                return;
+            }
+
+            var snapshot = JsonSerializer.Deserialize<SplitBoundarySnapshot>(task.ConfigurationSnapshot);
+            if (snapshot is null)
+            {
+                await HandleValidationFailureAsync(task, "无法解析任务快照数据。", cancellationToken);
+                return;
+            }
+
+            await AppendLogAsync(task.Id, "Info", "解析快照", 
+                $"目标表:{snapshot.SchemaName}.{snapshot.TableName},边界值数量:{snapshot.Boundaries.Length},文件组:{snapshot.FilegroupName ?? "默认"}", 
+                cancellationToken);
+
+            // ============== 阶段 2: 加载数据源 ==============
+            var dataSource = await dataSourceRepository.GetAsync(task.DataSourceId, cancellationToken);
+            if (dataSource is null)
+            {
+                await HandleValidationFailureAsync(task, "未找到归档数据源配置。", cancellationToken);
+                return;
+            }
+
+            task.UpdateProgress(0.2, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 3: 验证分区对象存在 ==============
+            var stepWatch = Stopwatch.StartNew();
+            await AppendLogAsync(task.Id, "Step", "验证分区对象", 
+                $"正在检查分区函数 {snapshot.PartitionFunctionName} 与分区方案 {snapshot.PartitionSchemeName} 是否存在...", 
+                cancellationToken);
+
+            var functionExists = await commandExecutor.CheckPartitionFunctionExistsAsync(
+                task.DataSourceId,
+                snapshot.PartitionFunctionName,
+                cancellationToken);
+
+            if (!functionExists)
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Error", "分区函数不存在", 
+                    $"分区函数 {snapshot.PartitionFunctionName} 不存在,无法拆分边界值。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+                await HandleValidationFailureAsync(task, $"分区函数 {snapshot.PartitionFunctionName} 不存在。", cancellationToken);
+                return;
+            }
+
+            var schemeExists = await commandExecutor.CheckPartitionSchemeExistsAsync(
+                task.DataSourceId,
+                snapshot.PartitionSchemeName,
+                cancellationToken);
+
+            if (!schemeExists)
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Error", "分区方案不存在", 
+                    $"分区方案 {snapshot.PartitionSchemeName} 不存在,无法拆分边界值。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+                await HandleValidationFailureAsync(task, $"分区方案 {snapshot.PartitionSchemeName} 不存在。", cancellationToken);
+                return;
+            }
+
+            stepWatch.Stop();
+            await AppendLogAsync(task.Id, "Info", "分区对象验证通过", 
+                $"分区函数和分区方案均已存在。", 
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.3, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 4: 进入执行队列 ==============
+            task.MarkQueued("SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成,任务进入执行队列。", cancellationToken);
+
+            // ============== 阶段 5: 开始执行DDL ==============
+            task.MarkRunning("SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
+            task.UpdateProgress(0.4, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "执行DDL", 
+                $"正在执行分区拆分DDL脚本,将拆分 {snapshot.Boundaries.Length} 个边界值...\n```sql\n{snapshot.DdlScript}\n```", 
+                cancellationToken);
+
+            // 创建数据库连接并执行DDL脚本
+            try
+            {
+                await using var connection = await connectionFactory.CreateSqlConnectionAsync(task.DataSourceId, cancellationToken);
+
+                await sqlExecutor.ExecuteAsync(
+                    connection,
+                    snapshot.DdlScript,
+                    null,
+                    null,
+                    timeoutSeconds: 600);  // 拆分操作可能需要更长时间
+
+                stepWatch.Stop();
+
+                var boundariesDisplay = snapshot.Boundaries.Length == 1 
+                    ? $"'{snapshot.Boundaries[0]}'" 
+                    : $"{snapshot.Boundaries.Length} 个边界值";
+
+                await AppendLogAsync(task.Id, "Info", "DDL执行成功", 
+                    $"成功拆分分区边界值: {boundariesDisplay}。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.UpdateProgress(0.9, "SYSTEM");
+                await taskRepository.UpdateAsync(task, cancellationToken);
+            }
+            catch (Exception ddlEx)
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Error", "DDL执行失败", 
+                    $"执行DDL脚本时发生错误:\n{ddlEx.Message}", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.UpdateProgress(1.0, "SYSTEM");
+                task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+                task.MarkFailed("SYSTEM", ddlEx.Message);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
+
+            // ============== 阶段 6: 完成 ==============
+            overallStopwatch.Stop();
+
+            task.UpdateProgress(1.0, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+            task.MarkSucceeded("SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            var durationText = overallStopwatch.ElapsedMilliseconds < 1000
+                ? $"{overallStopwatch.ElapsedMilliseconds} ms"
+                : $"{overallStopwatch.Elapsed.TotalSeconds:F2} s";
+
+            await AppendLogAsync(task.Id, "Info", "任务完成", 
+                $"拆分分区边界操作成功完成,处理了 {snapshot.Boundaries.Length} 个边界值,总耗时:{durationText}。", 
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            overallStopwatch.Stop();
+            logger.LogError(ex, "执行拆分分区边界任务时发生异常: {TaskId}", task.Id);
+
+            await AppendLogAsync(
+                task.Id,
+                "Error",
+                "执行异常",
+                $"任务执行过程中发生未预期的错误:\n{ex.Message}\n{ex.StackTrace}",
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds);
+
             task.UpdateProgress(1.0, "SYSTEM");
             task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
             task.MarkFailed("SYSTEM", ex.Message);

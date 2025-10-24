@@ -22,7 +22,14 @@ public interface IPartitionCommandAppService
     Task<Result<PartitionCommandStatusDto>> GetStatusAsync(Guid commandId, CancellationToken cancellationToken = default);
 }
 
-public sealed record SplitPartitionRequest(Guid DataSourceId, string SchemaName, string TableName, IReadOnlyList<string> Boundaries, bool BackupConfirmed, string RequestedBy);
+public sealed record SplitPartitionRequest(
+    Guid DataSourceId, 
+    string SchemaName, 
+    string TableName, 
+    IReadOnlyList<string> Boundaries, 
+    bool BackupConfirmed, 
+    string RequestedBy,
+    string? FilegroupName = null);  // 用户选择的文件组,null表示使用默认
 
 public sealed record MergePartitionRequest(Guid DataSourceId, string SchemaName, string TableName, string BoundaryKey, bool BackupConfirmed, string RequestedBy);
 

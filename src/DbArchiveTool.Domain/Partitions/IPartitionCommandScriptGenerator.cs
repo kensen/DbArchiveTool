@@ -9,7 +9,13 @@ namespace DbArchiveTool.Domain.Partitions;
 public interface IPartitionCommandScriptGenerator
 {
     /// <summary>生成拆分脚本。</summary>
-    Result<string> GenerateSplitScript(PartitionConfiguration configuration, IReadOnlyList<PartitionValue> newBoundaries);
+    /// <param name="configuration">分区配置信息</param>
+    /// <param name="newBoundaries">新的分区边界值</param>
+    /// <param name="filegroupName">用户指定的文件组名称,null表示使用默认规则</param>
+    Result<string> GenerateSplitScript(
+        PartitionConfiguration configuration, 
+        IReadOnlyList<PartitionValue> newBoundaries,
+        string? filegroupName = null);
 
     /// <summary>生成合并脚本，传入需合并的边界键。</summary>
     Result<string> GenerateMergeScript(PartitionConfiguration configuration, string boundaryKey);

@@ -1,0 +1,19 @@
+﻿@using Markdig
+
+@((MarkupString)HtmlContent)
+
+@code {
+    /// <summary>
+    /// Markdown 源内容
+    /// </summary>
+    [Parameter]
+    public string? Content { get; set; }
+
+    private string HtmlContent => string.IsNullOrWhiteSpace(Content) 
+        ? string.Empty 
+        : Markdown.ToHtml(Content, Pipeline);
+
+    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .Build();
+}

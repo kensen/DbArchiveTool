@@ -68,7 +68,10 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<PartitionCommandPreviewDto>.Failure(parseResult.Error!);
         }
 
-        var scriptResult = scriptGenerator.GenerateSplitScript(configuration, parseResult.Value!);
+        var scriptResult = scriptGenerator.GenerateSplitScript(
+            configuration, 
+            parseResult.Value!, 
+            request.FilegroupName);  // 传递用户选择的文件组
         if (!scriptResult.IsSuccess)
         {
             return Result<PartitionCommandPreviewDto>.Failure(scriptResult.Error!);
@@ -123,7 +126,8 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             configuration.PartitionSchemeName,
             Boundaries = boundaryValues,
             DdlScript = script,
-            request.BackupConfirmed
+            request.BackupConfirmed,
+            request.FilegroupName  // 保存用户选择的文件组
         });
 
         try

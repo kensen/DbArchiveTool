@@ -174,7 +174,7 @@ END CATCH
         else
         {
             // 用户未指定文件组,使用配置中的默认文件组
-            var scriptResult = scriptGenerator.GenerateSplitScript(config, parseResult.Value);
+            var scriptResult = scriptGenerator.GenerateSplitScript(config, parseResult.Value, null);
             if (!scriptResult.IsSuccess || string.IsNullOrEmpty(scriptResult.Value))
             {
                 logger.LogError(

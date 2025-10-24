@@ -14,7 +14,10 @@ namespace DbArchiveTool.Infrastructure.Partitions;
 internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScriptGenerator
 {
     /// <inheritdoc />
-    public Result<string> GenerateSplitScript(PartitionConfiguration configuration, IReadOnlyList<PartitionValue> newBoundaries)
+    public Result<string> GenerateSplitScript(
+        PartitionConfiguration configuration, 
+        IReadOnlyList<PartitionValue> newBoundaries,
+        string? filegroupName = null)
     {
         if (newBoundaries.Count == 0)
         {
@@ -29,23 +32,27 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         var builder = new StringBuilder();
         builder.AppendLine("-- 请确保已执行备份并确认无长事务占用目标表");
 
-        var defaultFilegroup = ResolveDefaultFilegroup(configuration);
+        // 优先使用用户指定的文件组,否则使用配置中的默认文件组
+        var targetFilegroup = !string.IsNullOrWhiteSpace(filegroupName) 
+            ? filegroupName 
+            : ResolveDefaultFilegroup(configuration);
 
-        foreach (var boundary in newBoundaries)
+        for (int i = 0; i < newBoundaries.Count; i++)
         {
+            var boundary = newBoundaries[i];
             var literal = boundary.ToLiteral();
-            var filegroup = defaultFilegroup;
+            var varName = $"@ErrMsg_{i}";
 
             builder.AppendLine("BEGIN TRY");
             builder.AppendLine("    BEGIN TRANSACTION");
-            builder.AppendLine($"    ALTER PARTITION SCHEME [{configuration.PartitionSchemeName}] NEXT USED [{filegroup}];");
+            builder.AppendLine($"    ALTER PARTITION SCHEME [{configuration.PartitionSchemeName}] NEXT USED [{targetFilegroup}];");
             builder.AppendLine($"    ALTER PARTITION FUNCTION [{configuration.PartitionFunctionName}]() SPLIT RANGE ({literal});");
             builder.AppendLine("    COMMIT TRANSACTION");
             builder.AppendLine("END TRY");
             builder.AppendLine("BEGIN CATCH");
             builder.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
-            builder.AppendLine("    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();");
-            builder.AppendLine("    RAISERROR ('分区拆分失败: %s', 16, 1, @ErrorMessage);");
+            builder.AppendLine($"    DECLARE {varName} NVARCHAR(4000) = ERROR_MESSAGE();");
+            builder.AppendLine($"    RAISERROR ('分区拆分失败 (边界={literal}): %s', 16, 1, {varName});");
             builder.AppendLine("END CATCH");
             builder.AppendLine();
         }

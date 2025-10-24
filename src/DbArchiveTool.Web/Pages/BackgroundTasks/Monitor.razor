@@ -208,7 +208,9 @@
                             </SpaceItem>
                         </Space>
                     </div>
-                    <div>@log.Message</div>
+                    <div class="markdown-body">
+                        <MarkdownViewer Content="@log.Message" />
+                    </div>
                 </TimelineItem>
             }
         </Timeline>
