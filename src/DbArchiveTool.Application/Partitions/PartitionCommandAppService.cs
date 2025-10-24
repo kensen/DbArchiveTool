@@ -518,31 +518,104 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<Guid>.Failure(preview.Error!);
         }
 
+        var configuration = await metadataRepository.GetConfigurationAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<Guid>.Failure("未找到分区配置，请确认目标表启用了分区。");
+        }
+
         var script = preview.Value!.Script;
+        
+        // 准备任务上下文
+        var resourceId = $"{request.DataSourceId}/{request.SchemaName}/{request.TableName}";
+        var summary = $"合并表 {request.SchemaName}.{request.TableName} 的分区边界: '{request.BoundaryKey}'";
+        
         var payload = JsonSerializer.Serialize(new
         {
             request.SchemaName,
             request.TableName,
-            request.BoundaryKey
+            configuration.PartitionFunctionName,
+            configuration.PartitionSchemeName,
+            request.BoundaryKey,
+            DdlScript = script,
+            request.BackupConfirmed
         });
 
-        var command = PartitionCommand.CreateMerge(
-            request.DataSourceId,
-            request.SchemaName,
-            request.TableName,
-            script,
-            payload,
-            request.RequestedBy);
+        try
+        {
+            // 创建临时的分区配置ID（用于关联任务）
+            var tempConfigurationId = Guid.NewGuid();
 
-        await commandRepository.AddAsync(command, cancellationToken);
-        logger.LogInformation(
-            "Partition merge command {CommandId} created for {Schema}.{Table} (Boundary {BoundaryKey})",
-            command.Id,
-            request.SchemaName,
-            request.TableName,
-            request.BoundaryKey);
+            // 创建执行任务 (使用 MergeBoundary 操作类型)
+            var task = BackgroundTask.Create(
+                partitionConfigurationId: tempConfigurationId,
+                dataSourceId: request.DataSourceId,
+                requestedBy: request.RequestedBy,
+                createdBy: request.RequestedBy,
+                backupReference: null,
+                notes: $"合并边界值: {request.BoundaryKey}",
+                priority: 0,
+                operationType: Shared.Partitions.BackgroundTaskOperationType.MergeBoundary,
+                archiveScheme: null,
+                archiveTargetConnection: null,
+                archiveTargetDatabase: null,
+                archiveTargetTable: null);
 
-        return Result<Guid>.Success(command.Id);
+            // 保存配置快照
+            task.SaveConfigurationSnapshot(payload, request.RequestedBy);
+
+            await taskRepository.AddAsync(task, cancellationToken);
+
+            // 记录初始日志
+            var initialLog = BackgroundTaskLogEntry.Create(
+                task.Id,
+                "Info",
+                "任务创建",
+                $"由 {request.RequestedBy} 发起的分区合并任务已创建。" +
+                $"表：{request.SchemaName}.{request.TableName}，边界值：{request.BoundaryKey}");
+
+            await logRepository.AddAsync(initialLog, cancellationToken);
+
+            // 记录DDL脚本到日志
+            var scriptLog = BackgroundTaskLogEntry.Create(
+                task.Id,
+                "Info",
+                "生成DDL脚本",
+                $"已生成 ALTER PARTITION FUNCTION MERGE RANGE 脚本，长度: {script.Length} 字符");
+
+            await logRepository.AddAsync(scriptLog, cancellationToken);
+
+            // 记录审计日志
+            var auditLog = PartitionAuditLog.Create(
+                request.RequestedBy,
+                Shared.Partitions.BackgroundTaskOperationType.MergeBoundary.ToString(),
+                "PartitionedTable",
+                resourceId,
+                summary,
+                payload,
+                "Queued",
+                script);
+
+            await auditLogRepository.AddAsync(auditLog, cancellationToken);
+
+            // 将任务分派到执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
+            logger.LogInformation(
+                "Successfully created execution task {TaskId} for merging boundary {BoundaryKey} in table {Schema}.{Table}",
+                task.Id,
+                request.BoundaryKey,
+                request.SchemaName,
+                request.TableName);
+
+            return Result<Guid>.Success(task.Id);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to create merge task for boundary {BoundaryKey} in table {Schema}.{Table}", 
+                request.BoundaryKey, request.SchemaName, request.TableName);
+            return Result<Guid>.Failure("创建合并任务时发生异常,请稍后重试。");
+        }
     }
 
     public async Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default)

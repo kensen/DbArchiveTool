@@ -1,0 +1,642 @@
+﻿@using AntDesign
+@using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components.Web
+
+<Drawer Visible="Visible"
+        Title="@("合并分区")"
+        Width="720"
+        Placement="DrawerPlacement.Right"
+        Closable="true"
+        MaskClosable="false"
+        OnClose="HandleClose">
+    <Spin Spinning="@_loading">
+        <div class="merge-wizard-body">
+            @if (_metadata != null)
+            {
+                <!-- 元数据信息卡片 -->
+                <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:24px;">
+                    <DescriptionsItem Title="表名">@($"{SchemaName}.{TableName}")</DescriptionsItem>
+                    <DescriptionsItem Title="分区列">@_metadata.ColumnName (@_metadata.ColumnType)</DescriptionsItem>
+                    <DescriptionsItem Title="分区函数">@_metadata.PartitionFunctionName</DescriptionsItem>
+                    <DescriptionsItem Title="分区方案">@_metadata.PartitionSchemeName</DescriptionsItem>
+                    <DescriptionsItem Title="当前边界数">@_metadata.Boundaries.Count</DescriptionsItem>
+                </Descriptions>
+
+                <!-- 步骤导航 -->
+                <Steps Current="@_currentStep" Size="@StepsSize.Small" Style="margin-bottom:24px;">
+                    <Step Title="选择边界" Description="选择要删除的边界值" />
+                    <Step Title="确认执行" Description="预览并提交任务" />
+                </Steps>
+
+                <!-- 步骤内容 -->
+                @if (_currentStep == 0)
+                {
+                    <!-- Step 1: 选择要删除的边界 -->
+                    <div class="step-content">
+                        @if (_metadata.Boundaries.Count < 2)
+                        {
+                            <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;">
+                                <MessageTemplate>
+                                    当前分区表只有 @_metadata.Boundaries.Count 个边界值,无法执行合并操作。
+                                    合并需要至少保留1个边界值(即删除前至少2个边界)。
+                                </MessageTemplate>
+                            </Alert>
+                        }
+                        else
+                        {
+                            <!-- 当前选中的边界信息 -->
+                            @if (_currentBoundary is not null)
+                            {
+                                <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <div>
+                                            <strong>待删除边界:</strong> @_currentBoundary.LiteralValue
+                                        </div>
+                                        <div style="margin-top:8px;font-size:12px;color:#666;">
+                                            @if (_previousBoundary is not null && _nextBoundary is not null)
+                                            {
+                                                <span>删除后,左侧分区 [@(_previousBoundary.LiteralValue), @(_currentBoundary.LiteralValue)) 与右侧分区 [@(_currentBoundary.LiteralValue), @(_nextBoundary.LiteralValue)) 将合并为 [@(_previousBoundary.LiteralValue), @(_nextBoundary.LiteralValue))。</span>
+                                            }
+                                            else if (_previousBoundary is null && _nextBoundary is not null)
+                                            {
+                                                <span>删除后,第一个分区 (负无穷, @(_currentBoundary.LiteralValue)) 与第二个分区 [@(_currentBoundary.LiteralValue), @(_nextBoundary.LiteralValue)) 将合并。</span>
+                                            }
+                                            else if (_previousBoundary is not null && _nextBoundary is null)
+                                            {
+                                                <span>删除后,倒数第二个分区 [@(_previousBoundary.LiteralValue), @(_currentBoundary.LiteralValue)) 与最后一个分区 [@(_currentBoundary.LiteralValue), 正无穷) 将合并。</span>
+                                            }
+                                            else
+                                            {
+                                                <span>删除此边界后,唯一的分区将覆盖所有数据。</span>
+                                            }
+                                        </div>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+                            else
+                            {
+                                <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <div>
+                                            请从下方列表中选择要删除的边界值。删除边界值后,其左右两个分区将自动合并为一个分区。
+                                        </div>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+
+                            <!-- 边界值选择列表 -->
+                            <Form Model="_formModel" Layout="FormLayout.Vertical">
+                                <FormItem Label="* 选择要删除的边界值" Required>
+                                    <RadioGroup @bind-Value="_formModel.SelectedBoundaryKey">
+                                        @foreach (var boundary in _metadata.Boundaries)
+                                        {
+                                            <Radio RadioButton Value="@boundary.Key" Style="margin-bottom:8px;display:block;">
+                                                <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
+                                                    <span><strong>@boundary.LiteralValue</strong></span>
+                                                </div>
+                                            </Radio>
+                                        }
+                                    </RadioGroup>
+                                    <div class="form-tip">
+                                        删除边界值会将其左右两个分区合并。合并后数据将移至主文件组或左侧分区的文件组。
+                                    </div>
+                                </FormItem>
+                            </Form>
+
+                            @if (_showMergePreview && _currentBoundary != null)
+                            {
+                                <Divider>合并预览</Divider>
+                                <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered>
+                                    <DescriptionsItem Title="删除的边界">@_currentBoundary.LiteralValue</DescriptionsItem>
+                                    @if (_previousBoundary != null)
+                                    {
+                                        <DescriptionsItem Title="左侧边界">@_previousBoundary.LiteralValue</DescriptionsItem>
+                                    }
+                                    else
+                                    {
+                                        <DescriptionsItem Title="左侧边界">(负无穷)</DescriptionsItem>
+                                    }
+                                    @if (_nextBoundary != null)
+                                    {
+                                        <DescriptionsItem Title="右侧边界">@_nextBoundary.LiteralValue</DescriptionsItem>
+                                    }
+                                    else
+                                    {
+                                        <DescriptionsItem Title="右侧边界">(正无穷)</DescriptionsItem>
+                                    }
+                                    <DescriptionsItem Title="合并后范围">
+                                        @if (_previousBoundary != null && _nextBoundary != null)
+                                        {
+                                            <Text>[@_previousBoundary.LiteralValue, @_nextBoundary.LiteralValue)</Text>
+                                        }
+                                        else if (_previousBoundary == null && _nextBoundary != null)
+                                        {
+                                            <Text>(负无穷, @_nextBoundary.LiteralValue)</Text>
+                                        }
+                                        else if (_previousBoundary != null && _nextBoundary == null)
+                                        {
+                                            <Text>[@_previousBoundary.LiteralValue, 正无穷)</Text>
+                                        }
+                                        else
+                                        {
+                                            <Text>(负无穷, 正无穷)</Text>
+                                        }
+                                    </DescriptionsItem>
+                                </Descriptions>
+                            }
+                        }
+
+                        @if (!string.IsNullOrEmpty(_validationError))
+                        {
+                            <Alert Message="@_validationError"
+                                   Type="@AlertType.Error"
+                                   Closable
+                                   OnClose="() => _validationError = null"
+                                   Style="margin-top:16px" />
+                        }
+                    </div>
+                }
+                else if (_currentStep == 1)
+                {
+                    <!-- Step 2: 确认执行 -->
+                    <div class="step-content">
+                        @if (_preview != null)
+                        {
+                            <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:16px;">
+                                <DescriptionsItem Title="操作类型">合并分区</DescriptionsItem>
+                                <DescriptionsItem Title="表名">@($"{SchemaName}.{TableName}")</DescriptionsItem>
+                                <DescriptionsItem Title="删除边界">@(_currentBoundary?.LiteralValue ?? "未知")</DescriptionsItem>
+                            </Descriptions>
+
+                            <Divider>SQL 脚本预览</Divider>
+                            <div class="sql-preview">
+                                <pre>@_preview.Script</pre>
+                            </div>
+
+                            @if (_preview.RiskWarnings.Any())
+                            {
+                                <Alert Message="风险提示" Type="@AlertType.Warning" ShowIcon="true" Style="margin-top:16px;">
+                                    <MessageTemplate>
+                                        <ul>
+                                            @foreach (var warning in _preview.RiskWarnings)
+                                            {
+                                                <li>@warning</li>
+                                            }
+                                        </ul>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+
+                            <Form Model="_formModel" Layout="FormLayout.Vertical" Style="margin-top:16px;">
+                                <FormItem>
+                                    <Checkbox @bind-Checked="_formModel.BackupConfirmed">
+                                        我已确认已对数据库进行备份，可以执行该操作
+                                    </Checkbox>
+                                </FormItem>
+
+                                <FormItem Label="备注(可选)">
+                                    <Input TextAreaRows="3"
+                                           @bind-Value="_formModel.Notes"
+                                           Placeholder="添加操作备注..."
+                                           MaxLength="500" />
+                                </FormItem>
+                            </Form>
+                        }
+                        else if (_loadingPreview)
+                        {
+                            <Skeleton Active />
+                        }
+                        else
+                        {
+                            <Empty Description="@("无法加载预览信息")" />
+                        }
+
+                        @if (!string.IsNullOrEmpty(_validationError))
+                        {
+                            <Alert Message="@_validationError"
+                                   Type="@AlertType.Error"
+                                   Closable
+                                   OnClose="() => _validationError = null"
+                                   Style="margin-top:16px" />
+                        }
+                    </div>
+                }
+            }
+            else if (_loading)
+            {
+                <Empty Description="@("正在加载分区元数据")" />
+            }
+            else
+            {
+                <Empty Description="@("无法获取分区元数据")" />
+
+                @if (!string.IsNullOrEmpty(_errorMessage))
+                {
+                    <Alert Message="@_errorMessage"
+                           Type="@AlertType.Error"
+                           ShowIcon="true"
+                           Style="margin-top:16px" />
+                }
+            }
+        </div>
+    </Spin>
+
+    <div class="drawer-footer">
+        <Space>
+            @if (_currentStep > 0)
+            {
+                <Button OnClick="@PreviousStep">上一步</Button>
+            }
+            <Button OnClick="@(async () => await HandleClose())">取消</Button>
+            
+            @if (_currentStep < 1)
+            {
+                <Button Type="@ButtonType.Primary"
+                        Disabled="@(!CanProceedToNextStep())"
+                        OnClick="@NextStep">
+                    下一步
+                </Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary"
+                        Loading="@_submitting"
+                        Disabled="@(!CanSubmit())"
+                        OnClick="@(async () => await HandleSubmit())">
+                    提交
+                </Button>
+            }
+        </Space>
+    </div>
+</Drawer>
+
+<style>
+    .merge-wizard-body {
+        padding: 0 24px 24px 24px;
+    }
+
+    .drawer-footer {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+        border-top: 1px solid #f0f0f0;
+        padding: 10px 24px;
+        background: #fff;
+        text-align: right;
+    }
+
+    .form-tip {
+        font-size: 12px;
+        color: #999;
+        margin-top: 4px;
+    }
+
+    .step-content {
+        min-height: 300px;
+    }
+
+    .sql-preview {
+        background: #f5f5f5;
+        border: 1px solid #d9d9d9;
+        border-radius: 4px;
+        padding: 12px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .sql-preview pre {
+        margin: 0;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+</style>
+
+@code {
+    /// <summary>数据源ID</summary>
+    [Parameter]
+    public Guid DataSourceId { get; set; }
+
+    /// <summary>架构名</summary>
+    [Parameter]
+    public string SchemaName { get; set; } = string.Empty;
+
+    /// <summary>表名</summary>
+    [Parameter]
+    public string TableName { get; set; } = string.Empty;
+
+    /// <summary>预选的分区边界值(从主页面传入)</summary>
+    [Parameter]
+    public string? PreSelectedBoundaryKey { get; set; }
+
+    /// <summary>是否可见</summary>
+    [Parameter]
+    public bool Visible { get; set; }
+
+    /// <summary>关闭回调</summary>
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    /// <summary>提交成功回调</summary>
+    [Parameter]
+    public EventCallback OnSuccess { get; set; }
+
+    [Inject]
+    private PartitionManagementApiClient PartitionManagementApi { get; set; } = default!;
+
+    [Inject]
+    private IMessageService Message { get; set; } = default!;
+
+    private PartitionMetadataDto? _metadata;
+    private MergeFormModel _formModel = new();
+    private PartitionCommandPreviewDto? _preview;
+    private bool _loading;
+    private bool _loadingPreview;
+    private bool _submitting;
+    private bool _showMergePreview;
+    private string? _errorMessage;
+    private string? _validationError;
+    private string? _loadedSchema;
+    private string? _loadedTable;
+    private int _currentStep = 0;
+
+    // 当前边界、前一个边界和下一个边界(用于合并预览)
+    private PartitionBoundaryItemDto? _currentBoundary;
+    private PartitionBoundaryItemDto? _previousBoundary;
+    private PartitionBoundaryItemDto? _nextBoundary;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Visible)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(SchemaName) || string.IsNullOrWhiteSpace(TableName))
+        {
+            _metadata = null;
+            _errorMessage = "未提供有效的架构名或表名。";
+            return;
+        }
+
+        var schemaChanged = !string.Equals(_loadedSchema, SchemaName, StringComparison.OrdinalIgnoreCase);
+        var tableChanged = !string.Equals(_loadedTable, TableName, StringComparison.OrdinalIgnoreCase);
+        var shouldReload = _metadata is null || schemaChanged || tableChanged;
+
+        if (shouldReload)
+        {
+            await LoadMetadataAsync();
+        }
+    }
+
+    private async Task LoadMetadataAsync()
+    {
+        _loading = true;
+        _errorMessage = null;
+
+        try
+        {
+            var result = await PartitionManagementApi.GetMetadataAsync(DataSourceId, SchemaName, TableName);
+            if (result.IsSuccess && result.Value is not null)
+            {
+                _metadata = result.Value;
+                _loadedSchema = SchemaName;
+                _loadedTable = TableName;
+                _formModel = new();
+                _currentStep = 0;
+                _showMergePreview = false;
+
+                // 如果有预选边界,自动选中
+                if (!string.IsNullOrEmpty(PreSelectedBoundaryKey))
+                {
+                    _formModel.SelectedBoundaryKey = PreSelectedBoundaryKey;
+                    UpdateBoundaryReferences();
+                }
+            }
+            else
+            {
+                _metadata = null;
+                _loadedSchema = null;
+                _loadedTable = null;
+                _currentBoundary = null;
+                _previousBoundary = null;
+                _nextBoundary = null;
+                _errorMessage = $"加载分区元数据失败: {result.Error ?? "未知错误"}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = $"加载分区元数据时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    /// <summary>
+    /// 根据选中的边界Key更新当前、前一个、下一个边界引用
+    /// </summary>
+    private void UpdateBoundaryReferences()
+    {
+        if (_metadata is null || string.IsNullOrEmpty(_formModel.SelectedBoundaryKey))
+        {
+            _currentBoundary = null;
+            _previousBoundary = null;
+            _nextBoundary = null;
+            _showMergePreview = false;
+            return;
+        }
+
+        // 找到当前选中的边界索引
+        var currentIndex = -1;
+        for (var i = 0; i < _metadata.Boundaries.Count; i++)
+        {
+            if (_metadata.Boundaries[i].Key == _formModel.SelectedBoundaryKey)
+            {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        if (currentIndex < 0)
+        {
+            _currentBoundary = null;
+            _previousBoundary = null;
+            _nextBoundary = null;
+            _showMergePreview = false;
+            return;
+        }
+
+        _currentBoundary = _metadata.Boundaries[currentIndex];
+        _previousBoundary = currentIndex > 0 ? _metadata.Boundaries[currentIndex - 1] : null;
+        _nextBoundary = currentIndex < _metadata.Boundaries.Count - 1 ? _metadata.Boundaries[currentIndex + 1] : null;
+        _showMergePreview = true;
+    }
+
+    private bool CanProceedToNextStep()
+    {
+        return _currentStep switch
+        {
+            0 => !string.IsNullOrWhiteSpace(_formModel.SelectedBoundaryKey) && _metadata is not null && _metadata.Boundaries.Count >= 2,
+            _ => false
+        };
+    }
+
+    private bool CanSubmit()
+    {
+        return _preview != null && _formModel.BackupConfirmed && !_submitting;
+    }
+
+    private async Task NextStep()
+    {
+        _validationError = null;
+
+        if (_currentStep == 0)
+        {
+            // Step 1 验证并加载预览
+            if (string.IsNullOrWhiteSpace(_formModel.SelectedBoundaryKey))
+            {
+                _validationError = "请选择要删除的边界值";
+                return;
+            }
+
+            // 更新边界引用
+            UpdateBoundaryReferences();
+
+            if (_currentBoundary is null)
+            {
+                _validationError = "所选边界值不存在,请刷新后重试";
+                return;
+            }
+
+            // 加载预览
+            await LoadPreviewAsync();
+            if (_preview == null)
+            {
+                return;
+            }
+        }
+
+        _currentStep++;
+    }
+
+    private void PreviousStep()
+    {
+        if (_currentStep > 0)
+        {
+            _currentStep--;
+            _validationError = null;
+        }
+    }
+
+    private async Task LoadPreviewAsync()
+    {
+        _loadingPreview = true;
+        _validationError = null;
+
+        try
+        {
+            var request = new MergePartitionRequest(
+                DataSourceId,
+                SchemaName,
+                TableName,
+                _formModel.SelectedBoundaryKey!,
+                false,
+                "WebUser" // TODO: 从认证上下文获取
+            );
+
+            var result = await PartitionManagementApi.PreviewMergeAsync(DataSourceId, request);
+            if (result.IsSuccess && result.Value != null)
+            {
+                _preview = result.Value;
+            }
+            else
+            {
+                _validationError = $"加载预览失败: {result.Error}";
+                _preview = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _validationError = $"加载预览时发生异常: {ex.Message}";
+            _preview = null;
+        }
+        finally
+        {
+            _loadingPreview = false;
+        }
+    }
+
+    private async Task HandleSubmit()
+    {
+        _validationError = null;
+        _submitting = true;
+
+        try
+        {
+            var request = new MergePartitionRequest(
+                DataSourceId,
+                SchemaName,
+                TableName,
+                _formModel.SelectedBoundaryKey!,
+                _formModel.BackupConfirmed,
+                "WebUser" // TODO: 从认证上下文获取
+            );
+
+            // 执行合并,创建任务并自动分派到执行队列
+            var executeResult = await PartitionManagementApi.ExecuteMergeAsync(DataSourceId, request);
+            if (!executeResult.IsSuccess)
+            {
+                _validationError = $"提交合并任务失败: {executeResult.Error}";
+                return;
+            }
+
+            var taskId = executeResult.Value;
+            
+            Message.Success($"合并任务已提交并加入执行队列!任务ID: {taskId}");
+            await OnSuccess.InvokeAsync();
+            await HandleClose();
+        }
+        catch (Exception ex)
+        {
+            _validationError = $"提交时发生异常: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private async Task HandleClose()
+    {
+        ResetForm();
+        await OnClose.InvokeAsync();
+    }
+
+    private void ResetForm()
+    {
+        _metadata = null;
+        _formModel = new();
+        _preview = null;
+        _currentStep = 0;
+        _showMergePreview = false;
+        _errorMessage = null;
+        _validationError = null;
+        _loadedSchema = null;
+        _loadedTable = null;
+        _currentBoundary = null;
+        _previousBoundary = null;
+        _nextBoundary = null;
+    }
+
+    private class MergeFormModel
+    {
+        public string? SelectedBoundaryKey { get; set; }
+        public bool BackupConfirmed { get; set; }
+        public string? Notes { get; set; }
+    }
+}

@@ -115,6 +115,44 @@ public sealed class PartitionManagementApiClient
         return Result<Guid>.Failure(problem?.Detail ?? "创建拆分命令失败");
     }
 
+    public async Task<Result<PartitionCommandPreviewDto>> PreviewMergeAsync(Guid dataSourceId, MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        var url = "api/v1/partition-commands/merge/preview";
+        var response = await httpClient.PostAsJsonAsync(url, request, cancellationToken);
+        if (response.IsSuccessStatusCode)
+        {
+            var dto = await response.Content.ReadFromJsonAsync<PartitionCommandPreviewDto>(cancellationToken: cancellationToken);
+            if (dto is null)
+            {
+                return Result<PartitionCommandPreviewDto>.Failure("未获取到预览脚本内容。");
+            }
+
+            return Result<PartitionCommandPreviewDto>.Success(dto);
+        }
+
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(cancellationToken: cancellationToken);
+        return Result<PartitionCommandPreviewDto>.Failure(problem?.Detail ?? "预览合并命令失败");
+    }
+
+    public async Task<Result<Guid>> ExecuteMergeAsync(Guid dataSourceId, MergePartitionRequest request, CancellationToken cancellationToken = default)
+    {
+        var url = "api/v1/partition-commands/merge/execute";
+        var response = await httpClient.PostAsJsonAsync(url, request, cancellationToken);
+        if (response.IsSuccessStatusCode)
+        {
+            var responseData = await response.Content.ReadFromJsonAsync<ExecuteCommandResponse>(cancellationToken: cancellationToken);
+            if (responseData is null || responseData.CommandId == Guid.Empty)
+            {
+                return Result<Guid>.Failure("接口未返回有效的命令标识。");
+            }
+
+            return Result<Guid>.Success(responseData.CommandId);
+        }
+
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(cancellationToken: cancellationToken);
+        return Result<Guid>.Failure(problem?.Detail ?? "创建合并命令失败");
+    }
+
     private sealed record ExecuteCommandResponse(Guid CommandId);
 
     public async Task<Result> ApproveAsync(Guid dataSourceId, Guid commandId, string approver, CancellationToken cancellationToken = default)
