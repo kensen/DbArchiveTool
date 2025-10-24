@@ -16,9 +16,7 @@ namespace DbArchiveTool.UnitTests.Partitions;
 public class PartitionCommandTests
 {
     private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
-    private readonly Mock<IPartitionCommandRepository> commandRepository = new();
     private readonly Mock<IPartitionCommandScriptGenerator> scriptGenerator = new();
-    private readonly Mock<IPartitionCommandQueue> commandQueue = new();
     private readonly Mock<IBackgroundTaskRepository> backgroundTaskRepository = new();
     private readonly Mock<IBackgroundTaskLogRepository> backgroundTaskLogRepository = new();
     private readonly Mock<IPartitionAuditLogRepository> auditLogRepository = new();
@@ -52,7 +50,6 @@ public class PartitionCommandTests
         Assert.Equal("执行拆分前需要确认已有备份或快照。", result.Error);
         metadataRepository.VerifyNoOtherCalls();
         scriptGenerator.VerifyNoOtherCalls();
-        commandRepository.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -104,7 +101,6 @@ public class PartitionCommandTests
         Assert.Equal(dataSourceId, capturedTask!.DataSourceId);
         Assert.Equal(BackgroundTaskOperationType.SplitBoundary, capturedTask.OperationType);
         Assert.Contains("\"2024-05-01\"", capturedTask.ConfigurationSnapshot ?? string.Empty);
-        commandRepository.Verify(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -131,7 +127,7 @@ public class PartitionCommandTests
     }
 
     [Fact]
-    public async Task ExecuteMergeAsync_Should_Create_Command()
+    public async Task ExecuteMergeAsync_Should_Create_BackgroundTask()
     {
         var dataSourceId = Guid.NewGuid();
         var configuration = CreateConfiguration(dataSourceId, new[]
@@ -140,17 +136,30 @@ public class PartitionCommandTests
         });
 
         metadataRepository
-            .Setup(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(configuration);
+            .SetupSequence(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration)  // PreviewMergeAsync
+            .ReturnsAsync(configuration); // ExecuteMergeAsync
 
         scriptGenerator
             .Setup(x => x.GenerateMergeScript(configuration, "0001"))
             .Returns(Result<string>.Success("MERGE SCRIPT"));
 
-        PartitionCommand? captured = null;
-        commandRepository
-            .Setup(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()))
-            .Callback<PartitionCommand, CancellationToken>((cmd, _) => captured = cmd)
+        BackgroundTask? capturedTask = null;
+        backgroundTaskRepository
+            .Setup(x => x.AddAsync(It.IsAny<BackgroundTask>(), It.IsAny<CancellationToken>()))
+            .Callback<BackgroundTask, CancellationToken>((task, _) => capturedTask = task)
+            .Returns(Task.CompletedTask);
+
+        backgroundTaskLogRepository
+            .Setup(x => x.AddAsync(It.IsAny<BackgroundTaskLogEntry>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        auditLogRepository
+            .Setup(x => x.AddAsync(It.IsAny<PartitionAuditLog>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        backgroundTaskDispatcher
+            .Setup(x => x.DispatchAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         var service = CreateService();
@@ -159,36 +168,10 @@ public class PartitionCommandTests
         var result = await service.ExecuteMergeAsync(request);
 
         Assert.True(result.IsSuccess);
-        Assert.NotNull(captured);
-        Assert.Equal(PartitionCommandType.Merge, captured!.CommandType);
-        Assert.Contains("\"BoundaryKey\":\"0001\"", captured.Payload);
-    }
-
-    [Fact]
-    public async Task ApproveAsync_Should_Enqueue_Command()
-    {
-        var command = PartitionCommand.CreateSplit(Guid.NewGuid(), "dbo", "Orders", "script", "payload", "requester");
-        var commandId = command.Id;
-
-        commandRepository
-            .Setup(x => x.GetByIdAsync(commandId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(command);
-
-        Guid? queuedCommandId = null;
-        commandQueue
-            .Setup(x => x.EnqueueAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .Callback<Guid, CancellationToken>((id, _) => queuedCommandId = id)
-            .Returns(ValueTask.CompletedTask);
-
-        var service = CreateService();
-
-        var result = await service.ApproveAsync(commandId, "approver");
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(PartitionCommandStatus.Approved, command.Status);
-        commandRepository.Verify(x => x.UpdateAsync(command, It.IsAny<CancellationToken>()), Times.Once);
-        commandQueue.Verify(x => x.EnqueueAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Once);
-        Assert.Equal(command.Id, queuedCommandId);
+        Assert.NotNull(capturedTask);
+        Assert.Equal(dataSourceId, capturedTask!.DataSourceId);
+        Assert.Equal(BackgroundTaskOperationType.MergeBoundary, capturedTask.OperationType);
+        Assert.Contains("\"BoundaryKey\":\"0001\"", capturedTask.ConfigurationSnapshot ?? string.Empty);
     }
 
     [Fact]
@@ -219,39 +202,6 @@ public class PartitionCommandTests
         Assert.Equal("SwitchTarget", capturedPayload.TargetTable);
     }
 
-    [Fact]
-    public async Task ExecuteSwitchAsync_Should_Create_Command()
-    {
-        var dataSourceId = Guid.NewGuid();
-        var configuration = CreateConfiguration(dataSourceId);
-
-        metadataRepository
-            .SetupSequence(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
-            .ReturnsAsync(configuration)  // preview
-            .ReturnsAsync(configuration); // execute
-
-        scriptGenerator
-            .Setup(x => x.GenerateSwitchOutScript(configuration, It.IsAny<SwitchPayload>()))
-            .Returns(Result<string>.Success("SWITCH SCRIPT"));
-
-        PartitionCommand? captured = null;
-        commandRepository
-            .Setup(x => x.AddAsync(It.IsAny<PartitionCommand>(), It.IsAny<CancellationToken>()))
-            .Callback<PartitionCommand, CancellationToken>((cmd, _) => captured = cmd)
-            .Returns(Task.CompletedTask);
-
-        var service = CreateService();
-        var request = new SwitchPartitionRequest(dataSourceId, "dbo", "Orders", "7", "archive.SwitchTarget", false, true, "tester");
-
-        var result = await service.ExecuteSwitchAsync(request);
-
-        Assert.True(result.IsSuccess);
-        Assert.NotNull(captured);
-        Assert.Equal(PartitionCommandType.Switch, captured!.CommandType);
-        Assert.Contains("\"targetSchema\":\"archive\"", captured.Payload, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("\"targetTable\":\"SwitchTarget\"", captured.Payload, StringComparison.OrdinalIgnoreCase);
-    }
-
     private static PartitionConfiguration CreateConfiguration(Guid dataSourceId, IEnumerable<PartitionBoundary>? boundaries = null)
     {
         var column = new PartitionColumn("OrderDate", PartitionValueKind.Date, isNullable: false);
@@ -272,9 +222,7 @@ public class PartitionCommandTests
     private PartitionCommandAppService CreateService()
         => new(
             metadataRepository.Object,
-            commandRepository.Object,
             scriptGenerator.Object,
-            commandQueue.Object,
             parser,
             logger.Object,
             backgroundTaskRepository.Object,

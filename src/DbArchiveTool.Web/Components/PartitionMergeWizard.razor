@@ -503,6 +503,13 @@
                     var matchedBoundary = _metadata.Boundaries.FirstOrDefault(b => 
                         b.Key == PreSelectedBoundaryKey || b.LiteralValue == PreSelectedBoundaryKey);
                     
+                    // 如果精确匹配失败,尝试日期格式的模糊匹配
+                    if (matchedBoundary == null)
+                    {
+                        matchedBoundary = _metadata.Boundaries.FirstOrDefault(b =>
+                            IsDateBoundaryMatch(b.LiteralValue, PreSelectedBoundaryKey));
+                    }
+                    
                     if (matchedBoundary != null)
                     {
                         _formModel.SelectedBoundaryKey = matchedBoundary.Key;
@@ -741,6 +748,36 @@
         _currentBoundary = null;
         _previousBoundary = null;
         _nextBoundary = null;
+    }
+
+    /// <summary>
+    /// 检查日期类型边界值是否匹配
+    /// </summary>
+    /// <param name="literalValue">元数据中的边界值(如 '2020-01-01 00:00:00')</param>
+    /// <param name="preSelectedValue">预选的边界值(如 2020-01-01)</param>
+    /// <returns>是否匹配</returns>
+    private static bool IsDateBoundaryMatch(string literalValue, string preSelectedValue)
+    {
+        if (string.IsNullOrEmpty(literalValue) || string.IsNullOrEmpty(preSelectedValue))
+        {
+            return false;
+        }
+
+        // 移除字符串两端的单引号
+        var cleanedLiteral = literalValue.Trim('\'', ' ');
+        var cleanedPreSelected = preSelectedValue.Trim('\'', ' ');
+
+        // 尝试解析为日期进行比较
+        if (DateTime.TryParse(cleanedLiteral, out var literalDate) &&
+            DateTime.TryParse(cleanedPreSelected, out var preSelectedDate))
+        {
+            // 只比较日期部分,忽略时间
+            return literalDate.Date == preSelectedDate.Date;
+        }
+
+        // 如果无法解析为日期,尝试字符串包含匹配
+        // 例如 '2020-01-01 00:00:00' 包含 '2020-01-01'
+        return cleanedLiteral.Contains(cleanedPreSelected, StringComparison.OrdinalIgnoreCase);
     }
 
     private class MergeFormModel

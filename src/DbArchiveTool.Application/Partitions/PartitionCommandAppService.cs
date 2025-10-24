@@ -13,9 +13,7 @@ namespace DbArchiveTool.Application.Partitions;
 internal sealed class PartitionCommandAppService : IPartitionCommandAppService
 {
     private readonly IPartitionMetadataRepository metadataRepository;
-    private readonly IPartitionCommandRepository commandRepository;
     private readonly IPartitionCommandScriptGenerator scriptGenerator;
-    private readonly IPartitionCommandQueue commandQueue;
     private readonly PartitionValueParser parser;
     private readonly ILogger<PartitionCommandAppService> logger;
     private readonly IBackgroundTaskRepository taskRepository;
@@ -25,9 +23,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
 
     public PartitionCommandAppService(
         IPartitionMetadataRepository metadataRepository,
-        IPartitionCommandRepository commandRepository,
         IPartitionCommandScriptGenerator scriptGenerator,
-        IPartitionCommandQueue commandQueue,
         PartitionValueParser parser,
         ILogger<PartitionCommandAppService> logger,
         IBackgroundTaskRepository taskRepository,
@@ -36,9 +32,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         IBackgroundTaskDispatcher dispatcher)
     {
         this.metadataRepository = metadataRepository;
-        this.commandRepository = commandRepository;
         this.scriptGenerator = scriptGenerator;
-        this.commandQueue = commandQueue;
         this.parser = parser;
         this.logger = logger;
         this.taskRepository = taskRepository;
@@ -203,81 +197,6 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         {
             logger.LogError(ex, "Failed to create split task for table {Schema}.{Table}", request.SchemaName, request.TableName);
             return Result<Guid>.Failure("创建拆分任务时发生异常,请稍后重试。");
-        }
-    }
-
-    public async Task<Result> ApproveAsync(Guid commandId, string approver, CancellationToken cancellationToken = default)
-    {
-        if (commandId == Guid.Empty)
-        {
-            return Result.Failure("命令标识不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(approver))
-        {
-            return Result.Failure("审批人不能为空。");
-        }
-
-        var command = await commandRepository.GetByIdAsync(commandId, cancellationToken);
-        if (command is null)
-        {
-            return Result.Failure("未找到指定的分区命令。");
-        }
-
-        try
-        {
-            command.Approve(approver);
-            await commandRepository.UpdateAsync(command, cancellationToken);
-
-            await commandQueue.EnqueueAsync(command.Id, cancellationToken);
-
-            logger.LogInformation(
-                "Partition command {CommandId} approved by {Approver} and enqueued for execution",
-                commandId,
-                approver);
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to approve partition command {CommandId}", commandId);
-            return Result.Failure("PARTITION_COMMAND_APPROVE_FAILED");
-        }
-    }
-
-    public async Task<Result> RejectAsync(Guid commandId, string approver, string reason, CancellationToken cancellationToken = default)
-    {
-        if (commandId == Guid.Empty)
-        {
-            return Result.Failure("命令标识不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(approver))
-        {
-            return Result.Failure("审批人不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(reason))
-        {
-            return Result.Failure("拒绝原因不能为空。");
-        }
-
-        var command = await commandRepository.GetByIdAsync(commandId, cancellationToken);
-        if (command is null)
-        {
-            return Result.Failure("未找到指定的分区命令。");
-        }
-
-        try
-        {
-            command.Reject(approver, reason);
-            await commandRepository.UpdateAsync(command, cancellationToken);
-            logger.LogInformation("Partition command {CommandId} rejected by {Approver}", commandId, approver);
-            return Result.Success();
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to reject partition command {CommandId}", commandId);
-            return Result.Failure("PARTITION_COMMAND_REJECT_FAILED");
         }
     }
 
@@ -683,6 +602,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<Guid>.Failure(target.Error!);
         }
 
+        var script = preview.Value!.Script;
         var payloadJson = JsonSerializer.Serialize(new
         {
             configurationId = configuration.Id,
@@ -691,51 +611,79 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             request.SourcePartitionKey,
             targetSchema = target.Schema,
             targetTable = target.Table,
-            request.CreateStagingTable
+            request.CreateStagingTable,
+            DdlScript = script
         });
 
-        var command = PartitionCommand.CreateSwitch(
-            request.DataSourceId,
-            request.SchemaName,
-            request.TableName,
-            preview.Value!.Script,
-            payloadJson,
-            request.RequestedBy);
-
-        await commandRepository.AddAsync(command, cancellationToken);
-        logger.LogInformation(
-            "Partition switch command {CommandId} created for {Schema}.{Table} (Target {TargetSchema}.{TargetTable})",
-            command.Id,
-            request.SchemaName,
-            request.TableName,
-            target.Schema,
-            target.Table);
-
-        return Result<Guid>.Success(command.Id);
-    }
-
-    public async Task<Result<PartitionCommandStatusDto>> GetStatusAsync(Guid commandId, CancellationToken cancellationToken = default)
-    {
-        if (commandId == Guid.Empty)
+        try
         {
-            return Result<PartitionCommandStatusDto>.Failure("命令标识不能为空。");
-        }
+            // 创建临时的分区配置ID（用于关联任务）
+            var tempConfigurationId = Guid.NewGuid();
 
-        var command = await commandRepository.GetByIdAsync(commandId, cancellationToken);
-        if (command is null)
+            // 创建执行任务 (使用 ArchiveSwitch 操作类型)
+            var task = BackgroundTask.Create(
+                partitionConfigurationId: tempConfigurationId,
+                dataSourceId: request.DataSourceId,
+                requestedBy: request.RequestedBy,
+                createdBy: request.RequestedBy,
+                backupReference: null,
+                notes: $"切换分区 {request.SourcePartitionKey} 到 {target.Schema}.{target.Table}",
+                priority: 0,
+                operationType: Shared.Partitions.BackgroundTaskOperationType.ArchiveSwitch,
+                archiveScheme: null,
+                archiveTargetConnection: null,
+                archiveTargetDatabase: null,
+                archiveTargetTable: null);
+
+            // 保存配置快照
+            task.SaveConfigurationSnapshot(payloadJson, request.RequestedBy);
+
+            await taskRepository.AddAsync(task, cancellationToken);
+
+            // 记录初始日志
+            var initialLog = BackgroundTaskLogEntry.Create(
+                task.Id,
+                "Info",
+                "任务创建",
+                $"由 {request.RequestedBy} 发起的分区切换任务已创建。" +
+                $"表：{request.SchemaName}.{request.TableName}，分区：{request.SourcePartitionKey}，目标：{target.Schema}.{target.Table}");
+
+            await logRepository.AddAsync(initialLog, cancellationToken);
+
+            // 记录审计日志
+            var resourceId = $"{request.DataSourceId}/{request.SchemaName}/{request.TableName}";
+            var summary = $"切换表 {request.SchemaName}.{request.TableName} 的分区 {request.SourcePartitionKey} 到 {target.Schema}.{target.Table}";
+
+            var auditLog = PartitionAuditLog.Create(
+                request.RequestedBy,
+                Shared.Partitions.BackgroundTaskOperationType.ArchiveSwitch.ToString(),
+                "PartitionedTable",
+                resourceId,
+                summary,
+                payloadJson,
+                "Queued",
+                script);
+
+            await auditLogRepository.AddAsync(auditLog, cancellationToken);
+
+            // 将任务分派到执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
+            logger.LogInformation(
+                "Successfully created execution task {TaskId} for switching partition {PartitionKey} in table {Schema}.{Table} to {TargetSchema}.{TargetTable}",
+                task.Id,
+                request.SourcePartitionKey,
+                request.SchemaName,
+                request.TableName,
+                target.Schema,
+                target.Table);
+
+            return Result<Guid>.Success(task.Id);
+        }
+        catch (Exception ex)
         {
-            return Result<PartitionCommandStatusDto>.Failure("未找到指定的分区命令。");
+            logger.LogError(ex, "Failed to create switch task for table {Schema}.{Table}", request.SchemaName, request.TableName);
+            return Result<Guid>.Failure("创建切换任务时发生异常,请稍后重试。");
         }
-
-        var dto = new PartitionCommandStatusDto(
-            command.Id,
-            command.Status,
-            command.RequestedAt,
-            command.ExecutedAt,
-            command.CompletedAt,
-            command.FailureReason,
-            command.ExecutionLog);
-
-        return Result<PartitionCommandStatusDto>.Success(dto);
     }
 }

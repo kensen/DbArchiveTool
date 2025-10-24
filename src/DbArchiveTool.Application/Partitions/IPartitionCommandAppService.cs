@@ -16,10 +16,6 @@ public interface IPartitionCommandAppService
 
     Task<Result<PartitionCommandPreviewDto>> PreviewSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default);
     Task<Result<Guid>> ExecuteSwitchAsync(SwitchPartitionRequest request, CancellationToken cancellationToken = default);
-
-    Task<Result> ApproveAsync(Guid commandId, string approver, CancellationToken cancellationToken = default);
-    Task<Result> RejectAsync(Guid commandId, string approver, string reason, CancellationToken cancellationToken = default);
-    Task<Result<PartitionCommandStatusDto>> GetStatusAsync(Guid commandId, CancellationToken cancellationToken = default);
 }
 
 public sealed record SplitPartitionRequest(
