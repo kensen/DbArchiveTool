@@ -922,14 +922,15 @@
 
         if (!_selectedPartitionRows.Any())
         {
-            Message.Warning("请先选择一个分区");
+            Message.Warning("请先选择要合并的分区");
             return;
         }
 
-        // 验证只能选择一个分区
+        // 当前版本:一次合并一个边界值
+        // TODO: 未来可支持批量合并多个连续边界
         if (_selectedPartitionRows.Count() > 1)
         {
-            Message.Warning("只能选择一个分区进行合并操作");
+            Message.Warning("当前仅支持一次合并一个分区边界。如需合并多个边界,请分多次操作。");
             return;
         }
 

@@ -2,6 +2,7 @@
 @using DbArchiveTool.Application.Partitions
 @using DbArchiveTool.Web.Services
 @using Microsoft.AspNetCore.Components.Web
+@using System.Linq
 
 <Drawer Visible="Visible"
         Title="@("合并分区")"
@@ -25,7 +26,7 @@
 
                 <!-- 步骤导航 -->
                 <Steps Current="@_currentStep" Size="@StepsSize.Small" Style="margin-bottom:24px;">
-                    <Step Title="选择边界" Description="选择要删除的边界值" />
+                    <Step Title="@(_currentBoundary != null ? "确认边界" : "选择边界")" Description="选择要删除的边界值" />
                     <Step Title="确认执行" Description="预览并提交任务" />
                 </Steps>
 
@@ -52,6 +53,10 @@
                                     <MessageTemplate>
                                         <div>
                                             <strong>待删除边界:</strong> @_currentBoundary.LiteralValue
+                                            @if (!string.IsNullOrEmpty(PreSelectedBoundaryKey))
+                                            {
+                                                <span style="color:#999;font-size:12px;margin-left:8px;">(已自动选中)</span>
+                                            }
                                         </div>
                                         <div style="margin-top:8px;font-size:12px;color:#666;">
                                             @if (_previousBoundary is not null && _nextBoundary is not null)
@@ -73,6 +78,59 @@
                                         </div>
                                     </MessageTemplate>
                                 </Alert>
+
+                                @* 只有当没有预选边界时才显示选择列表,否则显示更改选项 *@
+                                @if (string.IsNullOrEmpty(PreSelectedBoundaryKey))
+                                {
+                                    <!-- 显示完整的边界值选择列表 -->
+                                    <Form Model="_formModel" Layout="FormLayout.Vertical">
+                                        <FormItem Label="* 选择要删除的边界值" Required>
+                                            <RadioGroup @bind-Value="_formModel.SelectedBoundaryKey" @bind-Value:after="UpdateBoundaryReferences">
+                                                @foreach (var boundary in _metadata.Boundaries)
+                                                {
+                                                    <Radio RadioButton Value="@boundary.Key" Style="margin-bottom:8px;display:block;">
+                                                        <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
+                                                            <span><strong>@boundary.LiteralValue</strong></span>
+                                                        </div>
+                                                    </Radio>
+                                                }
+                                            </RadioGroup>
+                                            <div class="form-tip">
+                                                删除边界值会将其左右两个分区合并。合并后数据将移至主文件组或左侧分区的文件组。
+                                            </div>
+                                        </FormItem>
+                                    </Form>
+                                }
+                                else
+                                {
+                                    <!-- 已自动选中,提供更改选项 -->
+                                    <div style="margin-bottom:16px;">
+                                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="ShowAllBoundaries">
+                                            选择其他边界值
+                                        </Button>
+                                    </div>
+
+                                    @if (_showAllBoundaries)
+                                    {
+                                        <Form Model="_formModel" Layout="FormLayout.Vertical" Style="margin-top:16px;">
+                                            <FormItem Label="* 选择要删除的边界值" Required>
+                                                <RadioGroup @bind-Value="_formModel.SelectedBoundaryKey" @bind-Value:after="UpdateBoundaryReferences">
+                                                    <div class="boundary-grid">
+                                                        @foreach (var boundary in _metadata.Boundaries)
+                                                        {
+                                                            <Radio RadioButton Value="@boundary.Key" Class="boundary-radio-item">
+                                                                <strong>@boundary.LiteralValue</strong>
+                                                            </Radio>
+                                                        }
+                                                    </div>
+                                                </RadioGroup>
+                                                <div class="form-tip">
+                                                    删除边界值会将其左右两个分区合并。合并后数据将移至主文件组或左侧分区的文件组。
+                                                </div>
+                                            </FormItem>
+                                        </Form>
+                                    }
+                                }
                             }
                             else
                             {
@@ -83,26 +141,26 @@
                                         </div>
                                     </MessageTemplate>
                                 </Alert>
-                            }
 
-                            <!-- 边界值选择列表 -->
-                            <Form Model="_formModel" Layout="FormLayout.Vertical">
-                                <FormItem Label="* 选择要删除的边界值" Required>
-                                    <RadioGroup @bind-Value="_formModel.SelectedBoundaryKey">
-                                        @foreach (var boundary in _metadata.Boundaries)
-                                        {
-                                            <Radio RadioButton Value="@boundary.Key" Style="margin-bottom:8px;display:block;">
-                                                <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
-                                                    <span><strong>@boundary.LiteralValue</strong></span>
-                                                </div>
-                                            </Radio>
-                                        }
-                                    </RadioGroup>
-                                    <div class="form-tip">
-                                        删除边界值会将其左右两个分区合并。合并后数据将移至主文件组或左侧分区的文件组。
-                                    </div>
-                                </FormItem>
-                            </Form>
+                                <!-- 显示完整的边界值选择列表 -->
+                                <Form Model="_formModel" Layout="FormLayout.Vertical">
+                                    <FormItem Label="* 选择要删除的边界值" Required>
+                                        <RadioGroup @bind-Value="_formModel.SelectedBoundaryKey" @bind-Value:after="UpdateBoundaryReferences">
+                                            <div class="boundary-grid">
+                                                @foreach (var boundary in _metadata.Boundaries)
+                                                {
+                                                    <Radio RadioButton Value="@boundary.Key" Class="boundary-radio-item">
+                                                        <strong>@boundary.LiteralValue</strong>
+                                                    </Radio>
+                                                }
+                                            </div>
+                                        </RadioGroup>
+                                        <div class="form-tip">
+                                            删除边界值会将其左右两个分区合并。合并后数据将移至主文件组或左侧分区的文件组。
+                                        </div>
+                                    </FormItem>
+                                </Form>
+                            }
 
                             @if (_showMergePreview && _currentBoundary != null)
                             {
@@ -149,11 +207,15 @@
 
                         @if (!string.IsNullOrEmpty(_validationError))
                         {
-                            <Alert Message="@_validationError"
-                                   Type="@AlertType.Error"
+                            <Alert Type="@AlertType.Error"
                                    Closable
+                                   ShowIcon="true"
                                    OnClose="() => _validationError = null"
-                                   Style="margin-top:16px" />
+                                   Style="margin-top:16px">
+                                <MessageTemplate>
+                                    <div style="white-space: pre-wrap; word-break: break-word;">@_validationError</div>
+                                </MessageTemplate>
+                            </Alert>
                         }
                     </div>
                 }
@@ -214,11 +276,15 @@
 
                         @if (!string.IsNullOrEmpty(_validationError))
                         {
-                            <Alert Message="@_validationError"
-                                   Type="@AlertType.Error"
+                            <Alert Type="@AlertType.Error"
                                    Closable
+                                   ShowIcon="true"
                                    OnClose="() => _validationError = null"
-                                   Style="margin-top:16px" />
+                                   Style="margin-top:16px">
+                                <MessageTemplate>
+                                    <div style="white-space: pre-wrap; word-break: break-word;">@_validationError</div>
+                                </MessageTemplate>
+                            </Alert>
                         }
                     </div>
                 }
@@ -313,6 +379,26 @@
         white-space: pre-wrap;
         word-wrap: break-word;
     }
+
+    /* 边界值网格布局 */
+    .boundary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .boundary-radio-item {
+        margin: 0 !important;
+        width: 100%;
+    }
+
+    /* 响应式调整 */
+    @@media (max-width: 768px) {
+        .boundary-grid {
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        }
+    }
 </style>
 
 @code {
@@ -357,6 +443,7 @@
     private bool _loadingPreview;
     private bool _submitting;
     private bool _showMergePreview;
+    private bool _showAllBoundaries; // 是否显示所有边界选择列表
     private string? _errorMessage;
     private string? _validationError;
     private string? _loadedSchema;
@@ -409,11 +496,18 @@
                 _currentStep = 0;
                 _showMergePreview = false;
 
-                // 如果有预选边界,自动选中
-                if (!string.IsNullOrEmpty(PreSelectedBoundaryKey))
+                // 如果有预选边界,智能匹配到对应的Key
+                if (!string.IsNullOrEmpty(PreSelectedBoundaryKey) && _metadata.Boundaries.Any())
                 {
-                    _formModel.SelectedBoundaryKey = PreSelectedBoundaryKey;
-                    UpdateBoundaryReferences();
+                    // 尝试匹配Key或LiteralValue
+                    var matchedBoundary = _metadata.Boundaries.FirstOrDefault(b => 
+                        b.Key == PreSelectedBoundaryKey || b.LiteralValue == PreSelectedBoundaryKey);
+                    
+                    if (matchedBoundary != null)
+                    {
+                        _formModel.SelectedBoundaryKey = matchedBoundary.Key;
+                        UpdateBoundaryReferences();
+                    }
                 }
             }
             else
@@ -556,14 +650,21 @@
             }
             else
             {
-                _validationError = $"加载预览失败: {result.Error}";
+                _validationError = $"加载预览失败: {result.Error ?? "未知错误"}";
                 _preview = null;
+                Message.Error($"预览合并命令失败: {result.Error ?? "未知错误"}");
             }
         }
         catch (Exception ex)
         {
-            _validationError = $"加载预览时发生异常: {ex.Message}";
+            var errorMsg = $"发生异常: {ex.Message}";
+            if (ex.InnerException != null)
+            {
+                errorMsg += $"\n内部异常: {ex.InnerException.Message}";
+            }
+            _validationError = errorMsg;
             _preview = null;
+            Message.Error($"加载预览失败: {ex.Message}");
         }
         finally
         {
@@ -617,6 +718,14 @@
         await OnClose.InvokeAsync();
     }
 
+    /// <summary>
+    /// 显示所有边界选择列表
+    /// </summary>
+    private void ShowAllBoundaries()
+    {
+        _showAllBoundaries = !_showAllBoundaries;
+    }
+
     private void ResetForm()
     {
         _metadata = null;
@@ -624,6 +733,7 @@
         _preview = null;
         _currentStep = 0;
         _showMergePreview = false;
+        _showAllBoundaries = false;
         _errorMessage = null;
         _validationError = null;
         _loadedSchema = null;

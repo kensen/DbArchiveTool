@@ -1,6 +1,7 @@
 using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Shared.Results;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using PartitionCommandPreviewDto = DbArchiveTool.Application.Partitions.PartitionCommandPreviewDto;
 
@@ -92,8 +93,42 @@ public sealed class PartitionManagementApiClient
             return Result<PartitionCommandPreviewDto>.Success(dto);
         }
 
-        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(cancellationToken: cancellationToken);
-        return Result<PartitionCommandPreviewDto>.Failure(problem?.Detail ?? "预览拆分命令失败");
+        // 尝试读取错误详情，如果失败则使用状态码信息
+        var errorMessage = "预览拆分命令失败";
+        try
+        {
+            var contentString = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(contentString))
+            {
+                try
+                {
+                    var problem = JsonSerializer.Deserialize<HttpValidationProblemDetails>(contentString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (problem?.Detail != null)
+                    {
+                        errorMessage = problem.Detail;
+                    }
+                    else
+                    {
+                        errorMessage = $"预览失败: {contentString}";
+                    }
+                }
+                catch
+                {
+                    // JSON解析失败，使用原始内容
+                    errorMessage = $"预览失败: {contentString}";
+                }
+            }
+            else
+            {
+                errorMessage = $"预览失败 (HTTP {(int)response.StatusCode}): {response.ReasonPhrase}";
+            }
+        }
+        catch
+        {
+            errorMessage = $"预览失败 (HTTP {(int)response.StatusCode}): {response.ReasonPhrase}";
+        }
+        
+        return Result<PartitionCommandPreviewDto>.Failure(errorMessage);
     }
 
     public async Task<Result<Guid>> ExecuteSplitAsync(Guid dataSourceId, SplitPartitionRequest request, CancellationToken cancellationToken = default)
@@ -130,8 +165,42 @@ public sealed class PartitionManagementApiClient
             return Result<PartitionCommandPreviewDto>.Success(dto);
         }
 
-        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>(cancellationToken: cancellationToken);
-        return Result<PartitionCommandPreviewDto>.Failure(problem?.Detail ?? "预览合并命令失败");
+        // 尝试读取错误详情，如果失败则使用状态码信息
+        var errorMessage = "预览合并命令失败";
+        try
+        {
+            var contentString = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(contentString))
+            {
+                try
+                {
+                    var problem = JsonSerializer.Deserialize<HttpValidationProblemDetails>(contentString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (problem?.Detail != null)
+                    {
+                        errorMessage = problem.Detail;
+                    }
+                    else
+                    {
+                        errorMessage = $"预览失败: {contentString}";
+                    }
+                }
+                catch
+                {
+                    // JSON解析失败，使用原始内容
+                    errorMessage = $"预览失败: {contentString}";
+                }
+            }
+            else
+            {
+                errorMessage = $"预览失败 (HTTP {(int)response.StatusCode}): {response.ReasonPhrase}";
+            }
+        }
+        catch
+        {
+            errorMessage = $"预览失败 (HTTP {(int)response.StatusCode}): {response.ReasonPhrase}";
+        }
+        
+        return Result<PartitionCommandPreviewDto>.Failure(errorMessage);
     }
 
     public async Task<Result<Guid>> ExecuteMergeAsync(Guid dataSourceId, MergePartitionRequest request, CancellationToken cancellationToken = default)

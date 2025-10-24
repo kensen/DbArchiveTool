@@ -68,6 +68,52 @@ public class PartitionCommandsController : ControllerBase
     }
 
     /// <summary>
+    /// 预览分区合并操作,生成DDL脚本和风险提示。
+    /// </summary>
+    /// <param name="request">合并请求参数</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>包含DDL脚本和风险警告的预览结果</returns>
+    [HttpPost("merge/preview")]
+    [ProducesResponseType(typeof(PartitionCommandPreviewDto), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> PreviewMerge(
+        [FromBody] MergePartitionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await appService.PreviewMergeAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            logger.LogWarning("Preview merge failed: {Error}", result.Error);
+            return BadRequest(new { error = result.Error });
+        }
+
+        return Ok(result.Value);
+    }
+
+    /// <summary>
+    /// 执行分区合并操作,创建命令并自动加入执行队列。
+    /// </summary>
+    /// <param name="request">合并请求参数</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>创建的命令ID</returns>
+    [HttpPost("merge/execute")]
+    [ProducesResponseType(typeof(Guid), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ExecuteMerge(
+        [FromBody] MergePartitionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await appService.ExecuteMergeAsync(request, cancellationToken);
+        if (!result.IsSuccess)
+        {
+            logger.LogWarning("Execute merge failed: {Error}", result.Error);
+            return BadRequest(new { error = result.Error });
+        }
+
+        return Ok(new { commandId = result.Value });
+    }
+
+    /// <summary>
     /// 审批分区命令,审批通过后将自动加入执行队列。
     /// </summary>
     /// <param name="commandId">命令ID</param>
