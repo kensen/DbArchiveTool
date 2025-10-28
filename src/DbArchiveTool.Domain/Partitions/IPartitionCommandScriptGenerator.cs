@@ -31,6 +31,7 @@ public sealed record SwitchPayload(
     string SourcePartitionKey,
     string TargetSchema,
     string TargetTable,
+    string TargetDatabase,
     bool CreateStagingTable,
     string? StagingTableName,
     string? FilegroupName,

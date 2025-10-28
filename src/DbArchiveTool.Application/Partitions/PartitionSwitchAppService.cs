@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Shared.Results;
@@ -20,6 +21,8 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
     private readonly IPartitionSwitchInspectionService inspectionService;
     private readonly IPartitionCommandAppService commandAppService;
     private readonly IPartitionAuditLogRepository auditLogRepository;
+    private readonly IDataSourceRepository dataSourceRepository;
+    private readonly IPartitionSwitchAutoFixExecutor autoFixExecutor;
     private readonly ILogger<PartitionSwitchAppService> logger;
 
     public PartitionSwitchAppService(
@@ -27,12 +30,16 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
         IPartitionSwitchInspectionService inspectionService,
         IPartitionCommandAppService commandAppService,
         IPartitionAuditLogRepository auditLogRepository,
+        IDataSourceRepository dataSourceRepository,
+        IPartitionSwitchAutoFixExecutor autoFixExecutor,
         ILogger<PartitionSwitchAppService> logger)
     {
         this.configurationRepository = configurationRepository;
         this.inspectionService = inspectionService;
         this.commandAppService = commandAppService;
         this.auditLogRepository = auditLogRepository;
+        this.dataSourceRepository = dataSourceRepository;
+        this.autoFixExecutor = autoFixExecutor;
         this.logger = logger;
     }
 
@@ -50,17 +57,36 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result<PartitionSwitchInspectionResultDto>.Failure("未找到指定的分区配置。");
         }
 
-        var target = NormalizeTargetTable(request.TargetTable, configuration.SchemaName);
+        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            return Result<PartitionSwitchInspectionResultDto>.Failure("未找到归档数据源配置，请检查数据源列表。");
+        }
+
+        var target = NormalizeTargetTable(
+            request.TargetTable,
+            configuration.SchemaName,
+            request.TargetDatabase,
+            ResolveDefaultTargetDatabase(dataSource));
         if (!target.IsValid)
         {
             return Result<PartitionSwitchInspectionResultDto>.Failure(target.Error!);
+        }
+
+        var targetDatabaseValidation = EnsureTargetDatabaseAllowed(dataSource, target.Database);
+        if (!targetDatabaseValidation.IsSuccess)
+        {
+            return Result<PartitionSwitchInspectionResultDto>.Failure(targetDatabaseValidation.Error!);
         }
 
         var context = new PartitionSwitchInspectionContext(
             request.SourcePartitionKey,
             target.Schema,
             target.Table,
-            request.CreateStagingTable);
+            request.CreateStagingTable,
+            target.Database,
+            dataSource.DatabaseName,
+            dataSource.UseSourceAsTarget);
 
         var inspection = await inspectionService.InspectAsync(
             configuration.ArchiveDataSourceId,
@@ -86,17 +112,36 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result<Guid>.Failure("未找到指定的分区配置。");
         }
 
-        var target = NormalizeTargetTable(request.TargetTable, configuration.SchemaName);
+        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            return Result<Guid>.Failure("未找到归档数据源配置，请检查数据源列表。");
+        }
+
+        var target = NormalizeTargetTable(
+            request.TargetTable,
+            configuration.SchemaName,
+            request.TargetDatabase,
+            ResolveDefaultTargetDatabase(dataSource));
         if (!target.IsValid)
         {
             return Result<Guid>.Failure(target.Error!);
+        }
+
+        var targetDatabaseValidation = EnsureTargetDatabaseAllowed(dataSource, target.Database);
+        if (!targetDatabaseValidation.IsSuccess)
+        {
+            return Result<Guid>.Failure(targetDatabaseValidation.Error!);
         }
 
         var inspectionContext = new PartitionSwitchInspectionContext(
             request.SourcePartitionKey,
             target.Schema,
             target.Table,
-            request.CreateStagingTable);
+            request.CreateStagingTable,
+            target.Database,
+            dataSource.DatabaseName,
+            dataSource.UseSourceAsTarget);
 
         var inspection = await inspectionService.InspectAsync(
             configuration.ArchiveDataSourceId,
@@ -116,6 +161,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             configuration.TableName,
             request.SourcePartitionKey,
             FormatQualifiedName(target.Schema, target.Table),
+            target.Database,
             request.CreateStagingTable,
             request.BackupConfirmed,
             request.RequestedBy);
@@ -160,6 +206,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             request.SourcePartitionKey,
             target.Schema,
             target.Table,
+            target.Database,
             request.CreateStagingTable,
             request.BackupConfirmed,
             commandId
@@ -176,6 +223,92 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             script);
 
         await auditLogRepository.AddAsync(audit, cancellationToken);
+    }
+
+    /// <summary>
+    /// 执行用户勾选的自动补齐步骤，返回执行明细。
+    /// </summary>
+    public async Task<Result<PartitionSwitchAutoFixResultDto>> AutoFixAsync(SwitchPartitionAutoFixRequest request, CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateAutoFixRequest(request);
+        if (!validation.IsSuccess)
+        {
+            return Result<PartitionSwitchAutoFixResultDto>.Failure(validation.Error!);
+        }
+
+        var configuration = await configurationRepository.GetByIdAsync(request.PartitionConfigurationId, cancellationToken);
+        if (configuration is null)
+        {
+            return Result<PartitionSwitchAutoFixResultDto>.Failure("未找到指定的分区配置。");
+        }
+
+        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            return Result<PartitionSwitchAutoFixResultDto>.Failure("未找到归档数据源配置，请检查数据源列表。");
+        }
+
+        var target = NormalizeTargetTable(
+            request.TargetTable,
+            configuration.SchemaName,
+            request.TargetDatabase,
+            ResolveDefaultTargetDatabase(dataSource));
+        if (!target.IsValid)
+        {
+            return Result<PartitionSwitchAutoFixResultDto>.Failure(target.Error!);
+        }
+
+        var targetDatabaseValidation = EnsureTargetDatabaseAllowed(dataSource, target.Database);
+        if (!targetDatabaseValidation.IsSuccess)
+        {
+            return Result<PartitionSwitchAutoFixResultDto>.Failure(targetDatabaseValidation.Error!);
+        }
+
+        var context = new PartitionSwitchInspectionContext(
+            request.SourcePartitionKey,
+            target.Schema,
+            target.Table,
+            request.CreateStagingTable,
+            target.Database,
+            dataSource.DatabaseName,
+            dataSource.UseSourceAsTarget);
+
+        // 重新执行检查，确保最新结构状态并获取补齐计划
+        var inspection = await inspectionService.InspectAsync(
+            configuration.ArchiveDataSourceId,
+            configuration,
+            context,
+            cancellationToken);
+
+        if (inspection.BlockingIssues.Count > 0)
+        {
+            var reason = inspection.BlockingIssues.First().Message;
+            return Result<PartitionSwitchAutoFixResultDto>.Failure($"存在阻塞项无法自动补齐：{reason}");
+        }
+
+        var available = inspection.Plan.AutoFixes
+            .ToDictionary(step => step.Code, step => step, StringComparer.OrdinalIgnoreCase);
+
+        var selected = new List<PartitionSwitchPlanAutoFix>(request.AutoFixStepCodes.Count);
+        foreach (var code in request.AutoFixStepCodes)
+        {
+            if (!available.TryGetValue(code, out var step))
+            {
+                return Result<PartitionSwitchAutoFixResultDto>.Failure($"未在预检结果中找到自动补齐步骤：{code}。");
+            }
+
+            selected.Add(step);
+        }
+
+        var autoFixResult = await autoFixExecutor.ExecuteAsync(
+            configuration.ArchiveDataSourceId,
+            configuration,
+            context,
+            selected,
+            cancellationToken);
+
+        var dto = MapAutoFixResult(autoFixResult);
+        return Result<PartitionSwitchAutoFixResultDto>.Success(dto);
     }
 
     private static Result ValidateInspectionRequest(SwitchPartitionInspectionRequest request)
@@ -195,9 +328,49 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result.Failure("目标表不能为空。");
         }
 
+        if (request.TargetDatabase is not null && string.IsNullOrWhiteSpace(request.TargetDatabase))
+        {
+            return Result.Failure("目标数据库名称格式不正确。");
+        }
+
         if (string.IsNullOrWhiteSpace(request.RequestedBy))
         {
             return Result.Failure("操作人不能为空。");
+        }
+
+        return Result.Success();
+    }
+
+    private static Result ValidateAutoFixRequest(SwitchPartitionAutoFixRequest request)
+    {
+        if (request.PartitionConfigurationId == Guid.Empty)
+        {
+            return Result.Failure("配置标识不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.SourcePartitionKey))
+        {
+            return Result.Failure("源分区编号不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.TargetTable))
+        {
+            return Result.Failure("目标表不能为空。");
+        }
+
+        if (request.TargetDatabase is not null && string.IsNullOrWhiteSpace(request.TargetDatabase))
+        {
+            return Result.Failure("目标数据库名称格式不正确。");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.RequestedBy))
+        {
+            return Result.Failure("操作人不能为空。");
+        }
+
+        if (request.AutoFixStepCodes is null || request.AutoFixStepCodes.Count == 0)
+        {
+            return Result.Failure("请至少选择一个自动补齐步骤。");
         }
 
         return Result.Success();
@@ -209,6 +382,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             request.PartitionConfigurationId,
             request.SourcePartitionKey,
             request.TargetTable,
+            request.TargetDatabase,
             request.CreateStagingTable,
             request.RequestedBy));
         if (!inspectionValidation.IsSuccess)
@@ -230,12 +404,17 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             result.CanSwitch,
             result.BlockingIssues.Select(MapIssue).ToList(),
             result.Warnings.Select(MapIssue).ToList(),
+            result.AutoFixSteps.Select(MapAutoFix).ToList(),
             MapTable(result.SourceTable),
-            MapTable(result.TargetTable));
+            MapTable(result.TargetTable),
+            MapPlan(result.Plan));
     }
 
     private static PartitionSwitchIssueDto MapIssue(PartitionSwitchIssue issue)
         => new(issue.Code, issue.Message, issue.Recommendation);
+
+    private static PartitionSwitchAutoFixStepDto MapAutoFix(PartitionSwitchAutoFixStep step)
+        => new(step.Code, step.Description, step.Recommendation);
 
     private static PartitionSwitchTableInfoDto MapTable(PartitionSwitchTableInfo table)
         => new(
@@ -255,7 +434,51 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             column.IsIdentity,
             column.IsComputed);
 
-    private static NormalizedTarget NormalizeTargetTable(string raw, string defaultSchema)
+    private static PartitionSwitchAutoFixResultDto MapAutoFixResult(PartitionSwitchAutoFixResult result)
+        => new(
+            result.Succeeded,
+            result.Executions.Select(MapAutoFixExecution).ToList(),
+            result.CombinedLog);
+
+    private static PartitionSwitchAutoFixExecutionDto MapAutoFixExecution(PartitionSwitchAutoFixExecution execution)
+        => new(
+            execution.Code,
+            execution.Succeeded,
+            execution.Message,
+            execution.Script,
+            execution.ElapsedMilliseconds);
+
+    // 将领域层的补齐计划映射为前端可直接消费的 DTO
+    private static PartitionSwitchPlanDto MapPlan(PartitionSwitchPlan plan)
+        => new(
+            plan.Blockers.Select(MapPlanBlocker).ToList(),
+            plan.AutoFixes.Select(MapPlanAutoFix).ToList(),
+            plan.Warnings.Select(MapPlanWarning).ToList());
+
+    // 映射需要人工处理的阻塞项
+    private static PartitionSwitchPlanBlockerDto MapPlanBlocker(PartitionSwitchPlanBlocker blocker)
+        => new(blocker.Code, blocker.Title, blocker.Description, blocker.ResolutionSuggestion);
+
+    // 映射单个自动补齐步骤，保留分类和执行命令
+    private static PartitionSwitchPlanAutoFixDto MapPlanAutoFix(PartitionSwitchPlanAutoFix autoFix)
+        => new(
+            autoFix.Code,
+            autoFix.Title,
+            autoFix.Category.ToString(),
+            autoFix.ImpactScope,
+            autoFix.Commands.Select(MapPlanCommand).ToList(),
+            autoFix.Prerequisite,
+            autoFix.RequiresExclusiveLock);
+
+    // 映射自动补齐命令明细
+    private static PartitionSwitchPlanCommandDto MapPlanCommand(PartitionSwitchPlanCommand command)
+        => new(command.CommandText, command.Description);
+
+    // 映射风险提示，方便前端展示与重点提示
+    private static PartitionSwitchPlanWarningDto MapPlanWarning(PartitionSwitchPlanWarning warning)
+        => new(warning.Code, warning.Title, warning.Description, warning.Guidance);
+
+    private static NormalizedTarget NormalizeTargetTable(string raw, string defaultSchema, string? explicitDatabase, string defaultDatabase)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -263,64 +486,112 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
         }
 
         var trimmed = raw.Trim();
-        string schema = defaultSchema;
-        string table;
+        var segments = SplitQualifiedName(trimmed);
 
-        if (TrySplitQualifiedName(trimmed, out var parsedSchema, out var parsedTable))
+        string database = defaultDatabase;
+        string schema = defaultSchema;
+        string table = string.Empty;
+
+        switch (segments.Length)
         {
-            schema = parsedSchema;
-            table = parsedTable;
+            case 3:
+                database = segments[0];
+                schema = segments[1];
+                table = segments[2];
+                break;
+            case 2:
+                schema = segments[0];
+                table = segments[1];
+                break;
+            case 1:
+                table = segments[0];
+                break;
+            default:
+                return NormalizedTarget.Invalid("目标表名称解析失败，请使用 [database.][schema.]table 格式。");
         }
-        else
+
+        if (!string.IsNullOrWhiteSpace(explicitDatabase))
         {
-            table = trimmed.Trim('[', ']');
+            database = explicitDatabase.Trim('[', ']');
+        }
+
+        if (string.IsNullOrWhiteSpace(database))
+        {
+            database = defaultDatabase;
+        }
+
+        if (string.IsNullOrWhiteSpace(schema))
+        {
+            schema = defaultSchema;
         }
 
         if (string.IsNullOrWhiteSpace(table))
         {
-            return NormalizedTarget.Invalid("目标表名称解析失败，请使用 schema.table 格式。");
+            return NormalizedTarget.Invalid("目标表名称解析失败，请检查输入格式。");
         }
 
-        return NormalizedTarget.Valid(schema.Trim('[', ']'), table.Trim('[', ']'));
+        return NormalizedTarget.Valid(database.Trim(), schema.Trim(), table.Trim());
     }
 
-    private static bool TrySplitQualifiedName(string input, out string schema, out string table)
+    private static string[] SplitQualifiedName(string input)
     {
         input = input.Trim();
-        schema = string.Empty;
-        table = string.Empty;
-
-        if (input.StartsWith("[", StringComparison.Ordinal) && input.Contains("].[", StringComparison.Ordinal))
+        if (input.Contains("].[", StringComparison.Ordinal))
         {
-            var parts = input.Split(new[] { "].[" }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length == 2)
-            {
-                schema = parts[0].Trim('[', ']');
-                table = parts[1].Trim('[', ']');
-                return true;
-            }
+            return input.Split(new[] { "].[" }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Trim('[', ']')).ToArray();
         }
 
-        var tokens = input.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length == 2)
-        {
-            schema = tokens[0].Trim('[', ']');
-            table = tokens[1].Trim('[', ']');
-            return true;
-        }
-
-        return false;
+        return input.Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Trim('[', ']'))
+            .ToArray();
     }
 
     private static string FormatQualifiedName(string schema, string table)
         => $"[{schema}].[{table}]";
 
-    private sealed record NormalizedTarget(bool IsValid, string Schema, string Table, string? Error)
+    private static string ResolveDefaultTargetDatabase(ArchiveDataSource dataSource)
     {
-        public static NormalizedTarget Valid(string schema, string table)
-            => new(true, schema, table, null);
+        if (dataSource.UseSourceAsTarget)
+        {
+            return dataSource.DatabaseName;
+        }
+
+        return string.IsNullOrWhiteSpace(dataSource.TargetDatabaseName)
+            ? dataSource.DatabaseName
+            : dataSource.TargetDatabaseName!;
+    }
+
+    private static Result EnsureTargetDatabaseAllowed(ArchiveDataSource dataSource, string targetDatabase)
+    {
+        if (dataSource.UseSourceAsTarget)
+        {
+            if (!string.Equals(targetDatabase, dataSource.DatabaseName, StringComparison.OrdinalIgnoreCase))
+            {
+                return Result.Failure($"当前数据源仅允许在源数据库 {dataSource.DatabaseName} 内进行分区切换。");
+            }
+
+            return Result.Success();
+        }
+
+        var allowedDatabase = string.IsNullOrWhiteSpace(dataSource.TargetDatabaseName)
+            ? dataSource.DatabaseName
+            : dataSource.TargetDatabaseName!;
+
+        if (!string.Equals(targetDatabase, allowedDatabase, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Failure($"目标数据库必须为 {allowedDatabase}，请检查归档目标配置。");
+        }
+
+        return Result.Success();
+    }
+
+    private sealed record NormalizedTarget(bool IsValid, string Schema, string Table, string Database, string? Error)
+    {
+        public static NormalizedTarget Valid(string database, string schema, string table)
+            => new(true, schema, table, database, null);
 
         public static NormalizedTarget Invalid(string error)
-            => new(false, string.Empty, string.Empty, error);
+            => new(false, string.Empty, string.Empty, string.Empty, error);
     }
 }

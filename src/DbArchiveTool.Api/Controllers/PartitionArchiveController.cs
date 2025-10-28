@@ -50,6 +50,18 @@ public sealed class PartitionArchiveController : ControllerBase
     }
 
     /// <summary>
+    /// 执行分区切换自动补齐步骤。
+    /// </summary>
+    [HttpPost("switch/autofix")]
+    [ProducesResponseType(typeof(Result<PartitionSwitchAutoFixResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<PartitionSwitchAutoFixResultDto>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> AutoFixSwitchAsync([FromBody] SwitchArchiveAutoFixDto request, CancellationToken cancellationToken)
+    {
+        var result = await switchAppService.AutoFixAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
     /// 规划基于 BCP 的归档方案（占位）。
     /// </summary>
     [HttpPost("bcp/plan")]

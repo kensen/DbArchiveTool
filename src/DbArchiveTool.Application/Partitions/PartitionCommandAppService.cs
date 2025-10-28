@@ -300,6 +300,11 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result.Failure("目标表不能为空。");
         }
 
+        if (string.IsNullOrWhiteSpace(request.TargetDatabase))
+        {
+            return Result.Failure("目标数据库不能为空。");
+        }
+
         if (string.IsNullOrWhiteSpace(request.RequestedBy))
         {
             return Result.Failure("请求人不能为空。");
@@ -335,53 +340,49 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         }
 
         var trimmed = raw.Trim();
+        var segments = SplitQualifiedName(trimmed);
+
         string schema = defaultSchema;
-        string table;
+        string table = string.Empty;
 
-        if (TrySplitQualifiedName(trimmed, out var parsedSchema, out var parsedTable))
+        switch (segments.Length)
         {
-            schema = parsedSchema;
-            table = parsedTable;
-        }
-        else
-        {
-            table = trimmed.Trim('[', ']');
+            case 3:
+                schema = segments[1];
+                table = segments[2];
+                break;
+            case 2:
+                schema = segments[0];
+                table = segments[1];
+                break;
+            case 1:
+                table = segments[0];
+                break;
+            default:
+                return NormalizedTarget.Invalid("目标表名称解析失败，请使用 [database.][schema.]table 格式。");
         }
 
-        if (string.IsNullOrWhiteSpace(table))
+        if (string.IsNullOrWhiteSpace(schema) || string.IsNullOrWhiteSpace(table))
         {
-            return NormalizedTarget.Invalid("目标表名称解析失败，请使用 schema.table 格式。");
+            return NormalizedTarget.Invalid("目标表名称解析失败，请检查输入格式。");
         }
 
-        return NormalizedTarget.Valid(schema.Trim('[', ']'), table.Trim('[', ']'));
+        return NormalizedTarget.Valid(schema.Trim(), table.Trim());
     }
 
-    private static bool TrySplitQualifiedName(string input, out string schema, out string table)
+    private static string[] SplitQualifiedName(string input)
     {
         input = input.Trim();
-        schema = string.Empty;
-        table = string.Empty;
-
-        if (input.StartsWith("[", StringComparison.Ordinal) && input.Contains("].[", StringComparison.Ordinal))
+        if (input.Contains("].[", StringComparison.Ordinal))
         {
-            var parts = input.Split(new[] { "].[" }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length == 2)
-            {
-                schema = parts[0].Trim('[', ']');
-                table = parts[1].Trim('[', ']');
-                return true;
-            }
+            return input.Split(new[] { "].[" }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Trim('[', ']'))
+                .ToArray();
         }
 
-        var tokens = input.Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length == 2)
-        {
-            schema = tokens[0].Trim('[', ']');
-            table = tokens[1].Trim('[', ']');
-            return true;
-        }
-
-        return false;
+        return input.Split('.', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Trim('[', ']'))
+            .ToArray();
     }
 
     private sealed record NormalizedTarget(bool IsValid, string Schema, string Table, string? Error)
@@ -557,10 +558,12 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<PartitionCommandPreviewDto>.Failure(target.Error!);
         }
 
+    var targetDatabase = request.TargetDatabase.Trim();
         var payload = new SwitchPayload(
             request.SourcePartitionKey,
             target.Schema,
             target.Table,
+            targetDatabase,
             request.CreateStagingTable,
             null,
             null,
@@ -602,6 +605,11 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             return Result<Guid>.Failure(target.Error!);
         }
 
+    var targetDatabase = request.TargetDatabase.Trim();
+        var targetDisplay = string.IsNullOrWhiteSpace(targetDatabase)
+            ? $"{target.Schema}.{target.Table}"
+            : $"{targetDatabase}.{target.Schema}.{target.Table}";
+
         var script = preview.Value!.Script;
         var payloadJson = JsonSerializer.Serialize(new
         {
@@ -611,6 +619,7 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
             request.SourcePartitionKey,
             targetSchema = target.Schema,
             targetTable = target.Table,
+            targetDatabase,
             request.CreateStagingTable,
             DdlScript = script
         });
@@ -627,13 +636,13 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
                 requestedBy: request.RequestedBy,
                 createdBy: request.RequestedBy,
                 backupReference: null,
-                notes: $"切换分区 {request.SourcePartitionKey} 到 {target.Schema}.{target.Table}",
+                notes: $"切换分区 {request.SourcePartitionKey} 到 {targetDisplay}",
                 priority: 0,
                 operationType: Shared.Partitions.BackgroundTaskOperationType.ArchiveSwitch,
                 archiveScheme: null,
                 archiveTargetConnection: null,
-                archiveTargetDatabase: null,
-                archiveTargetTable: null);
+                archiveTargetDatabase: targetDatabase,
+                archiveTargetTable: targetDisplay);
 
             // 保存配置快照
             task.SaveConfigurationSnapshot(payloadJson, request.RequestedBy);
@@ -646,13 +655,13 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
                 "Info",
                 "任务创建",
                 $"由 {request.RequestedBy} 发起的分区切换任务已创建。" +
-                $"表：{request.SchemaName}.{request.TableName}，分区：{request.SourcePartitionKey}，目标：{target.Schema}.{target.Table}");
+                $"表：{request.SchemaName}.{request.TableName}，分区：{request.SourcePartitionKey}，目标：{targetDisplay}");
 
             await logRepository.AddAsync(initialLog, cancellationToken);
 
             // 记录审计日志
             var resourceId = $"{request.DataSourceId}/{request.SchemaName}/{request.TableName}";
-            var summary = $"切换表 {request.SchemaName}.{request.TableName} 的分区 {request.SourcePartitionKey} 到 {target.Schema}.{target.Table}";
+            var summary = $"切换表 {request.SchemaName}.{request.TableName} 的分区 {request.SourcePartitionKey} 到 {targetDisplay}";
 
             var auditLog = PartitionAuditLog.Create(
                 request.RequestedBy,

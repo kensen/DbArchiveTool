@@ -90,16 +90,23 @@ internal sealed class SqlPartitionCommandExecutor
             throw new InvalidOperationException("目标架构不能为空。");
         }
 
+        var qualifiedTarget = string.IsNullOrWhiteSpace(payload.TargetDatabase)
+            ? $"[{payload.TargetSchema}].[{payload.TargetTable}]"
+            : $"[{payload.TargetDatabase}].[{payload.TargetSchema}].[{payload.TargetTable}]";
+
         var template = templateProvider.GetTemplate("SwitchOut.sql");
         var script = template
             .Replace("{SourceSchema}", configuration.SchemaName)
             .Replace("{SourceTable}", configuration.TableName)
-            .Replace("{TargetSchema}", payload.TargetSchema)
-            .Replace("{TargetTable}", payload.TargetTable)
+            .Replace("{QualifiedTarget}", qualifiedTarget)
             .Replace("{SourcePartitionNumber}", payload.SourcePartitionKey)
             .Replace("{TargetPartitionNumber}", payload.SourcePartitionKey);
 
-        logger.LogDebug("Switch script generated for {Schema}.{Table} to {TargetSchema}.{TargetTable}", configuration.SchemaName, configuration.TableName, payload.TargetSchema, payload.TargetTable);
+        logger.LogDebug(
+            "Switch script generated for {Schema}.{Table} to {Target}",
+            configuration.SchemaName,
+            configuration.TableName,
+            qualifiedTarget);
         return script;
     }
 
@@ -981,32 +988,51 @@ internal sealed class SqlPartitionCommandExecutor
         CancellationToken cancellationToken = default)
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        string? switchScript = null;
 
         try
         {
+            logger.LogInformation(
+                "阶段 1/3: 准备分区切换上下文。源表 {Schema}.{Table}，目标 {TargetDb}.{TargetSchema}.{TargetTable}，分区 {Partition}。",
+                configuration.SchemaName,
+                configuration.TableName,
+                payload.TargetDatabase,
+                payload.TargetSchema,
+                payload.TargetTable,
+                payload.SourcePartitionKey);
+
             await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
             try
             {
+                logger.LogInformation("阶段 2/3: 进入事务并设置 XACT_ABORT，开始渲染切换脚本。");
                 await sqlExecutor.ExecuteAsync(connection, "SET XACT_ABORT ON;", transaction: transaction, timeoutSeconds: 5);
 
-                var script = RenderSwitchOutScript(configuration, payload);
+                switchScript = RenderSwitchOutScript(configuration, payload);
+                logger.LogDebug("分区切换脚本:\n{Script}", switchScript);
 
-                await sqlExecutor.ExecuteAsync(connection, script, transaction: transaction, timeoutSeconds: 300);
+                logger.LogInformation("阶段 3/3: 执行切换脚本并提交事务。");
+                await sqlExecutor.ExecuteAsync(connection, switchScript, transaction: transaction, timeoutSeconds: 300);
 
                 await transaction.CommitAsync(cancellationToken);
 
                 stopwatch.Stop();
 
                 logger.LogInformation(
-                    "成功执行分区切换：{Schema}.{Table} 分区 {Partition} -> {TargetSchema}.{TargetTable}，耗时 {Elapsed}",
-                    configuration.SchemaName, configuration.TableName, payload.SourcePartitionKey, payload.TargetSchema, payload.TargetTable, stopwatch.Elapsed);
+                    "成功执行分区切换：{Schema}.{Table} 分区 {Partition} -> {TargetDatabase}.{TargetSchema}.{TargetTable}，耗时 {Elapsed}",
+                    configuration.SchemaName,
+                    configuration.TableName,
+                    payload.SourcePartitionKey,
+                    payload.TargetDatabase,
+                    payload.TargetSchema,
+                    payload.TargetTable,
+                    stopwatch.Elapsed);
 
                 return SqlExecutionResult.Success(
                     1,
                     stopwatch.ElapsedMilliseconds,
-                    $"成功切换分区 {payload.SourcePartitionKey} 至 {payload.TargetSchema}.{payload.TargetTable}");
+                    $"成功切换分区 {payload.SourcePartitionKey} 至 {payload.TargetDatabase}.{payload.TargetSchema}.{payload.TargetTable}");
             }
             catch
             {
@@ -1014,22 +1040,70 @@ internal sealed class SqlPartitionCommandExecutor
                 throw;
             }
         }
+        catch (SqlException sqlException)
+        {
+            stopwatch.Stop();
+            var userMessage = DescribeSwitchFailure(sqlException, configuration, payload);
+            logger.LogError(
+                sqlException,
+                "执行分区切换失败（SQL 错误 {Number}）：{Message}",
+                sqlException.Number,
+                userMessage);
+
+            var detailBuilder = new StringBuilder(sqlException.ToString());
+            if (!string.IsNullOrWhiteSpace(switchScript))
+            {
+                detailBuilder.AppendLine()
+                    .AppendLine("-- Switch Script --")
+                    .AppendLine(switchScript);
+            }
+
+            return SqlExecutionResult.Failure(
+                userMessage,
+                stopwatch.ElapsedMilliseconds,
+                detailBuilder.ToString());
+        }
         catch (Exception ex)
         {
             stopwatch.Stop();
             logger.LogError(
                 ex,
-                "执行分区切换失败：{Schema}.{Table} -> {TargetSchema}.{TargetTable}",
+                "执行分区切换失败：{Schema}.{Table} -> {TargetDatabase}.{TargetSchema}.{TargetTable}",
                 configuration.SchemaName,
                 configuration.TableName,
+                payload.TargetDatabase,
                 payload.TargetSchema,
                 payload.TargetTable);
 
+            var detailBuilder = new StringBuilder(ex.ToString());
+            if (!string.IsNullOrWhiteSpace(switchScript))
+            {
+                detailBuilder.AppendLine()
+                    .AppendLine("-- Switch Script --")
+                    .AppendLine(switchScript);
+            }
+
             return SqlExecutionResult.Failure(
-                ex.Message,
+                $"执行分区切换失败：{ex.Message}",
                 stopwatch.ElapsedMilliseconds,
-                ex.ToString());
+                detailBuilder.ToString());
         }
+    }
+
+    private static string DescribeSwitchFailure(SqlException exception, PartitionConfiguration configuration, SwitchPayload payload)
+    {
+        return exception.Number switch
+        {
+            1205 => "分区切换过程中发生死锁，请稍后重试或检查并发任务。",
+            1222 or -2 => "分区切换等待锁超时，请确认目标表未被其他会话占用。",
+            2627 or 2601 => "目标表存在重复键值或唯一约束冲突，无法完成分区切换。",
+            229 or 230 => "当前账号缺少分区切换所需的 ALTER 权限，请联系数据库管理员授权。",
+            547 => "目标表存在约束阻止分区切换，请检查外键或 CHECK 约束。",
+            4981 or 4937 => "目标表不为空或存在索引冲突，分区切换被 SQL Server 拒绝。",
+            _ when exception.Message.Contains("is not empty", StringComparison.OrdinalIgnoreCase) =>
+                "目标表仍包含数据，请确认执行自动清理后再尝试分区切换。",
+            _ => $"执行分区切换失败：{exception.Message}（{configuration.SchemaName}.{configuration.TableName} -> {payload.TargetDatabase}.{payload.TargetSchema}.{payload.TargetTable}）"
+        };
     }
 
     private static void ApplyPartitionColumn(TableIndexDefinition definition, string partitionColumn, IList<IndexAlignmentChange> alignmentChanges)

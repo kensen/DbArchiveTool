@@ -116,7 +116,9 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
             return Result<string>.Failure("目标表名称不能为空。");
         }
 
-        var qualifiedTarget = $"[{payload.TargetSchema}].[{payload.TargetTable}]";
+        var qualifiedTarget = string.IsNullOrWhiteSpace(payload.TargetDatabase)
+            ? $"[{payload.TargetSchema}].[{payload.TargetTable}]"
+            : $"[{payload.TargetDatabase}].[{payload.TargetSchema}].[{payload.TargetTable}]";
         var builder = new StringBuilder();
         builder.AppendLine("SET XACT_ABORT ON;");
         builder.AppendLine("SET NOCOUNT ON;");

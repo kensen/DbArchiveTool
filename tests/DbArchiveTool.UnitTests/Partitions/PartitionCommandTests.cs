@@ -190,8 +190,8 @@ public class PartitionCommandTests
             .Callback<PartitionConfiguration, SwitchPayload>((_, payload) => capturedPayload = payload)
             .Returns(Result<string>.Success("SWITCH SCRIPT"));
 
-        var service = CreateService();
-        var request = new SwitchPartitionRequest(dataSourceId, "dbo", "Orders", "5", "archive.SwitchTarget", false, true, "tester");
+    var service = CreateService();
+    var request = new SwitchPartitionRequest(dataSourceId, "dbo", "Orders", "5", "archive.SwitchTarget", "ArchiveDb", false, true, "tester");
 
         var result = await service.PreviewSwitchAsync(request);
 
@@ -200,6 +200,7 @@ public class PartitionCommandTests
         Assert.NotNull(capturedPayload);
         Assert.Equal("archive", capturedPayload!.TargetSchema);
         Assert.Equal("SwitchTarget", capturedPayload.TargetTable);
+    Assert.Equal("ArchiveDb", capturedPayload.TargetDatabase);
     }
 
     private static PartitionConfiguration CreateConfiguration(Guid dataSourceId, IEnumerable<PartitionBoundary>? boundaries = null)

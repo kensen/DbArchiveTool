@@ -35,6 +35,7 @@ public sealed record SwitchPartitionRequest(
     string TableName,
     string SourcePartitionKey,
     string TargetTable,
+    string TargetDatabase,
     bool CreateStagingTable,
     bool BackupConfirmed,
     string RequestedBy);

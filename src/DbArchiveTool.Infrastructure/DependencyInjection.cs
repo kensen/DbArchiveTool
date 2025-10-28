@@ -53,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionCommandScriptGenerator, TSqlPartitionCommandScriptGenerator>();
         services.AddScoped<IPermissionInspectionRepository, SqlServerPermissionInspectionRepository>();
         services.AddScoped<IPartitionSwitchInspectionService, PartitionSwitchInspectionService>();
+    services.AddScoped<IPartitionSwitchAutoFixExecutor, PartitionSwitchAutoFixExecutor>();
         services.AddScoped<SqlPartitionQueryService>();
         services.AddScoped<SqlPartitionCommandExecutor>();
         services.AddScoped<BackgroundTaskProcessor>();

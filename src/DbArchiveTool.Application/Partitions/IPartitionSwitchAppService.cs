@@ -10,4 +10,6 @@ public interface IPartitionSwitchAppService
     Task<Result<PartitionSwitchInspectionResultDto>> InspectAsync(SwitchPartitionInspectionRequest request, CancellationToken cancellationToken = default);
 
     Task<Result<Guid>> ArchiveBySwitchAsync(SwitchPartitionExecuteRequest request, CancellationToken cancellationToken = default);
+
+    Task<Result<PartitionSwitchAutoFixResultDto>> AutoFixAsync(SwitchPartitionAutoFixRequest request, CancellationToken cancellationToken = default);
 }

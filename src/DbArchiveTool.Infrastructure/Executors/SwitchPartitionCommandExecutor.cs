@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
 using Microsoft.Extensions.Logging;
 
@@ -15,17 +16,20 @@ internal sealed class SwitchPartitionCommandExecutor : IPartitionCommandExecutor
 {
     private readonly IPartitionConfigurationRepository configurationRepository;
     private readonly IPartitionSwitchInspectionService inspectionService;
+    private readonly IDataSourceRepository dataSourceRepository;
     private readonly SqlPartitionCommandExecutor sqlExecutor;
     private readonly ILogger<SwitchPartitionCommandExecutor> logger;
 
     public SwitchPartitionCommandExecutor(
         IPartitionConfigurationRepository configurationRepository,
         IPartitionSwitchInspectionService inspectionService,
+        IDataSourceRepository dataSourceRepository,
         SqlPartitionCommandExecutor sqlExecutor,
         ILogger<SwitchPartitionCommandExecutor> logger)
     {
         this.configurationRepository = configurationRepository;
         this.inspectionService = inspectionService;
+        this.dataSourceRepository = dataSourceRepository;
         this.sqlExecutor = sqlExecutor;
         this.logger = logger;
     }
@@ -51,11 +55,24 @@ internal sealed class SwitchPartitionCommandExecutor : IPartitionCommandExecutor
             return SqlExecutionResult.Failure("未找到对应的分区配置，无法执行切换。", 0, null);
         }
 
+        var dataSource = await dataSourceRepository.GetAsync(command.DataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            return SqlExecutionResult.Failure("未找到归档数据源配置，无法执行切换。", 0, null);
+        }
+
+        var targetDatabase = string.IsNullOrWhiteSpace(payload.TargetDatabase)
+            ? ResolveDefaultTargetDatabase(dataSource)
+            : payload.TargetDatabase.Trim();
+
         var inspectionContext = new PartitionSwitchInspectionContext(
             payload.SourcePartitionKey,
             payload.TargetSchema,
             payload.TargetTable,
-            payload.CreateStagingTable);
+            payload.CreateStagingTable,
+            targetDatabase,
+            dataSource.DatabaseName,
+            dataSource.UseSourceAsTarget);
 
         var inspection = await inspectionService.InspectAsync(
             command.DataSourceId,
@@ -76,16 +93,18 @@ internal sealed class SwitchPartitionCommandExecutor : IPartitionCommandExecutor
             payload.SourcePartitionKey,
             payload.TargetSchema,
             payload.TargetTable,
+            targetDatabase,
             payload.CreateStagingTable,
             payload.StagingTableName,
             payload.FilegroupName,
             payload.AdditionalProperties);
 
         logger.LogInformation(
-            "Executing switch command {CommandId} on {Schema}.{Table} -> {TargetSchema}.{TargetTable}",
+            "Executing switch command {CommandId} on {Schema}.{Table} -> {TargetDatabase}.{TargetSchema}.{TargetTable}",
             command.Id,
             configuration.SchemaName,
             configuration.TableName,
+            targetDatabase,
             payload.TargetSchema,
             payload.TargetTable);
 
@@ -115,9 +134,22 @@ internal sealed class SwitchPartitionCommandExecutor : IPartitionCommandExecutor
         public string SourcePartitionKey { get; init; } = string.Empty;
         public string TargetSchema { get; init; } = string.Empty;
         public string TargetTable { get; init; } = string.Empty;
+        public string? TargetDatabase { get; init; }
         public bool CreateStagingTable { get; init; }
         public string? StagingTableName { get; init; }
         public string? FilegroupName { get; init; }
         public IReadOnlyDictionary<string, object>? AdditionalProperties { get; init; }
+    }
+
+    private static string ResolveDefaultTargetDatabase(ArchiveDataSource dataSource)
+    {
+        if (dataSource.UseSourceAsTarget)
+        {
+            return dataSource.DatabaseName;
+        }
+
+        return string.IsNullOrWhiteSpace(dataSource.TargetDatabaseName)
+            ? dataSource.DatabaseName
+            : dataSource.TargetDatabaseName!;
     }
 }

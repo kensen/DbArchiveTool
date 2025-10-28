@@ -3,7 +3,7 @@ SET NOCOUNT ON;
 BEGIN TRY
     BEGIN TRAN;
     ALTER TABLE [{SourceSchema}].[{SourceTable}] SWITCH PARTITION {SourcePartitionNumber}
-    TO [{TargetSchema}].[{TargetTable}] PARTITION {TargetPartitionNumber};
+    TO {QualifiedTarget} PARTITION {TargetPartitionNumber};
     COMMIT TRAN;
 END TRY
 BEGIN CATCH

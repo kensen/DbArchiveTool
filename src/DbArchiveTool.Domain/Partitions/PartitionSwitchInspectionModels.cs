@@ -12,7 +12,10 @@ public sealed record PartitionSwitchInspectionContext(
     string SourcePartitionKey,
     string TargetSchema,
     string TargetTable,
-    bool CreateStagingTable);
+    bool CreateStagingTable,
+    string TargetDatabase,
+    string SourceDatabase,
+    bool UseSourceAsTarget);
 
 /// <summary>
 /// 表示分区切换检查的列信息。
@@ -53,14 +56,18 @@ public sealed class PartitionSwitchInspectionResult
         bool canSwitch,
         IReadOnlyList<PartitionSwitchIssue> blockingIssues,
         IReadOnlyList<PartitionSwitchIssue> warnings,
+        IReadOnlyList<PartitionSwitchAutoFixStep> autoFixSteps,
         PartitionSwitchTableInfo sourceTable,
-        PartitionSwitchTableInfo targetTable)
+        PartitionSwitchTableInfo targetTable,
+        PartitionSwitchPlan plan)
     {
         CanSwitch = canSwitch;
         BlockingIssues = blockingIssues;
         Warnings = warnings;
+        AutoFixSteps = autoFixSteps;
         SourceTable = sourceTable ?? throw new ArgumentNullException(nameof(sourceTable));
         TargetTable = targetTable ?? throw new ArgumentNullException(nameof(targetTable));
+        Plan = plan ?? throw new ArgumentNullException(nameof(plan));
     }
 
     /// <summary>是否满足切换条件。</summary>
@@ -72,12 +79,26 @@ public sealed class PartitionSwitchInspectionResult
     /// <summary>提供的警告信息。</summary>
     public IReadOnlyList<PartitionSwitchIssue> Warnings { get; }
 
+    /// <summary>系统可自动补齐的步骤建议。</summary>
+    public IReadOnlyList<PartitionSwitchAutoFixStep> AutoFixSteps { get; }
+
     /// <summary>源表信息。</summary>
     public PartitionSwitchTableInfo SourceTable { get; }
 
     /// <summary>目标表信息。</summary>
     public PartitionSwitchTableInfo TargetTable { get; }
+
+    /// <summary>补齐与人工处理计划。</summary>
+    public PartitionSwitchPlan Plan { get; }
 }
+
+/// <summary>
+/// 描述分区切换时可由系统自动补齐的步骤。
+/// </summary>
+public sealed record PartitionSwitchAutoFixStep(
+    string Code,
+    string Description,
+    string? Recommendation = null);
 
 /// <summary>
 /// 定义分区切换前检查服务接口。
