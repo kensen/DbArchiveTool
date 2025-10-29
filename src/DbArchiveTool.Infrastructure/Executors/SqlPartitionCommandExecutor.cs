@@ -658,9 +658,19 @@ internal sealed class SqlPartitionCommandExecutor
                 }
             }
 
-            if (indicesToAlign.Count > 0)
+            // ============== 关键修改：确保所有索引都补齐分区列 ==============
+            // 遍历所有索引（包括已包含分区列的索引），统一确保 ContainsPartitionColumn 标志正确
+            // 这样 GetCreateSql 生成的 SQL 才会统一在分区方案上重建所有索引
+            logger.LogInformation(
+                "检查并补齐所有索引的分区列（原有 {Original} 个索引，需要补齐的 {NeedAlign} 个）...",
+                indexes.Count,
+                indicesToAlign.Count);
+
+            foreach (var definition in indexes)
             {
-                foreach (var definition in indexes.Where(i => indicesToAlign.Contains(i.IndexName)))
+                // 无论索引是否已包含分区列，都确保 ContainsPartitionColumn 标志为 true
+                // 因为所有索引都必须对齐到分区方案（SQL Server 分区表的强制要求）
+                if (!definition.ContainsPartitionColumn)
                 {
                     ApplyPartitionColumn(definition, configuration.PartitionColumn.Name, autoAlignmentChanges);
                 }
@@ -671,11 +681,6 @@ internal sealed class SqlPartitionCommandExecutor
             {
                 throw new PartitionConversionException(
                     $"表 {configuration.SchemaName}.{configuration.TableName} 未检测到聚集索引，无法自动对齐分区列。");
-            }
-
-            if (!clusteredIndex.ContainsPartitionColumn)
-            {
-                ApplyPartitionColumn(clusteredIndex, configuration.PartitionColumn.Name, autoAlignmentChanges);
             }
 
             var nonClusteredIndexes = indexes.Where(i => !i.IsClustered).OrderByDescending(i => i.IndexId).ToList();
@@ -760,7 +765,7 @@ internal sealed class SqlPartitionCommandExecutor
             }
 
             logger.LogInformation(
-                "✓ 成功将表 {Schema}.{Table} 转换为分区表，重建了 {TotalCount} 个索引（1个聚集 + {NonClusteredCount} 个非聚集）。",
+                "✓ 成功将表 {Schema}.{Table} 转换为分区表，所有 {TotalCount} 个索引已对齐到分区方案（1个聚集 + {NonClusteredCount} 个非聚集）。",
                 configuration.SchemaName, configuration.TableName,
                 indexes.Count, nonClusteredIndexes.Count);
 

@@ -1,0 +1,419 @@
+﻿@using AntDesign
+@using DbArchiveTool.Application.Partitions
+@using DbArchiveTool.Web.Services
+@using Microsoft.AspNetCore.Components.Web
+
+<Drawer Visible="Visible"
+        Title="@(Title)"
+        Width="820"
+        Placement="DrawerPlacement.Right"
+        Closable="true"
+        MaskClosable="false"
+        OnClose="CloseAsync">
+    <Spin Spinning="@(_initializing || _submitting || _autoFixExecuting)">
+        <div class="archive-wizard-body">
+            <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:16px;">
+                <DescriptionsItem Title="数据源">@DataSourceId</DescriptionsItem>
+                <DescriptionsItem Title="归档表">@FormatTableName()</DescriptionsItem>
+                <DescriptionsItem Title="分区编号">@DisplayPartitionKey()</DescriptionsItem>
+            </Descriptions>
+
+            <Steps Current="@_currentStep" Size="@StepsSize.Small" Style="margin-bottom:24px;">
+                <Step Title="选择方案" Description="确认归档方式" />
+                <Step Title="填写参数" Description="配置切换参数" />
+                <Step Title="预检结果" Description="确认自动补齐" />
+                <Step Title="执行确认" Description="提交后台任务" />
+            </Steps>
+
+            <div class="archive-step-content">
+                @switch (_currentStep)
+                {
+                    case 0:
+                        <div class="step-pane">
+                            <Alert Message="当前仅支持分区切换归档，BCP/BulkCopy 方案仍在规划中。" Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;" />
+                            <RadioGroup @bind-Value="_selectedMode" ButtonStyle="@RadioButtonStyle.Solid">
+                                <Radio RadioButton Value="@ArchiveMode.Switch">分区切换</Radio>
+                                <Radio RadioButton Value="@ArchiveMode.Bcp" Disabled>BCP（规划中）</Radio>
+                                <Radio RadioButton Value="@ArchiveMode.BulkCopy" Disabled>BulkCopy（规划中）</Radio>
+                            </RadioGroup>
+                        </div>
+                        break;
+                    case 1:
+                        <div class="step-pane">
+                            @if (_loadingConfigurations)
+                            {
+                                <Skeleton Active />
+                            }
+                            else
+                            {
+                                <Form Model="_form" Layout="FormLayout.Vertical">
+                                    @if (_configurationOptions.Any())
+                                    {
+                                        <FormItem Label="分区配置（可选）">
+                                            <Select TItem="Guid?" TItemValue="Guid?"
+                                                    @bind-Value="SelectedConfigurationId"
+                                                    Placeholder="选择已保存的配置（可跳过）"
+                                                    AllowClear>
+                                                @foreach (var option in _configurationOptions)
+                                                {
+                                                    <SelectOption Value="@((Guid?)option.Id)" Label="@option.Display" />
+                                                }
+                                            </Select>
+                                            @if (_selectedConfiguration is not null)
+                                            {
+                                                <div class="form-tip">目标表默认值：@_selectedConfiguration.TargetDisplay</div>
+                                            }
+                                            else
+                                            {
+                                                <div class="form-tip">未选择配置时，将直接使用源表信息进行归档</div>
+                                            }
+                                        </FormItem>
+                                    }
+                                    else
+                                    {
+                                        <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                            <MessageTemplate>
+                                                <p>未找到已保存的配置，将直接使用源表 <strong>@FormatTableName()</strong> 进行归档。</p>
+                                            </MessageTemplate>
+                                        </Alert>
+                                    }
+                                    <FormItem Label="源分区编号" Required>
+                                        <Input @bind-Value="_form.SourcePartitionKey" Placeholder="输入分区号（整数）" />
+                                        <div class="form-tip">来自 SQL Server 的分区编号（SELECT $PARTITION... 返回的值）。</div>
+                                    </FormItem>
+                                    <FormItem Label="目标数据库">
+                                        <Input @bind-Value="_form.TargetDatabase" Placeholder="默认使用源数据库" />
+                                    </FormItem>
+                                    <FormItem Label="目标表名称" Required>
+                                        <Input @bind-Value="_form.TargetTable" Placeholder="例如: dbo.ArchiveOrders" />
+                                        <div class="form-tip">支持输入三段格式 [database].[schema].[table]。</div>
+                                    </FormItem>
+                                    <FormItem Label="创建临时表">
+                                        <Switch @bind-Checked="_form.CreateStagingTable" />
+                                        <div class="form-tip">如目标表不存在或需要调换文件组，可按需创建临时表再切换。</div>
+                                    </FormItem>
+                                </Form>
+                            }
+                        </div>
+                        break;
+                    case 2:
+                        <div class="step-pane">
+                            @if (_inspectionLoading)
+                            {
+                                <Skeleton Active />
+                            }
+                            else if (_inspectionResult is null)
+                            {
+                                <Empty Description="@("尚未执行预检或预检失败")" />
+                            }
+                            else
+                            {
+                                <Alert Message="@( _inspectionResult.CanExecute ? "满足切换条件" : "存在阻塞项，请处理后重试")"
+                                       Type="@(_inspectionResult.CanExecute ? AlertType.Success : AlertType.Error)"
+                                       ShowIcon="true"
+                                       Style="margin-bottom:16px;" />
+
+                                <div class="inspection-section">
+                                    <h4>源表信息</h4>
+                                    <Descriptions Column="2" Size="@DescriptionsSize.Small" Bordered>
+                                        <DescriptionsItem Title="表名">@FormatTableInfo(_inspectionResult.SourceTable)</DescriptionsItem>
+                                        <DescriptionsItem Title="行数">@_inspectionResult.SourceTable.RowCount</DescriptionsItem>
+                                    </Descriptions>
+                                </div>
+
+                                <div class="inspection-section">
+                                    <h4>目标表信息</h4>
+                                    <Descriptions Column="2" Size="@DescriptionsSize.Small" Bordered>
+                                        <DescriptionsItem Title="表名">@FormatTableInfo(_inspectionResult.TargetTable)</DescriptionsItem>
+                                        <DescriptionsItem Title="行数">@_inspectionResult.TargetTable.RowCount</DescriptionsItem>
+                                    </Descriptions>
+                                </div>
+
+                                @if (_inspectionResult.BlockingIssues.Any())
+                                {
+                                    <div class="inspection-section">
+                                        <h4>阻塞项</h4>
+                                        <Alert Type="@AlertType.Error" ShowIcon="true">
+                                            <MessageTemplate>
+                                                <ul class="issue-list">
+                                                    @foreach (var issue in _inspectionResult.BlockingIssues)
+                                                    {
+                                                        <li>
+                                                            <strong>@issue.Code</strong> - @issue.Message
+                                                            @if (!string.IsNullOrWhiteSpace(issue.Recommendation))
+                                                            {
+                                                                <div class="issue-recommendation">建议：@issue.Recommendation</div>
+                                                            }
+                                                        </li>
+                                                    }
+                                                </ul>
+                                            </MessageTemplate>
+                                        </Alert>
+                                    </div>
+                                }
+
+                                <div class="inspection-section">
+                                    <h4>可自动补齐</h4>
+                                    @if (_inspectionResult.AutoFixSteps.Any())
+                                    {
+                                        <Space Direction="@SpaceDirection.Vertical" Size="@SpaceSize.Small" Style="width:100%">
+                                            @foreach (var option in _autoFixOptions)
+                                            {
+                                                <Checkbox @bind-Checked="option.IsSelected">
+                                                    <div class="autofix-item">
+                                                        <div class="autofix-title">@option.Description</div>
+                                                        @if (!string.IsNullOrWhiteSpace(option.Recommendation))
+                                                        {
+                                                            <div class="autofix-recommendation">@option.Recommendation</div>
+                                                        }
+                                                    </div>
+                                                </Checkbox>
+                                            }
+                                        </Space>
+                                        <div class="autofix-actions">
+                                            <Space>
+                                                <Button Type="@ButtonType.Primary" Disabled="@(!_autoFixOptions.Any(item => item.IsSelected))" Loading="@_autoFixExecuting" OnClick="ExecuteAutoFixAsync">执行自动补齐</Button>
+                                                <Button OnClick="RunInspectionAsync" Loading="@_inspectionLoading">重新预检</Button>
+                                            </Space>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <Alert Type="@AlertType.Success" Message="无需自动补齐" ShowIcon="true" />
+                                    }
+                                </div>
+
+                                @if (_autoFixResult is not null)
+                                {
+                                    <div class="inspection-section">
+                                        <h4>自动补齐执行结果</h4>
+                                        <Alert Type="@(_autoFixResult.Succeeded ? AlertType.Success : AlertType.Warning)" ShowIcon="true">
+                                            <MessageTemplate>
+                                                <p>@(_autoFixResult.Succeeded ? "自动补齐已经完成，可以重新预检确认状态。" : "部分自动补齐步骤执行失败，请检查日志。")</p>
+                                            </MessageTemplate>
+                                        </Alert>
+                                        <Collapse>
+                                            @foreach (var execution in _autoFixResult.Executions)
+                                            {
+                                                <Panel Key="@execution.Code" Header="@($"{execution.Code} - {(execution.Succeeded ? "成功" : "失败")}")">
+                                                    <p>@execution.Message</p>
+                                                    <pre class="sql-preview">@execution.Script</pre>
+                                                </Panel>
+                                            }
+                                        </Collapse>
+                                        <Divider />
+                                        <div class="autofix-log-title">执行日志：</div>
+                                        <pre class="sql-preview">@_autoFixResult.CombinedLog</pre>
+                                    </div>
+                                }
+
+                                @if (_inspectionResult.Warnings.Any())
+                                {
+                                    <div class="inspection-section">
+                                        <h4>警告提示</h4>
+                                        <Alert Type="@AlertType.Warning" ShowIcon="true">
+                                            <MessageTemplate>
+                                                <ul class="issue-list">
+                                                    @foreach (var warning in _inspectionResult.Warnings)
+                                                    {
+                                                        <li>
+                                                            <strong>@warning.Code</strong> - @warning.Message
+                                                            @if (!string.IsNullOrWhiteSpace(warning.Recommendation))
+                                                            {
+                                                                <div class="issue-recommendation">建议：@warning.Recommendation</div>
+                                                            }
+                                                        </li>
+                                                    }
+                                                </ul>
+                                            </MessageTemplate>
+                                        </Alert>
+                                    </div>
+                                }
+
+                                @if (_inspectionResult.Plan is not null)
+                                {
+                                    <div class="inspection-section">
+                                        <h4>补齐计划摘要</h4>
+                                        <Collapse>
+                                            <Panel Key="planAutoFix" Header="@($"自动补齐步骤 ({_inspectionResult.Plan.AutoFixes.Count})")">
+                                                @if (_inspectionResult.Plan.AutoFixes.Any())
+                                                {
+                                                    <ul class="plan-list">
+                                                        @foreach (var item in _inspectionResult.Plan.AutoFixes)
+                                                        {
+                                                            <li>
+                                                                <div class="plan-title">@item.Title</div>
+                                                                <div class="plan-meta">分类：@item.Category，影响范围：@item.ImpactScope</div>
+                                                                @if (!string.IsNullOrWhiteSpace(item.Prerequisite))
+                                                                {
+                                                                    <div class="plan-meta">前置条件：@item.Prerequisite</div>
+                                                                }
+                                                                <Divider />
+                                                                <pre class="sql-preview">@string.Join("\n\n", item.Commands.Select(c => $"-- {c.Description}\n{c.CommandText}"))</pre>
+                                                            </li>
+                                                        }
+                                                    </ul>
+                                                }
+                                                else
+                                                {
+                                                    <Empty Description="@("无自动补齐步骤")" />
+                                                }
+                                            </Panel>
+                                            <Panel Key="planWarning" Header="@($"警告项 ({_inspectionResult.Plan.Warnings.Count})")">
+                                                @if (_inspectionResult.Plan.Warnings.Any())
+                                                {
+                                                    <ul class="plan-list">
+                                                        @foreach (var item in _inspectionResult.Plan.Warnings)
+                                                        {
+                                                            <li>
+                                                                <div class="plan-title">@item.Title</div>
+                                                                <div class="plan-meta">@item.Description</div>
+                                                                @if (!string.IsNullOrWhiteSpace(item.Guidance))
+                                                                {
+                                                                    <div class="plan-meta">指引：@item.Guidance</div>
+                                                                }
+                                                            </li>
+                                                        }
+                                                    </ul>
+                                                }
+                                                else
+                                                {
+                                                    <Empty Description="@("无警告项")" />
+                                                }
+                                            </Panel>
+                                        </Collapse>
+                                    </div>
+                                }
+                            }
+                        </div>
+                        break;
+                    case 3:
+                        <div class="step-pane">
+                            <Descriptions Column="1" Size="@DescriptionsSize.Small" Bordered Style="margin-bottom:16px;">
+                                <DescriptionsItem Title="归档方式">分区切换</DescriptionsItem>
+                                <DescriptionsItem Title="分区配置">@_selectedConfiguration?.Display</DescriptionsItem>
+                                <DescriptionsItem Title="目标表">@_form.TargetTable</DescriptionsItem>
+                                <DescriptionsItem Title="目标数据库">@(_form.TargetDatabase ?? "(沿用配置)")</DescriptionsItem>
+                                <DescriptionsItem Title="临时表">@(_form.CreateStagingTable ? "是" : "否")</DescriptionsItem>
+                                @if (_isBatchMode)
+                                {
+                                    <DescriptionsItem Title="批量模式">
+                                        <Tag Color="@TagColor.Blue">共 @_partitionKeys.Count 个分区</Tag>
+                                    </DescriptionsItem>
+                                    <DescriptionsItem Title="分区列表">
+                                        @string.Join(", ", _partitionKeys)
+                                    </DescriptionsItem>
+                                }
+                            </Descriptions>
+
+                            @if (_submitting && _isBatchMode)
+                            {
+                                <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <p>正在执行批量分区切换: [@(_batchCurrentIndex + 1)/@_partitionKeys.Count]</p>
+                                        <Progress Percent="@((int)((_batchCurrentIndex + 1) * 100.0 / _partitionKeys.Count))" 
+                                                  Status="@ProgressStatus.Active" />
+                                        <p style="margin-top:8px;">
+                                            成功: @_batchSuccessCount 个 | 失败: @_batchFailureCount 个
+                                        </p>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+                            
+                            @if (_batchResults.Any())
+                            {
+                                <Alert Type="@(_batchFailureCount > 0 ? AlertType.Warning : AlertType.Success)" 
+                                       ShowIcon="true" 
+                                       Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <p>批量执行结果: 成功 @_batchSuccessCount 个, 失败 @_batchFailureCount 个</p>
+                                    </MessageTemplate>
+                                </Alert>
+                                
+                                <Table TItem="BatchExecutionResult" 
+                                       DataSource="@_batchResults" 
+                                       Size="@TableSize.Small" 
+                                       Bordered 
+                                       Style="margin-bottom:16px;">
+                                    <Column Title="分区号" TData="string">
+                                        @context.PartitionKey
+                                    </Column>
+                                    <Column Title="状态" TData="bool">
+                                        @if (context.Success)
+                                        {
+                                            <Tag Color="@TagColor.Green">成功</Tag>
+                                        }
+                                        else
+                                        {
+                                            <Tag Color="@TagColor.Red">失败</Tag>
+                                        }
+                                    </Column>
+                                    <Column Title="消息" TData="string">
+                                        @context.Message
+                                    </Column>
+                                    <Column Title="任务ID" TData="string">
+                                        @if (context.TaskId.HasValue)
+                                        {
+                                            <span>@context.TaskId.Value.ToString()</span>
+                                        }
+                                        else
+                                        {
+                                            <span style="color: rgba(0,0,0,0.45);">-</span>
+                                        }
+                                    </Column>
+                                </Table>
+                            }
+
+                            <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-bottom:16px;">
+                                <MessageTemplate>
+                                    <p>请确认数据库已完成最新备份，并理解分区切换会在短时间内占用排他锁。</p>
+                                    @if (_isBatchMode)
+                                    {
+                                        <p style="margin-top:8px;">
+                                            <strong>批量模式提示:</strong> 将依次执行 @_partitionKeys.Count 个分区的切换操作,每次切换间隔500毫秒。
+                                        </p>
+                                    }
+                                </MessageTemplate>
+                            </Alert>
+
+                            @if (!string.IsNullOrWhiteSpace(_executionPreviewMarkdown))
+                            {
+                                <div class="markdown-preview">
+                                    <MarkdownViewer Content="@_executionPreviewMarkdown" />
+                                </div>
+                            }
+                            else
+                            {
+                                <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                    <MessageTemplate>
+                                        <p>完成预检后将在此显示执行摘要与 SQL 预览。</p>
+                                    </MessageTemplate>
+                                </Alert>
+                            }
+
+                            <Checkbox Checked="_form.BackupConfirmed" CheckedChanged="(bool val) => _form.BackupConfirmed = val">我已完成备份并知晓风险</Checkbox>
+                        </div>
+                        break;
+                }
+            </div>
+        </div>
+    </Spin>
+
+    <div class="drawer-footer">
+        <Space>
+            <Button OnClick="CloseAsync">取消</Button>
+            @if (_currentStep > 0)
+            {
+                <Button OnClick="PrevStep">上一步</Button>
+            }
+            @if (_currentStep < 3)
+            {
+                <Button Type="@ButtonType.Primary" Disabled="@(!CanProceedToNextStep())" Loading="@_inspectionLoading" OnClick="NextStepAsync">下一步</Button>
+            }
+            else
+            {
+                <Button Type="@ButtonType.Primary" Loading="@_submitting" Disabled="@(!_form.BackupConfirmed)" OnClick="SubmitAsync">提交</Button>
+            }
+        </Space>
+    </div>
+</Drawer>

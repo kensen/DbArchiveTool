@@ -97,6 +97,10 @@ public class TableIndexDefinition
     /// <param name="partitionScheme">分区方案名称</param>
     /// <param name="partitionColumn">分区列名</param>
     /// <returns>创建索引的 SQL 语句</returns>
+    /// <remarks>
+    /// 重要：分区表的所有索引(包括聚集和非聚集)都必须对齐到分区方案，否则无法执行 SWITCH PARTITION 操作。
+    /// 因此，无论索引是否包含分区列，都会统一在分区方案上重建。
+    /// </remarks>
     public string GetCreateSql(string schemaName, string tableName, string partitionScheme, string partitionColumn)
     {
         var sb = new StringBuilder();
@@ -109,20 +113,8 @@ public class TableIndexDefinition
             sb.Append(IsClustered ? "CLUSTERED " : "NONCLUSTERED ");
             sb.Append($"({KeyColumns})");
 
-            // 聚集索引必须在分区方案上
-            if (IsClustered)
-            {
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            // 非聚集主键：如果包含分区列，可以对齐；否则放在 PRIMARY 文件组
-            else if (ContainsPartitionColumn)
-            {
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            else
-            {
-                sb.Append(" ON [PRIMARY]");
-            }
+            // 所有主键约束都必须对齐到分区方案（无论是否为聚集索引）
+            sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
         }
         // 唯一约束
         else if (IsUniqueConstraint && !string.IsNullOrWhiteSpace(ConstraintName))
@@ -132,20 +124,8 @@ public class TableIndexDefinition
             sb.Append(IsClustered ? "CLUSTERED " : "NONCLUSTERED ");
             sb.Append($"({KeyColumns})");
 
-            // 聚集索引必须在分区方案上
-            if (IsClustered)
-            {
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            // 非聚集唯一约束：如果包含分区列，可以对齐；否则放在 PRIMARY 文件组
-            else if (ContainsPartitionColumn)
-            {
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            else
-            {
-                sb.Append(" ON [PRIMARY]");
-            }
+            // 所有唯一约束都必须对齐到分区方案（无论是否为聚集索引）
+            sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
         }
         // 普通索引
         else
@@ -168,22 +148,9 @@ public class TableIndexDefinition
                 sb.Append($" WHERE {FilterDefinition}");
             }
 
-            // 存储位置
-            if (IsClustered)
-            {
-                // 聚集索引必须在分区方案上
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            else if (ContainsPartitionColumn)
-            {
-                // 非聚集索引如果包含分区列，对齐到分区方案
-                sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
-            }
-            else
-            {
-                // 非聚集索引如果不包含分区列，放在 PRIMARY 文件组（非对齐）
-                sb.Append(" ON [PRIMARY]");
-            }
+            // 所有索引都必须对齐到分区方案（无论是否为聚集索引或是否包含分区列）
+            // 这是 SQL Server 分区表的强制要求，否则无法执行 SWITCH PARTITION 操作
+            sb.Append($" ON [{partitionScheme}]([{partitionColumn}])");
         }
 
         sb.Append(';');

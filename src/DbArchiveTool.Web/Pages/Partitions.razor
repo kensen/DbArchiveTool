@@ -333,9 +333,14 @@
                       OnClose="@OnMergeWizardClosedAsync"
                       OnSuccess="@OnMergeOperationCompletedAsync" />
 
-<Modal Title="切换分区" @bind-Visible="_switchModalVisible" Width="720" OnOk="() => _switchModalVisible = false" OnCancel="() => _switchModalVisible = false">
-    <Alert Type="@AlertType.Info" Message="切换分区功能开发中" ShowIcon="true" />
-</Modal>
+<PartitionArchiveWizard DataSourceId="DataSourceId"
+                        SchemaName="@_archiveTargetSchema"
+                        TableName="@_archiveTargetTable"
+                        PreSelectedPartitionKey="@_archiveTargetPartitionKey"
+                        Visible="@_archiveWizardVisible"
+                        VisibleChanged="OnArchiveWizardVisibleChanged"
+                        OnSuccess="OnArchiveWizardSuccessAsync"
+                        Title="@_archiveWizardTitle" />
 
 <style>
     .partition-container { display: flex; flex-direction: column; gap: 16px; padding: 16px; height: calc(100vh - 200px); }
@@ -387,7 +392,11 @@
     private string _preSelectedBoundaryKey = string.Empty;
     private bool _splitModalVisible = false;
     private bool _mergeModalVisible = false;
-    private bool _switchModalVisible = false;
+    private bool _archiveWizardVisible = false;
+    private string _archiveTargetSchema = string.Empty;
+    private string _archiveTargetTable = string.Empty;
+    private string _archiveTargetPartitionKey = string.Empty;
+    private string _archiveWizardTitle = "分区归档向导";
 
     // Tabs and configuration drafts
     private string _activeTab = "partitioned";
@@ -942,7 +951,49 @@
         _mergeModalVisible = true;
     }
 
-    private void ShowSwitchPartition() => _switchModalVisible = true;
+    private void ShowSwitchPartition()
+    {
+        if (_selectedTable is null)
+        {
+            Message.Warning("请先选择目标分区表。");
+            return;
+        }
+
+        if (!_selectedPartitionRows.Any())
+        {
+            Message.Warning("请先在下方表格中选择需要归档的分区。");
+            return;
+        }
+
+        _archiveTargetSchema = _selectedTable.SchemaName;
+        _archiveTargetTable = _selectedTable.TableName;
+        // 将所有选中的分区号以逗号分隔传递
+        _archiveTargetPartitionKey = string.Join(",", _selectedPartitionRows.Select(p => p.PartitionNumber.ToString(CultureInfo.InvariantCulture)));
+        
+        var count = _selectedPartitionRows.Count();
+        _archiveWizardTitle = count == 1 
+            ? $"分区归档 - {_selectedTable.SchemaName}.{_selectedTable.TableName} #{_selectedPartitionRows.First().PartitionNumber}"
+            : $"批量分区归档 - {_selectedTable.SchemaName}.{_selectedTable.TableName} ({count}个分区)";
+        _archiveWizardVisible = true;
+    }
+
+    private Task OnArchiveWizardVisibleChanged(bool visible)
+    {
+        _archiveWizardVisible = visible;
+        if (!visible)
+        {
+            _archiveTargetPartitionKey = string.Empty;
+        }
+
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnArchiveWizardSuccessAsync(Guid taskId)
+    {
+        _archiveWizardVisible = false;
+        await ReloadAsync();
+        NavigateToTaskMonitor(taskId);
+    }
     private void ViewTableDetails(PartitionTableInfo table) { }
     
     private async Task OnBoundaryOperationCompletedAsync()

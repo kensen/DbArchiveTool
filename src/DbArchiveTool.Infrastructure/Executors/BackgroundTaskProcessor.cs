@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using Microsoft.Data.SqlClient;
 using DbArchiveTool.Infrastructure.Persistence;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using DbArchiveTool.Shared.Partitions;
@@ -80,6 +82,12 @@ internal sealed class BackgroundTaskProcessor
         if (task.OperationType == BackgroundTaskOperationType.MergeBoundary)
         {
             await ExecuteMergeBoundaryAsync(task, cancellationToken);
+            return;
+        }
+
+        if (task.OperationType == BackgroundTaskOperationType.ArchiveSwitch)
+        {
+            await ExecuteArchiveSwitchAsync(task, cancellationToken);
             return;
         }
 
@@ -846,6 +854,9 @@ internal sealed class BackgroundTaskProcessor
                 case BackgroundTaskOperationType.MergeBoundary:
                     return await BuildConfigForMergeBoundaryAsync(task, cancellationToken);
                 
+                case BackgroundTaskOperationType.ArchiveSwitch:
+                    return await BuildConfigForArchiveSwitchAsync(task, cancellationToken);
+                
                 default:
                     logger.LogError("不支持的操作类型：{OperationType}", task.OperationType);
                     return null;
@@ -934,6 +945,22 @@ internal sealed class BackgroundTaskProcessor
     }
 
     /// <summary>
+    /// 分区切换(归档)操作的快照数据结构
+    /// </summary>
+    private sealed class ArchiveSwitchSnapshot
+    {
+        public Guid ConfigurationId { get; set; }
+        public string SchemaName { get; set; } = string.Empty;
+        public string TableName { get; set; } = string.Empty;
+        public string SourcePartitionKey { get; set; } = string.Empty;
+        public string TargetSchema { get; set; } = string.Empty;
+        public string TargetTable { get; set; } = string.Empty;
+        public string TargetDatabase { get; set; } = string.Empty;
+        public bool CreateStagingTable { get; set; }
+        public string DdlScript { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// 为"拆分分区边界"操作构建临时配置对象
     /// </summary>
     private async Task<PartitionConfiguration?> BuildConfigForSplitBoundaryAsync(
@@ -991,6 +1018,37 @@ internal sealed class BackgroundTaskProcessor
         if (config is null)
         {
             logger.LogError("无法从数据库读取分区元数据：{Schema}.{Table}", snapshot.SchemaName, snapshot.TableName);
+            return null;
+        }
+
+        return config;
+    }
+
+    /// <summary>
+    /// 为"分区切换(归档)"操作构建临时配置对象
+    /// </summary>
+    private async Task<PartitionConfiguration?> BuildConfigForArchiveSwitchAsync(
+        BackgroundTask task,
+        CancellationToken cancellationToken)
+    {
+        // 解析快照JSON
+        var snapshot = JsonSerializer.Deserialize<ArchiveSwitchSnapshot>(task.ConfigurationSnapshot!);
+        if (snapshot is null)
+        {
+            logger.LogError("无法解析 ArchiveSwitch 快照：{Snapshot}", task.ConfigurationSnapshot);
+            return null;
+        }
+
+        // 从数据库读取源表的分区元数据
+        var config = await metadataRepository.GetConfigurationAsync(
+            task.DataSourceId,
+            snapshot.SchemaName,
+            snapshot.TableName,
+            cancellationToken);
+
+        if (config is null)
+        {
+            logger.LogError("无法从数据库读取源表分区元数据：{Schema}.{Table}", snapshot.SchemaName, snapshot.TableName);
             return null;
         }
 
@@ -1551,5 +1609,463 @@ internal sealed class BackgroundTaskProcessor
             task.MarkFailed("SYSTEM", ex.Message);
             await taskRepository.UpdateAsync(task, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// 执行"分区切换(归档)"操作的简化流程
+    /// </summary>
+    private async Task ExecuteArchiveSwitchAsync(BackgroundTask task, CancellationToken cancellationToken)
+    {
+        var overallStopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            // ============== 阶段 1: 解析快照 ==============
+            await AppendLogAsync(task.Id, "Info", "任务启动", 
+                $"任务由 {task.RequestedBy} 发起,操作类型:分区切换(归档)。", cancellationToken);
+
+            task.MarkValidating("SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Validation, "SYSTEM");
+            task.UpdateProgress(0.1, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            if (string.IsNullOrWhiteSpace(task.ConfigurationSnapshot))
+            {
+                await HandleValidationFailureAsync(task, "任务快照数据为空,无法执行。", cancellationToken);
+                return;
+            }
+
+            var snapshot = JsonSerializer.Deserialize<ArchiveSwitchSnapshot>(task.ConfigurationSnapshot);
+            if (snapshot is null)
+            {
+                await HandleValidationFailureAsync(task, "无法解析任务快照数据。", cancellationToken);
+                return;
+            }
+
+            var targetDisplay = string.IsNullOrWhiteSpace(snapshot.TargetDatabase)
+                ? $"{snapshot.TargetSchema}.{snapshot.TargetTable}"
+                : $"{snapshot.TargetDatabase}.{snapshot.TargetSchema}.{snapshot.TargetTable}";
+
+            await AppendLogAsync(task.Id, "Info", "解析快照", 
+                $"源表:{snapshot.SchemaName}.{snapshot.TableName},分区:{snapshot.SourcePartitionKey},目标:{targetDisplay}", 
+                cancellationToken);
+
+            // ============== 阶段 2: 加载数据源 ==============
+            var dataSource = await dataSourceRepository.GetAsync(task.DataSourceId, cancellationToken);
+            if (dataSource is null)
+            {
+                await HandleValidationFailureAsync(task, "未找到归档数据源配置。", cancellationToken);
+                return;
+            }
+
+            task.UpdateProgress(0.2, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 3: 验证分区配置 ==============
+            var stepWatch = Stopwatch.StartNew();
+            await AppendLogAsync(task.Id, "Step", "验证分区配置", 
+                "正在从数据库加载分区配置...", 
+                cancellationToken);
+
+            // 从数据库重新加载分区配置
+            var config = await metadataRepository.GetConfigurationAsync(
+                task.DataSourceId,
+                snapshot.SchemaName,
+                snapshot.TableName,
+                cancellationToken);
+
+            if (config is null)
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Error", "配置不存在", 
+                    $"未找到表 {snapshot.SchemaName}.{snapshot.TableName} 的分区配置。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+                await HandleValidationFailureAsync(task, "未找到分区配置。", cancellationToken);
+                return;
+            }
+
+            stepWatch.Stop();
+            await AppendLogAsync(task.Id, "Info", "配置验证通过", 
+                $"已加载分区配置,分区边界数量: {config.Boundaries.Count}。", 
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.3, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 4: 分区边界检查 ==============
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "分区边界检查", 
+                $"正在检查源表的分区边界是否符合要求...", 
+                cancellationToken);
+
+            if (config.Boundaries.Count == 0)
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Error", "分区边界为空", 
+                    $"配置中未找到任何边界值,无法切换分区。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+                await HandleValidationFailureAsync(task, "分区边界为空,无法执行切换。", cancellationToken);
+                return;
+            }
+
+            stepWatch.Stop();
+            await AppendLogAsync(task.Id, "Info", "分区边界检查通过", 
+                $"当前分区边界数量: {config.Boundaries.Count}。", 
+                cancellationToken,
+                durationMs: stepWatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(0.4, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 5: 检测并修复源表索引对齐 ==============
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "检测源表索引", 
+                $"正在检测源表 {snapshot.SchemaName}.{snapshot.TableName} 的索引是否对齐到分区方案...", 
+                cancellationToken);
+
+            await using var sourceConnection = await connectionFactory.CreateSqlConnectionAsync(task.DataSourceId, cancellationToken);
+            
+            // 查询未对齐的索引
+            var unalignedIndexesSql = @"
+SELECT 
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    i.index_id AS IndexId
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+LEFT JOIN sys.data_spaces ds_index ON i.data_space_id = ds_index.data_space_id
+LEFT JOIN sys.data_spaces ds_table ON t.lob_data_space_id = ds_table.data_space_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND i.type IN (1, 2)  -- 聚集和非聚集
+  AND i.name IS NOT NULL
+  AND ds_index.type <> 'PS'  -- 索引不在分区方案上
+  AND EXISTS (  -- 表本身是分区表
+    SELECT 1 FROM sys.partition_schemes ps
+    WHERE ps.data_space_id = COALESCE(
+        (SELECT TOP 1 data_space_id FROM sys.indexes WHERE object_id = t.object_id AND type IN (0,1)),
+        t.filestream_data_space_id
+    )
+  );";
+
+            var unalignedIndexes = await sqlExecutor.QueryAsync<UnalignedIndexInfo>(
+                sourceConnection,
+                unalignedIndexesSql,
+                new { snapshot.SchemaName, snapshot.TableName });
+
+            if (unalignedIndexes.Any())
+            {
+                stepWatch.Stop();
+                var indexNames = string.Join(", ", unalignedIndexes.Select(idx => idx.IndexName));
+                await AppendLogAsync(task.Id, "Warning", "发现未对齐索引", 
+                    $"源表存在 {unalignedIndexes.Count()} 个未对齐到分区方案的索引: {indexNames}。\n这些索引会阻止 SWITCH 操作,系统将自动修复。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                // 自动修复:重建索引并对齐到分区方案
+                await AppendLogAsync(task.Id, "Step", "修复索引对齐", 
+                    "正在重建源表索引以对齐到分区方案...", 
+                    cancellationToken);
+
+                var alignedCount = 0;
+                foreach (var index in unalignedIndexes)
+                {
+                    try
+                    {
+                        // 获取索引详细信息并重建
+                        var rebuildSql = await GenerateAlignIndexScript(
+                            sourceConnection,
+                            snapshot.SchemaName,
+                            snapshot.TableName,
+                            index.IndexName,
+                            config.PartitionSchemeName,
+                            config.PartitionColumn.Name);
+
+                        if (!string.IsNullOrWhiteSpace(rebuildSql))
+                        {
+                            await sqlExecutor.ExecuteAsync(sourceConnection, rebuildSql, timeoutSeconds: 600);
+                            alignedCount++;
+                            logger.LogInformation("已对齐索引 {IndexName} 到分区方案", index.IndexName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "对齐索引 {IndexName} 失败,但将继续尝试 SWITCH", index.IndexName);
+                        await AppendLogAsync(task.Id, "Warning", "索引对齐警告", 
+                            $"索引 {index.IndexName} 对齐失败: {ex.Message}", 
+                            cancellationToken);
+                    }
+                }
+
+                await AppendLogAsync(task.Id, "Info", "索引对齐完成", 
+                    $"已成功对齐 {alignedCount}/{unalignedIndexes.Count()} 个索引到分区方案。", 
+                    cancellationToken);
+            }
+            else
+            {
+                stepWatch.Stop();
+                await AppendLogAsync(task.Id, "Info", "索引检测通过", 
+                    "源表所有索引已正确对齐到分区方案。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+            }
+
+            task.UpdateProgress(0.6, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            // ============== 阶段 6: 进入执行队列 ==============
+            task.MarkQueued("SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成,任务进入执行队列。", cancellationToken);
+
+            // ============== 阶段 6: 开始执行分区切换 ==============
+            task.MarkRunning("SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
+            task.UpdateProgress(0.8, "SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            stepWatch.Restart();
+            await AppendLogAsync(task.Id, "Step", "执行分区切换", 
+                $"正在执行 SWITCH 操作,将分区 {snapshot.SourcePartitionKey} 切换到 {targetDisplay}...\n```sql\n{snapshot.DdlScript}\n```", 
+                cancellationToken);
+
+            // 创建数据库连接并执行分区切换脚本
+            try
+            {
+                await using var connection = await connectionFactory.CreateSqlConnectionAsync(task.DataSourceId, cancellationToken);
+
+                await sqlExecutor.ExecuteAsync(
+                    connection,
+                    snapshot.DdlScript,
+                    null,
+                    null,
+                    timeoutSeconds: 600);  // 分区切换可能需要更长时间
+
+                stepWatch.Stop();
+
+                await AppendLogAsync(task.Id, "Info", "分区切换成功", 
+                    $"成功将分区 {snapshot.SourcePartitionKey} 切换到目标表 {targetDisplay}。", 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.UpdateProgress(0.95, "SYSTEM");
+                await taskRepository.UpdateAsync(task, cancellationToken);
+            }
+            catch (Exception ddlEx)
+            {
+                stepWatch.Stop();
+                
+                var errorMessage = ddlEx.Message;
+                var diagnosticInfo = new StringBuilder();
+                diagnosticInfo.AppendLine($"执行SWITCH脚本时发生错误:\n{errorMessage}");
+                
+                // 如果是索引未对齐错误,提供修复建议
+                if (errorMessage.Contains("未分区") || errorMessage.Contains("not partitioned", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagnosticInfo.AppendLine();
+                    diagnosticInfo.AppendLine("【问题诊断】");
+                    diagnosticInfo.AppendLine("源表上存在未对齐到分区方案的索引,这会阻止 SWITCH 操作。");
+                    diagnosticInfo.AppendLine();
+                    diagnosticInfo.AppendLine("【修复建议】");
+                    diagnosticInfo.AppendLine("请在 SSMS 中执行以下步骤修复源表索引:");
+                    diagnosticInfo.AppendLine();
+                    diagnosticInfo.AppendLine("1. 查询未对齐的索引:");
+                    diagnosticInfo.AppendLine($@"
+SELECT 
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    CASE WHEN ds.type = 'PS' THEN 'Already Aligned' ELSE 'NOT Aligned' END AS AlignmentStatus
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+LEFT JOIN sys.data_spaces ds ON i.data_space_id = ds.data_space_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = '{snapshot.SchemaName}'
+  AND t.name = '{snapshot.TableName}'
+  AND i.type IN (1, 2)
+  AND i.name IS NOT NULL
+  AND ds.type <> 'PS';");
+                    diagnosticInfo.AppendLine();
+                    diagnosticInfo.AppendLine("2. 对于每个未对齐的索引,执行重建(示例):");
+                    diagnosticInfo.AppendLine($@"
+-- 假设分区方案为 PS_YourScheme, 分区列为 YourPartitionColumn
+-- 重建索引并对齐到分区方案:
+DROP INDEX [IndexName] ON [{snapshot.SchemaName}].[{snapshot.TableName}];
+GO
+
+CREATE NONCLUSTERED INDEX [IndexName] 
+ON [{snapshot.SchemaName}].[{snapshot.TableName}] ([YourColumns])
+ON [YourPartitionScheme]([YourPartitionColumn]);
+GO");
+                    diagnosticInfo.AppendLine();
+                    diagnosticInfo.AppendLine("3. 完成修复后,重新提交分区切换任务。");
+                }
+                
+                await AppendLogAsync(task.Id, "Error", "分区切换失败", 
+                    diagnosticInfo.ToString(), 
+                    cancellationToken,
+                    durationMs: stepWatch.ElapsedMilliseconds);
+
+                task.UpdateProgress(1.0, "SYSTEM");
+                task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+                task.MarkFailed("SYSTEM", errorMessage);
+                await taskRepository.UpdateAsync(task, cancellationToken);
+                return;
+            }
+
+            // ============== 阶段 9: 完成 ==============
+            overallStopwatch.Stop();
+
+            task.UpdateProgress(1.0, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+            task.MarkSucceeded("SYSTEM");
+            await taskRepository.UpdateAsync(task, cancellationToken);
+
+            var durationText = overallStopwatch.ElapsedMilliseconds < 1000
+                ? $"{overallStopwatch.ElapsedMilliseconds} ms"
+                : $"{overallStopwatch.Elapsed.TotalSeconds:F2} s";
+
+            await AppendLogAsync(task.Id, "Info", "任务完成", 
+                $"分区切换操作成功完成,已将分区 {snapshot.SourcePartitionKey} 切换到 {targetDisplay},总耗时:{durationText}。", 
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            overallStopwatch.Stop();
+            logger.LogError(ex, "执行分区切换任务时发生异常: {TaskId}", task.Id);
+
+            await AppendLogAsync(
+                task.Id,
+                "Error",
+                "执行异常",
+                $"任务执行过程中发生未预期的错误:\n{ex.Message}\n{ex.StackTrace}",
+                cancellationToken,
+                durationMs: overallStopwatch.ElapsedMilliseconds);
+
+            task.UpdateProgress(1.0, "SYSTEM");
+            task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
+            task.MarkFailed("SYSTEM", ex.Message);
+            await taskRepository.UpdateAsync(task, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 生成对齐索引到分区方案的SQL脚本
+    /// </summary>
+    private async Task<string> GenerateAlignIndexScript(
+        SqlConnection connection,
+        string schemaName,
+        string tableName,
+        string indexName,
+        string partitionSchemeName,
+        string partitionColumnName)
+    {
+        // 查询索引详细信息
+        const string sql = @"
+SELECT 
+    i.index_id,
+    i.type AS IndexType,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    STUFF((
+        SELECT ', [' + c.name + ']' + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE
+    ).value('.', 'nvarchar(max)'), 1, 2, '') AS KeyColumns,
+    STUFF((
+        SELECT ', [' + c.name + ']'
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE
+    ).value('.', 'nvarchar(max)'), 1, 2, '') AS IncludedColumns,
+    i.filter_definition AS FilterDefinition
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND i.name = @IndexName;";
+
+        var indexInfo = (await sqlExecutor.QueryAsync<IndexDetailsForAlign>(
+            connection,
+            sql,
+            new { SchemaName = schemaName, TableName = tableName, IndexName = indexName }))
+            .FirstOrDefault();
+
+        if (indexInfo == null)
+        {
+            return string.Empty;
+        }
+
+        var script = new StringBuilder();
+
+        // 删除旧索引
+        if (indexInfo.IsPrimaryKey)
+        {
+            script.AppendLine($"ALTER TABLE [{schemaName}].[{tableName}] DROP CONSTRAINT [{indexName}];");
+        }
+        else
+        {
+            script.AppendLine($"DROP INDEX [{indexName}] ON [{schemaName}].[{tableName}];");
+        }
+
+        script.AppendLine("GO");
+        script.AppendLine();
+
+        // 重建索引并对齐到分区方案
+        if (indexInfo.IsPrimaryKey)
+        {
+            var clustered = indexInfo.IndexType == 1 ? "CLUSTERED" : "NONCLUSTERED";
+            script.AppendLine($"ALTER TABLE [{schemaName}].[{tableName}] ADD CONSTRAINT [{indexName}]");
+            script.AppendLine($"    PRIMARY KEY {clustered} ({indexInfo.KeyColumns})");
+            script.AppendLine($"    ON [{partitionSchemeName}]([{partitionColumnName}]);");
+        }
+        else
+        {
+            var clustered = indexInfo.IndexType == 1 ? "CLUSTERED" : "NONCLUSTERED";
+            var unique = indexInfo.IsUnique ? "UNIQUE " : "";
+            script.AppendLine($"CREATE {unique}{clustered} INDEX [{indexName}]");
+            script.AppendLine($"    ON [{schemaName}].[{tableName}] ({indexInfo.KeyColumns})");
+
+            if (!string.IsNullOrWhiteSpace(indexInfo.IncludedColumns))
+            {
+                script.AppendLine($"    INCLUDE ({indexInfo.IncludedColumns})");
+            }
+
+            if (!string.IsNullOrWhiteSpace(indexInfo.FilterDefinition))
+            {
+                script.AppendLine($"    WHERE {indexInfo.FilterDefinition}");
+            }
+
+            script.AppendLine($"    ON [{partitionSchemeName}]([{partitionColumnName}]);");
+        }
+
+        return script.ToString();
+    }
+
+    private sealed class UnalignedIndexInfo
+    {
+        public string IndexName { get; set; } = string.Empty;
+        public string IndexType { get; set; } = string.Empty;
+        public int IndexId { get; set; }
+    }
+
+    private sealed class IndexDetailsForAlign
+    {
+        public int IndexType { get; set; }
+        public bool IsUnique { get; set; }
+        public bool IsPrimaryKey { get; set; }
+        public string KeyColumns { get; set; } = string.Empty;
+        public string? IncludedColumns { get; set; }
+        public string? FilterDefinition { get; set; }
     }
 }

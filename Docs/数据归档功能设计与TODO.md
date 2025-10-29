@@ -72,9 +72,11 @@
    - AutoFix 提供“系统自动处理”勾选项；
    - Warning 要求用户确认风险。
 4. **执行确认**（Step 4）：
-   - 显示补齐脚本与最终 SWITCH SQL（Markdown）；
-   - 勾选“确认已备份且知晓风险”后可提交；
-   - 调用 API 触发后台任务并跳转任务详情页。
+  - 显示补齐脚本与最终 SWITCH SQL（Markdown）；
+  - 勾选“确认已备份且知晓风险”后可提交；
+  - 调用 API 触发后台任务并跳转任务详情页。
+
+> 前端进度（2025-10-28）：Step 1-4 均已在新向导组件中落地，Step 4 完成 Markdown 脚本预览与后台任务跳转联动，提交后自动定位任务监控。
 
 ## 3. TODO 列表（按优先级）
 
@@ -108,11 +110,11 @@
    - [x] API 端点已确认（`/api/v1/partition-archive/switch/autofix`）。
 
 3. **前端开发**
-   - [ ] 创建 `PartitionArchiveWizard.razor` 组件框架（Steps + Drawer + 状态管理）。
-   - [ ] Step 1：方案选择（禁用 BCP/BulkCopy，提示原因）。
-   - [ ] Step 2：参数配置表单（源/目标选择、校验提示）。
-   - [ ] Step 3：预检结果页面（分级展示 + 勾选自动补齐 + 警告确认）。
-   - [ ] Step 4：执行确认（Markdown 预览 + 勾选确认 + 提交 API）。
+  - [x] 创建 `PartitionArchiveWizard.razor` 组件框架（Steps + Drawer + 状态管理）。
+  - [x] Step 1：方案选择（禁用 BCP/BulkCopy，提示原因）。
+  - [x] Step 2：参数配置表单（源/目标选择、校验提示）。
+  - [x] Step 3：预检结果页面（分级展示 + 勾选自动补齐 + 警告确认）。
+  - [x] Step 4：执行确认（Markdown 预览 + 勾选确认 + 提交 API）。
 
 ### P1（P0 完成后立即跟进）
 - [ ] 集成测试：成功切换、结构不匹配、索引缺失、目标表非空、跨实例等场景。
@@ -142,4 +144,4 @@
 - **测试覆盖**: `PartitionSwitchAppServiceTests`、`PartitionCommandTests` 已更新通过，验证目标库字段与脚本渲染逻辑。
 - **API 端点**: 已确认 `/api/v1/partition-archive/switch/{inspect,autofix}` 端点存在且 DTO 包含 `TargetDatabase` 字段。
 
-> 下一步优先事项：启动前端向导开发（Step 1-4），实现预检结果展示与 AutoFix 勾选交互，并补充集成测试覆盖。
+> 下一步优先事项：强化任务监控页面、补充集成测试场景，并完善用户操作指引与 FAQ。

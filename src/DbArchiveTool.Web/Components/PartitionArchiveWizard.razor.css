@@ -1,0 +1,100 @@
+﻿.archive-wizard-body {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 160px);
+    overflow-y: auto;
+    padding-right: 8px;
+}
+
+.archive-step-content {
+    flex: 1;
+}
+
+.step-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.form-tip {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--ant-color-text-tertiary, #86909c);
+}
+
+.inspection-section {
+    margin-top: 16px;
+}
+
+.issue-list {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.issue-list li {
+    margin-bottom: 8px;
+}
+
+.issue-recommendation {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--ant-color-text-tertiary, #86909c);
+}
+
+.autofix-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.autofix-title {
+    font-weight: 600;
+}
+
+.autofix-recommendation {
+    font-size: 12px;
+    color: var(--ant-color-text-tertiary, #86909c);
+}
+
+.autofix-actions {
+    margin-top: 12px;
+}
+
+.autofix-log-title {
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+
+.plan-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.plan-title {
+    font-weight: 600;
+}
+
+.plan-meta {
+    font-size: 12px;
+    color: var(--ant-color-text-tertiary, #86909c);
+    margin-top: 2px;
+}
+
+.drawer-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 12px 0 0;
+}
+
+.markdown-preview {
+    border: 1px solid #f0f0f0;
+    border-radius: 4px;
+    padding: 12px;
+    background: #fafafa;
+    max-height: 320px;
+    overflow-y: auto;
+}

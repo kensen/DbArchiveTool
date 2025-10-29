@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.Partitions;
 using DbArchiveTool.Infrastructure.Executors;
+using DbArchiveTool.Infrastructure.Models;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
@@ -21,17 +22,23 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
     private readonly IDbConnectionFactory connectionFactory;
     private readonly ISqlExecutor sqlExecutor;
     private readonly SqlPartitionCommandExecutor partitionCommandExecutor;
+    private readonly IPartitionConfigurationRepository configurationRepository;
+    private readonly IPartitionAuditLogRepository auditLogRepository;
     private readonly ILogger<PartitionSwitchAutoFixExecutor> logger;
 
     public PartitionSwitchAutoFixExecutor(
         IDbConnectionFactory connectionFactory,
         ISqlExecutor sqlExecutor,
         SqlPartitionCommandExecutor partitionCommandExecutor,
+        IPartitionConfigurationRepository configurationRepository,
+        IPartitionAuditLogRepository auditLogRepository,
         ILogger<PartitionSwitchAutoFixExecutor> logger)
     {
         this.connectionFactory = connectionFactory;
         this.sqlExecutor = sqlExecutor;
         this.partitionCommandExecutor = partitionCommandExecutor;
+        this.configurationRepository = configurationRepository;
+        this.auditLogRepository = auditLogRepository;
         this.logger = logger;
     }
 
@@ -64,6 +71,8 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
                     "SyncPartitionObjects" => await ExecuteSyncPartitionObjectsAsync(dataSourceId, configuration, cancellationToken),
                     "SyncIndexes" => await ExecuteSyncIndexesAsync(dataSourceId, configuration, context, cancellationToken),
                     "SyncConstraints" => await ExecuteSyncConstraintsAsync(dataSourceId, configuration, context, cancellationToken),
+                    "AlignSourceIndexes" => await ExecuteAlignSourceIndexesAsync(dataSourceId, configuration, cancellationToken),
+                    "AlignTargetIndexes" => await ExecuteAlignTargetIndexesAsync(dataSourceId, configuration, context, cancellationToken),
                     _ => throw new NotSupportedException($"暂不支持的自动补齐步骤：{step.Code}")
                 };
 
@@ -91,11 +100,73 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
                 var rollbackExecutions = await TryRollbackAsync(context, rollbackStack, cancellationToken);
                 executions.AddRange(rollbackExecutions);
 
-                return PartitionSwitchAutoFixResult.Failure(executions);
+                // 记录失败的审计日志
+                var failureResult = PartitionSwitchAutoFixResult.Failure(executions);
+                await RecordAuditLogAsync(configuration, steps, executions, failureResult.Succeeded, cancellationToken);
+
+                return failureResult;
             }
         }
 
-        return PartitionSwitchAutoFixResult.Success(executions);
+        // 记录成功的审计日志
+        var result = PartitionSwitchAutoFixResult.Success(executions);
+        await RecordAuditLogAsync(configuration, steps, executions, result.Succeeded, cancellationToken);
+
+        return result;
+    }
+
+    /// <summary>
+    /// 记录自动补齐操作的审计日志
+    /// </summary>
+    private async Task RecordAuditLogAsync(
+        PartitionConfiguration configuration,
+        IReadOnlyList<PartitionSwitchPlanAutoFix> steps,
+        List<PartitionSwitchAutoFixExecution> executions,
+        bool succeeded,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var summary = $"对分区表 [{configuration.SchemaName}].[{configuration.TableName}] 执行自动补齐: " +
+                          $"共 {steps.Count} 个步骤, " +
+                          $"成功 {executions.Count(e => e.Succeeded)} 个, " +
+                          $"失败 {executions.Count(e => !e.Succeeded)} 个";
+
+            var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                Steps = steps.Select(s => new { s.Code, s.Title, s.Category, s.ImpactScope }).ToList(),
+                Executions = executions.Select(e => new
+                {
+                    e.Code,
+                    e.Succeeded,
+                    e.Message,
+                    ElapsedMs = e.ElapsedMilliseconds
+                }).ToList()
+            });
+
+            var combinedScript = string.Join(
+                Environment.NewLine + Environment.NewLine + "-- ============================================" + Environment.NewLine + Environment.NewLine,
+                executions.Select(e => $"-- {e.Code}: {e.Message}" + Environment.NewLine + e.Script));
+
+            var auditLog = PartitionAuditLog.Create(
+                userId: "SYSTEM", // TODO: 从上下文获取当前用户
+                action: "PartitionSwitchAutoFix",
+                resourceType: "PartitionConfiguration",
+                resourceId: configuration.Id.ToString(),
+                summary: summary,
+                payloadJson: payloadJson,
+                result: succeeded ? "Success" : "Failure",
+                script: combinedScript);
+
+            await auditLogRepository.AddAsync(auditLog, cancellationToken);
+
+            logger.LogInformation("已记录自动补齐审计日志: {Summary}", summary);
+        }
+        catch (Exception ex)
+        {
+            // 审计日志记录失败不应影响主流程
+            logger.LogError(ex, "记录自动补齐审计日志时发生异常");
+        }
     }
 
     // 创建目标表脚本，复制源表列定义（不包含约束/索引，后续步骤再同步）
@@ -151,60 +222,83 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
         }
 
         var columns = await LoadColumnMetadataAsync(sourceConnection, configuration.SchemaName, configuration.TableName, cancellationToken);
+        
+        // 获取源表分区信息,创建相同分区结构的目标表
+        var partitionInfo = await LoadPartitionInfoAsync(sourceConnection, configuration.SchemaName, configuration.TableName, cancellationToken);
 
-        var script = BuildCreateTableScript(context.TargetSchema, context.TargetTable, columns);
-        await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: 120);
+        var scriptBuilder = new StringBuilder();
+        var createTableScript = BuildCreateTableScript(context.TargetSchema, context.TargetTable, columns, partitionInfo);
+        scriptBuilder.AppendLine(createTableScript);
+        await sqlExecutor.ExecuteAsync(targetConnection, createTableScript, timeoutSeconds: 120);
 
-        var message = $"已创建目标表 [{context.TargetSchema}].[{context.TargetTable}]。";
+        // 立即创建聚集索引和主键(必须先于其他唯一索引,因为分区表要求)
+        var sourceIndexes = await LoadClusteredAndPrimaryKeyIndexesAsync(
+            sourceConnection,
+            configuration.SchemaName,
+            configuration.TableName,
+            cancellationToken);
+
+        var schemaExistingNamesForCreate = await LoadSchemaIndexAndConstraintNamesAsync(
+            targetConnection,
+            context.TargetSchema,
+            cancellationToken);
+
+        foreach (var index in sourceIndexes)
+        {
+            var effectiveName = index.IsPrimaryKey
+                ? $"PK_{context.TargetTable}"
+                : index.IndexName;
+
+            if (schemaExistingNamesForCreate.Contains(effectiveName))
+            {
+                effectiveName = GenerateUniqueIndexName(effectiveName, context.TargetTable, schemaExistingNamesForCreate);
+            }
+
+            schemaExistingNamesForCreate.Add(effectiveName);
+
+            var indexScript = BuildCreateIndexScript(context.TargetSchema, context.TargetTable, index, effectiveName, partitionInfo);
+            scriptBuilder.AppendLine("GO");
+            scriptBuilder.AppendLine(indexScript);
+            
+            try
+            {
+                await sqlExecutor.ExecuteAsync(targetConnection, indexScript, timeoutSeconds: 300);
+                logger.LogInformation("已创建{IndexType} {IndexName}", 
+                    index.IsPrimaryKey ? "主键" : "聚集索引", effectiveName);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "创建{IndexType} {IndexName} 失败", 
+                    index.IsPrimaryKey ? "主键" : "聚集索引", effectiveName);
+                throw; // 主键/聚集索引失败必须中断,不能继续
+            }
+        }
+
+        var script = scriptBuilder.ToString();
+        var message = partitionInfo != null 
+            ? $"已创建分区目标表 [{context.TargetSchema}].[{context.TargetTable}],分区列: {partitionInfo.ColumnName},并同步了聚集索引/主键。"
+            : $"已创建目标表 [{context.TargetSchema}].[{context.TargetTable}],并同步了聚集索引/主键。";
         return new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution("CreateTargetTable", true, message, script, 0),
             new AutoFixRollbackAction(async ct => await RollbackCreateTargetTableAsync(dataSourceId, context, ct)));
     }
 
-    // 清空目标表残留数据，确保 SWITCH 时为空
-    private async Task<AutoFixStepOutcome> ExecuteCleanupTargetTableAsync(
+    // 清空目标表残留数据已移除 - 改为累积式归档,保留历史数据
+    // 如果目标表是分区表,SWITCH 会自动追加到对应分区;如果是普通表,需要确保目标分区为空
+    private Task<AutoFixStepOutcome> ExecuteCleanupTargetTableAsync(
         Guid dataSourceId,
         PartitionSwitchInspectionContext context,
         CancellationToken cancellationToken)
     {
-        await using var targetConnection = context.UseSourceAsTarget
-            ? await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken)
-            : await connectionFactory.CreateTargetSqlConnectionAsync(dataSourceId, cancellationToken);
-
-        if (!context.UseSourceAsTarget && !string.IsNullOrWhiteSpace(context.TargetDatabase))
-        {
-            targetConnection.ChangeDatabase(context.TargetDatabase);
-        }
-
-        const string rowCountSql = @"SELECT SUM(p.rows) FROM sys.partitions p INNER JOIN sys.tables t ON p.object_id = t.object_id INNER JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = @SchemaName AND t.name = @TableName AND p.index_id IN (0,1)";
-        var rows = await sqlExecutor.QuerySingleAsync<long>(
-            targetConnection,
-            rowCountSql,
-            new { SchemaName = context.TargetSchema, TableName = context.TargetTable });
-
-        if (rows == 0)
-        {
-            return new AutoFixStepOutcome(
-                new PartitionSwitchAutoFixExecution(
-                    "CleanupResidualData",
-                    true,
-                    "目标表无数据，跳过清理。",
-                    $"-- Skip cleanup, table empty: [{context.TargetSchema}].[{context.TargetTable}]",
-                    0),
-                null);
-        }
-
-        var script = $"TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}];";
-        await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: 60);
-
-        return new AutoFixStepOutcome(
+        // 累积式归档:不清空目标表,保留多次归档的历史数据
+        return Task.FromResult(new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution(
                 "CleanupResidualData",
                 true,
-                $"已清空目标表数据，原有行数 {rows}。",
-                script,
+                "累积式归档模式,保留目标表历史数据。",
+                $"-- Cumulative archive mode: keep historical data in [{context.TargetSchema}].[{context.TargetTable}]",
                 0),
-            null);
+            null));
     }
 
     // 刷新统计信息，降低执行计划偏差风险
@@ -283,31 +377,231 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
             connectionForTarget.ChangeDatabase(context.TargetDatabase);
         }
 
-        // 加载源表的所有非聚集索引（聚集索引通常与主键关联，在表创建时已处理）
-        var sourceIndexes = await LoadNonClusteredIndexesAsync(
+        // 加载源表的所有索引(包括聚集索引和主键)
+        var sourceAllIndexes = await LoadAllIndexesAsync(
             sourceConnection,
             configuration.SchemaName,
             configuration.TableName,
             cancellationToken);
 
-        if (sourceIndexes.Count == 0)
-        {
-            return new AutoFixStepOutcome(
-                new PartitionSwitchAutoFixExecution(
-                    "SyncIndexes",
-                    true,
-                    "源表无需同步的非聚集索引，跳过。",
-                    "-- No non-clustered indexes to sync",
-                    0),
-                null);
-        }
+        // 加载目标表的所有索引
+        var targetAllIndexes = await LoadAllIndexesAsync(
+            connectionForTarget,
+            context.TargetSchema,
+            context.TargetTable,
+            cancellationToken);
+
+        // 加载当前架构下所有索引/约束名称,用于检测命名冲突
+        var schemaExistingNames = await LoadSchemaIndexAndConstraintNamesAsync(
+            connectionForTarget,
+            context.TargetSchema,
+            cancellationToken);
+
+        // 加载目标表分区信息(如果是分区表)
+        var targetPartitionInfo = await LoadPartitionInfoAsync(
+            connectionForTarget,
+            context.TargetSchema,
+            context.TargetTable,
+            cancellationToken);
 
         var scriptBuilder = new StringBuilder();
-        var createdIndexNames = new List<string>(sourceIndexes.Count);
+        var createdIndexNames = new List<string>();
+        var droppedIndexNames = new List<string>();
+        var failedIndexes = new List<string>();
 
-        foreach (var index in sourceIndexes)
+        // 分离聚集索引和非聚集索引
+        var sourceClusteredIndex = sourceAllIndexes.FirstOrDefault(i => i.IsClustered);
+        var targetClusteredIndex = targetAllIndexes.FirstOrDefault(i => i.IsClustered);
+        var sourceNonClusteredIndexes = sourceAllIndexes.Where(i => !i.IsClustered).ToList();
+        var targetNonClusteredIndexes = targetAllIndexes.Where(i => !i.IsClustered).ToList();
+
+        // 处理聚集索引: 表只能有一个聚集索引,按键列和定义对比,不按名称对比
+        if (sourceClusteredIndex != null)
         {
-            var indexScript = BuildCreateIndexScript(context.TargetSchema, context.TargetTable, index);
+            if (targetClusteredIndex != null)
+            {
+                // 目标表已有聚集索引,检查键列是否一致
+                if (!IsIndexDefinitionMatching(sourceClusteredIndex, targetClusteredIndex))
+                {
+                    // 键列或定义不一致,需要删除重建
+                    logger.LogInformation("目标表聚集索引 {IndexName} 定义不一致,需要删除重建。键列: 源=[{SourceKeys}], 目标=[{TargetKeys}]", 
+                        targetClusteredIndex.IndexName, sourceClusteredIndex.KeyColumns, targetClusteredIndex.KeyColumns);
+                    
+                    var dropScript = BuildDropIndexScript(context.TargetSchema, context.TargetTable, targetClusteredIndex);
+                    scriptBuilder.AppendLine($"-- 删除不一致的聚集索引 [{targetClusteredIndex.IndexName}]");
+                    scriptBuilder.AppendLine(dropScript);
+                    scriptBuilder.AppendLine("GO");
+                    scriptBuilder.AppendLine();
+
+                    var targetClusteredIndexName = targetClusteredIndex.IndexName;
+                    
+                    try
+                    {
+                        await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                        droppedIndexNames.Add(targetClusteredIndexName);
+                        schemaExistingNames.Remove(targetClusteredIndexName);
+                        logger.LogInformation("已删除聚集索引 {IndexName}", targetClusteredIndexName);
+                        
+                        // 删除成功后,需要重建
+                        targetClusteredIndex = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "删除聚集索引 {IndexName} 失败", targetClusteredIndexName);
+                        failedIndexes.Add($"删除聚集索引 {targetClusteredIndexName} 失败: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    // 聚集索引定义一致,跳过
+                    logger.LogInformation("聚集索引 {IndexName} 定义一致,跳过。", targetClusteredIndex.IndexName);
+                    scriptBuilder.AppendLine($"-- 聚集索引 [{targetClusteredIndex.IndexName}] 定义一致,跳过");
+                }
+            }
+
+            // 如果目标表没有聚集索引(或已被删除),创建源表的聚集索引
+            if (targetClusteredIndex == null)
+            {
+                var effectiveName = sourceClusteredIndex.IndexName;
+                if (schemaExistingNames.Contains(effectiveName))
+                {
+                    effectiveName = GenerateUniqueIndexName(effectiveName, context.TargetTable, schemaExistingNames);
+                }
+
+                schemaExistingNames.Add(effectiveName);
+
+                var indexForSync = new IndexDefinitionForSync
+                {
+                    IndexId = sourceClusteredIndex.IndexId,
+                    IndexName = sourceClusteredIndex.IndexName,
+                    IsUnique = sourceClusteredIndex.IsUnique,
+                    IsPrimaryKey = sourceClusteredIndex.IsPrimaryKey,
+                    IndexType = (byte)1, // 聚集
+                    KeyColumns = sourceClusteredIndex.KeyColumns,
+                    IncludedColumns = sourceClusteredIndex.IncludedColumns,
+                    FilterDefinition = sourceClusteredIndex.FilterDefinition
+                };
+
+                var indexScript = BuildCreateIndexScript(context.TargetSchema, context.TargetTable, indexForSync, effectiveName, targetPartitionInfo);
+                scriptBuilder.AppendLine($"-- 创建聚集索引 [{effectiveName}]");
+                scriptBuilder.AppendLine(indexScript);
+                scriptBuilder.AppendLine("GO");
+                scriptBuilder.AppendLine();
+
+                try
+                {
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: 300);
+                    createdIndexNames.Add(effectiveName);
+                    logger.LogInformation("已创建聚集索引 {IndexName}", effectiveName);
+                }
+                catch (Exception ex)
+                {
+                    var errorDetail = $"聚集索引 {sourceClusteredIndex.IndexName} 创建失败: {ex.Message}";
+                    failedIndexes.Add(errorDetail);
+                    scriptBuilder.AppendLine($"-- 失败: {errorDetail}");
+                    logger.LogError(ex, "创建聚集索引 {IndexName} 失败", sourceClusteredIndex.IndexName);
+                }
+            }
+        }
+
+        // 处理非聚集索引: 按名称匹配,检查定义是否一致
+        foreach (var targetIndex in targetNonClusteredIndexes)
+        {
+            var sourceIndex = sourceNonClusteredIndexes.FirstOrDefault(s => 
+                s.IndexName.Equals(targetIndex.IndexName, StringComparison.OrdinalIgnoreCase));
+
+            if (sourceIndex == null)
+            {
+                // 目标表有但源表没有的索引,保留
+                logger.LogInformation("目标表非聚集索引 {IndexName} 在源表中不存在,保留。", targetIndex.IndexName);
+                scriptBuilder.AppendLine($"-- 目标表索引 [{targetIndex.IndexName}] 在源表中不存在,保留");
+                continue;
+            }
+
+            // 检查索引定义是否一致
+            if (!IsIndexDefinitionMatching(sourceIndex, targetIndex))
+            {
+                // 索引不一致,需要删除重建
+                logger.LogInformation("目标表索引 {IndexName} 定义不一致,需要删除重建。", targetIndex.IndexName);
+                
+                var dropScript = BuildDropIndexScript(context.TargetSchema, context.TargetTable, targetIndex);
+                scriptBuilder.AppendLine($"-- 删除不一致的索引 [{targetIndex.IndexName}]");
+                scriptBuilder.AppendLine(dropScript);
+                scriptBuilder.AppendLine("GO");
+                scriptBuilder.AppendLine();
+
+                try
+                {
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                    droppedIndexNames.Add(targetIndex.IndexName);
+                    schemaExistingNames.Remove(targetIndex.IndexName);
+                    logger.LogInformation("已删除索引 {IndexName}", targetIndex.IndexName);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "删除索引 {IndexName} 失败", targetIndex.IndexName);
+                    failedIndexes.Add($"删除索引 {targetIndex.IndexName} 失败: {ex.Message}");
+                    // 删除失败,不能重建,标记为已存在
+                    continue;
+                }
+            }
+            else
+            {
+                // 索引定义一致,跳过
+                logger.LogInformation("索引 {IndexName} 定义一致,跳过。", targetIndex.IndexName);
+                scriptBuilder.AppendLine($"-- 索引 [{targetIndex.IndexName}] 定义一致,跳过");
+            }
+        }
+
+        // 创建源表中存在但目标表中不存在(或已被删除)的非聚集索引
+        foreach (var sourceIndex in sourceNonClusteredIndexes)
+        {
+            var targetIndex = targetNonClusteredIndexes.FirstOrDefault(t => 
+                t.IndexName.Equals(sourceIndex.IndexName, StringComparison.OrdinalIgnoreCase));
+
+            // 如果目标表有这个索引且定义一致,已经在上面跳过了
+            if (targetIndex != null && !droppedIndexNames.Contains(targetIndex.IndexName))
+            {
+                continue;
+            }
+
+            // 特殊检查:如果源索引是主键,且目标表已经有主键(不管是聚集还是非聚集),则跳过
+            // SQL Server 规则:每个表只能有一个主键
+            if (sourceIndex.IsPrimaryKey)
+            {
+                var targetHasPrimaryKey = targetAllIndexes.Any(t => t.IsPrimaryKey && !droppedIndexNames.Contains(t.IndexName));
+                if (targetHasPrimaryKey)
+                {
+                    logger.LogWarning("目标表已有主键,跳过创建源表的非聚集主键 {IndexName}", sourceIndex.IndexName);
+                    scriptBuilder.AppendLine($"-- 跳过: 目标表已有主键,不创建非聚集主键 [{sourceIndex.IndexName}]");
+                    failedIndexes.Add($"⚠️ 跳过主键 {sourceIndex.IndexName}: 目标表已有主键(类型可能不同)");
+                    continue;
+                }
+            }
+
+            // 需要创建的索引
+            var effectiveName = sourceIndex.IndexName;
+            if (schemaExistingNames.Contains(effectiveName))
+            {
+                effectiveName = GenerateUniqueIndexName(effectiveName, context.TargetTable, schemaExistingNames);
+            }
+
+            schemaExistingNames.Add(effectiveName);
+
+            var indexForSync = new IndexDefinitionForSync
+            {
+                IndexId = sourceIndex.IndexId,
+                IndexName = sourceIndex.IndexName,
+                IsUnique = sourceIndex.IsUnique,
+                IsPrimaryKey = sourceIndex.IsPrimaryKey,
+                IndexType = (byte)2, // 非聚集
+                KeyColumns = sourceIndex.KeyColumns,
+                IncludedColumns = sourceIndex.IncludedColumns,
+                FilterDefinition = sourceIndex.FilterDefinition
+            };
+
+            var indexScript = BuildCreateIndexScript(context.TargetSchema, context.TargetTable, indexForSync, effectiveName, targetPartitionInfo);
+            scriptBuilder.AppendLine($"-- 创建索引 [{effectiveName}]");
             scriptBuilder.AppendLine(indexScript);
             scriptBuilder.AppendLine("GO");
             scriptBuilder.AppendLine();
@@ -315,21 +609,66 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
             try
             {
                 await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: 300);
-                createdIndexNames.Add(index.IndexName);
+                createdIndexNames.Add(effectiveName);
+                logger.LogInformation("已创建索引 {IndexName}", effectiveName);
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "创建索引 {IndexName} 失败，跳过该索引。", index.IndexName);
+                var errorDetail = sourceIndex.IsUnique 
+                    ? $"唯一索引 {sourceIndex.IndexName} 创建失败(可能存在重复数据): {ex.Message}"
+                    : $"索引 {sourceIndex.IndexName} 创建失败: {ex.Message}";
+                
+                failedIndexes.Add(errorDetail);
+                scriptBuilder.AppendLine($"-- 失败: {errorDetail}");
+                
+                logger.LogError(ex, "创建索引 {IndexName} 失败。{Details}", 
+                    sourceIndex.IndexName, 
+                    sourceIndex.IsUnique ? "这是唯一索引,可能存在重复数据导致无法创建。" : "");
             }
         }
 
         var script = scriptBuilder.ToString();
-        var message = createdIndexNames.Count > 0
-            ? $"已同步 {createdIndexNames.Count} 个索引：{string.Join(", ", createdIndexNames)}。"
-            : "索引同步未成功创建任何索引。";
+        var totalCreated = createdIndexNames.Count;
+        var totalDropped = droppedIndexNames.Count;
+        
+        string message;
+        if (totalCreated > 0 || totalDropped > 0)
+        {
+            var parts = new List<string>();
+            if (totalDropped > 0)
+            {
+                parts.Add($"删除 {totalDropped} 个不一致的索引");
+            }
+            if (totalCreated > 0)
+            {
+                parts.Add($"创建 {totalCreated} 个索引");
+            }
+            
+            var successMessage = $"已同步索引: {string.Join(", ", parts)}。";
+            
+            if (failedIndexes.Count > 0)
+            {
+                message = $"{successMessage}\n⚠️ {failedIndexes.Count} 个操作失败:\n• {string.Join("\n• ", failedIndexes)}";
+            }
+            else
+            {
+                message = successMessage;
+            }
+        }
+        else
+        {
+            if (failedIndexes.Count > 0)
+            {
+                message = $"❌ 所有操作均失败:\n• {string.Join("\n• ", failedIndexes)}";
+            }
+            else
+            {
+                message = "所有索引均已一致,无需同步。";
+            }
+        }
 
         return new AutoFixStepOutcome(
-            new PartitionSwitchAutoFixExecution("SyncIndexes", createdIndexNames.Count > 0, message, script, 0),
+            new PartitionSwitchAutoFixExecution("SyncIndexes", (totalCreated > 0 || totalDropped > 0) && failedIndexes.Count == 0, message, script, 0),
             new AutoFixRollbackAction(async ct => await RollbackSyncIndexesAsync(dataSourceId, context, createdIndexNames, ct)));
     }
 
@@ -478,7 +817,38 @@ ORDER BY c.column_id;";
         return rows.ToList();
     }
 
-    private static string BuildCreateTableScript(string schema, string table, IReadOnlyList<ColumnMetadata> columns)
+    /// <summary>
+    /// 加载源表的分区信息(分区方案、分区列)
+    /// </summary>
+    private async Task<PartitionInfo?> LoadPartitionInfoAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT 
+    ps.name AS PartitionSchemeName,
+    c.name AS ColumnName,
+    pf.name AS PartitionFunctionName
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON t.object_id = i.object_id AND i.index_id IN (0,1)
+INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+INNER JOIN sys.partition_functions pf ON ps.function_id = pf.function_id
+INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.partition_ordinal = 1
+INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+WHERE s.name = @SchemaName AND t.name = @TableName;";
+
+        var result = await sqlExecutor.QueryAsync<PartitionInfo>(connection, sql, new { SchemaName = schema, TableName = table });
+        return result.FirstOrDefault();
+    }
+
+    private static string BuildCreateTableScript(
+        string schema, 
+        string table, 
+        IReadOnlyList<ColumnMetadata> columns, 
+        PartitionInfo? partitionInfo = null)
     {
         if (columns.Count == 0)
         {
@@ -501,7 +871,16 @@ ORDER BY c.column_id;";
             builder.AppendLine($"        {columnSql}{suffix}");
         }
 
-        builder.AppendLine("    );");
+        builder.Append("    )");
+        
+        // 如果源表是分区表,目标表也创建为分区表(使用相同分区方案和分区列)
+        if (partitionInfo != null)
+        {
+            builder.AppendLine();
+            builder.Append($"    ON [{partitionInfo.PartitionSchemeName}]([{partitionInfo.ColumnName}])");
+        }
+        
+        builder.AppendLine(";");
         builder.AppendLine("END");
 
         return builder.ToString();
@@ -607,12 +986,27 @@ ORDER BY c.column_id;";
         public bool IsNullable { get; set; }
         public bool IsIdentity { get; set; }
         public bool IsComputed { get; set; }
-        public long? IdentitySeed { get; set; }
-        public long? IdentityIncrement { get; set; }
+        public int? IdentitySeed { get; set; }
+        public int? IdentityIncrement { get; set; }
         public string? ComputedDefinition { get; set; }
         public bool IsPersisted { get; set; }
         public string? CollationName { get; set; }
         public bool IsRowGuid { get; set; }
+    }
+
+    /// <summary>
+    /// 分区表信息
+    /// </summary>
+    private sealed class PartitionInfo
+    {
+        /// <summary>分区方案名称</summary>
+        public string PartitionSchemeName { get; set; } = string.Empty;
+        
+        /// <summary>分区列名称</summary>
+        public string ColumnName { get; set; } = string.Empty;
+        
+        /// <summary>分区函数名称</summary>
+        public string PartitionFunctionName { get; set; } = string.Empty;
     }
 
     private sealed record AutoFixStepOutcome(
@@ -883,6 +1277,177 @@ ORDER BY i.index_id;";
         return result.ToList();
     }
 
+    /// <summary>
+    /// 加载聚集索引和主键(必须优先创建,其他唯一索引依赖它们)
+    /// </summary>
+    private async Task<IReadOnlyList<IndexDefinitionForSync>> LoadClusteredAndPrimaryKeyIndexesAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT
+    i.index_id AS IndexId,
+    i.name AS IndexName,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    i.type AS IndexType,
+    STUFF((
+        SELECT ', ' + '[' + c.name + ']' + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE
+    ).value('.', 'nvarchar(max)'), 1, 2, '') AS KeyColumns,
+    STUFF((
+        SELECT ', ' + '[' + c.name + ']'
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE
+    ).value('.', 'nvarchar(max)'), 1, 2, '') AS IncludedColumns,
+    i.filter_definition AS FilterDefinition
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND (i.type = 1 OR i.is_primary_key = 1)
+  AND i.is_disabled = 0
+ORDER BY i.is_primary_key DESC, i.index_id;";
+
+        var result = await sqlExecutor.QueryAsync<IndexDefinitionForSync>(
+            connection,
+            sql,
+            new { SchemaName = schema, TableName = table });
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return result.ToList();
+    }
+
+    /// <summary>
+    /// 加载目标表已存在的索引和约束名称列表
+    /// </summary>
+    private async Task<IReadOnlyList<string>> LoadExistingIndexNamesAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+-- 加载索引名称
+SELECT i.name
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND i.name IS NOT NULL
+
+UNION
+
+-- 加载主键和唯一约束名称
+SELECT kc.name
+FROM sys.key_constraints kc
+INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND kc.name IS NOT NULL;";
+
+        var result = await sqlExecutor.QueryAsync<string>(
+            connection,
+            sql,
+            new { SchemaName = schema, TableName = table });
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return result.ToList();
+    }
+
+    /// <summary>
+    /// 检查表是否已存在主键
+    /// </summary>
+    private async Task<bool> CheckIfPrimaryKeyExistsAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT COUNT(1)
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND t.name = @TableName
+  AND i.is_primary_key = 1;";
+
+        var count = await sqlExecutor.QuerySingleAsync<int>(
+            connection,
+            sql,
+            new { SchemaName = schema, TableName = table });
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return count > 0;
+    }
+
+    private async Task<HashSet<string>> LoadSchemaIndexAndConstraintNamesAsync(
+        SqlConnection connection,
+        string schema,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT i.name
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND i.name IS NOT NULL
+
+UNION
+
+SELECT kc.name
+FROM sys.key_constraints kc
+INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @SchemaName
+  AND kc.name IS NOT NULL;";
+
+        var names = await sqlExecutor.QueryAsync<string>(
+            connection,
+            sql,
+            new { SchemaName = schema });
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string GenerateUniqueIndexName(
+        string desiredName,
+        string targetTable,
+        ISet<string> existingNames)
+    {
+        if (!existingNames.Contains(desiredName))
+        {
+            return desiredName;
+        }
+
+        var baseName = $"{desiredName}_{targetTable}";
+        var candidate = baseName;
+        var counter = 1;
+
+        while (existingNames.Contains(candidate))
+        {
+            candidate = $"{baseName}_{counter}";
+            counter++;
+        }
+
+        return candidate;
+    }
+
     private async Task<IReadOnlyList<ConstraintForSync>> LoadDefaultConstraintsForSyncAsync(
         SqlConnection connection,
         string database,
@@ -944,13 +1509,57 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
         return result.ToList();
     }
 
-    private static string BuildCreateIndexScript(string schema, string table, IndexDefinitionForSync index)
+    private static string BuildCreateIndexScript(string schema, string table, IndexDefinitionForSync index, string indexName, PartitionInfo? partitionInfo = null)
     {
         var builder = new StringBuilder();
+        
+        // 处理主键约束
+        if (index.IsPrimaryKey)
+        {
+            builder.Append($"ALTER TABLE [{schema}].[{table}] ADD CONSTRAINT [{indexName}] PRIMARY KEY");
+            builder.Append(index.IndexType == 1 ? " CLUSTERED (" : " NONCLUSTERED (");
+            builder.Append(index.KeyColumns);
+            builder.Append(");");
+            return builder.ToString();
+        }
+        
+        // 处理聚集索引或非聚集索引
+        var clusteredKeyword = index.IndexType == 1 ? "CLUSTERED" : "NONCLUSTERED";
         var uniqueKeyword = index.IsUnique ? "UNIQUE " : string.Empty;
 
-        builder.Append($"CREATE {uniqueKeyword}NONCLUSTERED INDEX [{index.IndexName}] ON [{schema}].[{table}] (");
-        builder.Append(index.KeyColumns);
+        builder.Append($"CREATE {uniqueKeyword}{clusteredKeyword} INDEX [{indexName}] ON [{schema}].[{table}] (");
+        
+        var keyColumns = index.KeyColumns;
+        
+        // 检查键列是否已包含分区列
+        bool containsPartitionColumn = false;
+        if (partitionInfo != null && !string.IsNullOrWhiteSpace(partitionInfo.ColumnName))
+        {
+            // 解析列名:去掉 [ ] 和排序关键字(ASC/DESC)
+            var columnList = keyColumns.Split(',')
+                .Select(c => {
+                    var trimmed = c.Trim();
+                    // 去掉方括号
+                    trimmed = trimmed.Replace("[", "").Replace("]", "");
+                    // 去掉 ASC/DESC
+                    trimmed = trimmed.Replace(" ASC", "").Replace(" DESC", "").Trim();
+                    return trimmed;
+                })
+                .ToList();
+            
+            containsPartitionColumn = columnList.Contains(partitionInfo.ColumnName, StringComparer.OrdinalIgnoreCase);
+        }
+        
+        // 对于分区表,所有索引都必须包含分区列才能对齐到分区方案
+        // 这对于 SWITCH PARTITION 操作是必需的
+        if (partitionInfo != null && !containsPartitionColumn && !string.IsNullOrWhiteSpace(partitionInfo.ColumnName))
+        {
+            // 添加分区列到键列末尾
+            keyColumns = $"{keyColumns}, [{partitionInfo.ColumnName}] ASC";
+            containsPartitionColumn = true;
+        }
+        
+        builder.Append(keyColumns);
         builder.Append(")");
 
         if (!string.IsNullOrWhiteSpace(index.IncludedColumns))
@@ -961,6 +1570,12 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
         if (!string.IsNullOrWhiteSpace(index.FilterDefinition))
         {
             builder.Append($" WHERE {index.FilterDefinition}");
+        }
+
+        // 所有索引都必须对齐到分区方案(因为已经添加了分区列)
+        if (partitionInfo != null && !string.IsNullOrWhiteSpace(partitionInfo.PartitionSchemeName) && !string.IsNullOrWhiteSpace(partitionInfo.ColumnName))
+        {
+            builder.Append($" ON [{partitionInfo.PartitionSchemeName}]([{partitionInfo.ColumnName}])");
         }
 
         builder.Append(";");
@@ -983,6 +1598,8 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
         public int IndexId { get; set; }
         public string IndexName { get; set; } = string.Empty;
         public bool IsUnique { get; set; }
+        public bool IsPrimaryKey { get; set; }
+        public byte IndexType { get; set; } // 1=聚集, 2=非聚集
         public string KeyColumns { get; set; } = string.Empty;
         public string? IncludedColumns { get; set; }
         public string? FilterDefinition { get; set; }
@@ -994,4 +1611,484 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
         public string ConstraintName { get; set; } = string.Empty;
         public string Definition { get; set; } = string.Empty;
     }
+    
+    /// <summary>
+    /// 对齐源表索引到分区方案
+    /// </summary>
+    private async Task<AutoFixStepOutcome> ExecuteAlignSourceIndexesAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var log = new StringBuilder();
+        log.AppendLine($"开始对齐源表索引: [{configuration.SchemaName}].[{configuration.TableName}]");
+
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+            
+            // 1. 查询未对齐的索引
+            var unalignedIndexes = await GetUnalignedIndexesForFixAsync(
+                connection,
+                configuration.SchemaName,
+                configuration.TableName,
+                configuration.PartitionSchemeName,
+                cancellationToken);
+
+            if (!unalignedIndexes.Any())
+            {
+                log.AppendLine("未发现需要对齐的索引");
+                return new AutoFixStepOutcome(
+                    new PartitionSwitchAutoFixExecution(
+                        "AlignSourceIndexes",
+                        true,
+                        "源表索引已对齐,无需处理",
+                        log.ToString(),
+                        0),
+                    null);
+            }
+
+            log.AppendLine($"发现 {unalignedIndexes.Count} 个未对齐的索引:");
+            foreach (var idx in unalignedIndexes)
+            {
+                log.AppendLine($"  - {idx.IndexName} ({idx.IndexType})");
+            }
+
+            var droppedIndexes = new List<string>();
+            var recreatedIndexes = new List<string>();
+
+            // 2. 对每个未对齐的索引进行重建
+            foreach (var index in unalignedIndexes)
+            {
+                log.AppendLine();
+                log.AppendLine($"处理索引: {index.IndexName}");
+
+                try
+                {
+                    // 2.1 删除索引
+                    var dropSql = $"DROP INDEX [{index.IndexName}] ON [{configuration.SchemaName}].[{configuration.TableName}];";
+                    log.AppendLine($"  执行: {dropSql}");
+                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: 600);
+                    droppedIndexes.Add(index.IndexName);
+                    log.AppendLine($"  ✓ 索引已删除");
+
+                    // 2.2 重建索引(包含分区列,对齐到分区方案)
+                    var createSql = BuildAlignedIndexCreateSql(
+                        configuration.SchemaName,
+                        configuration.TableName,
+                        index,
+                        configuration.PartitionColumn.Name,
+                        configuration.PartitionSchemeName);
+                    
+                    log.AppendLine($"  执行: {createSql}");
+                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 600);
+                    recreatedIndexes.Add(index.IndexName);
+                    log.AppendLine($"  ✓ 索引已重建并对齐到分区方案");
+                }
+                catch (Exception ex)
+                {
+                    log.AppendLine($"  ✗ 处理索引失败: {ex.Message}");
+                    logger.LogError(ex, "处理索引 {IndexName} 时发生异常", index.IndexName);
+                    throw;
+                }
+            }
+
+            log.AppendLine();
+            log.AppendLine("索引对齐完成:");
+            log.AppendLine($"  - 删除索引: {string.Join(", ", droppedIndexes)}");
+            log.AppendLine($"  - 重建索引: {string.Join(", ", recreatedIndexes)}");
+
+            return new AutoFixStepOutcome(
+                new PartitionSwitchAutoFixExecution(
+                    "AlignSourceIndexes",
+                    true,
+                    $"成功对齐 {recreatedIndexes.Count} 个索引",
+                    log.ToString(),
+                    0),
+                null);
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine();
+            log.AppendLine($"对齐源表索引失败: {ex.Message}");
+            logger.LogError(ex, "对齐源表 [{Schema}].[{Table}] 索引时发生异常", configuration.SchemaName, configuration.TableName);
+
+            return new AutoFixStepOutcome(
+                new PartitionSwitchAutoFixExecution(
+                    "AlignSourceIndexes",
+                    false,
+                    $"对齐源表索引失败: {ex.Message}",
+                    log.ToString(),
+                    0),
+                null);
+        }
+    }
+
+    /// <summary>
+    /// 对齐目标表索引到分区方案
+    /// </summary>
+    private async Task<AutoFixStepOutcome> ExecuteAlignTargetIndexesAsync(
+        Guid dataSourceId,
+        PartitionConfiguration configuration,
+        PartitionSwitchInspectionContext context,
+        CancellationToken cancellationToken)
+    {
+        var log = new StringBuilder();
+        var targetSchema = context.TargetSchema ?? configuration.SchemaName;
+        var targetTable = context.TargetTable;
+        log.AppendLine($"开始对齐目标表索引: [{targetSchema}].[{targetTable}]");
+
+        try
+        {
+            await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+            
+            // 1. 查询未对齐的索引
+            var unalignedIndexes = await GetUnalignedIndexesForFixAsync(
+                connection,
+                targetSchema,
+                targetTable,
+                configuration.PartitionSchemeName,
+                cancellationToken);
+
+            if (!unalignedIndexes.Any())
+            {
+                log.AppendLine("未发现需要对齐的索引");
+                return new AutoFixStepOutcome(
+                    new PartitionSwitchAutoFixExecution(
+                        "AlignTargetIndexes",
+                        true,
+                        "目标表索引已对齐,无需处理",
+                        log.ToString(),
+                        0),
+                    null);
+            }
+
+            log.AppendLine($"发现 {unalignedIndexes.Count} 个未对齐的索引:");
+            foreach (var idx in unalignedIndexes)
+            {
+                log.AppendLine($"  - {idx.IndexName} ({idx.IndexType})");
+            }
+
+            var droppedIndexes = new List<string>();
+            var recreatedIndexes = new List<string>();
+
+            // 2. 对每个未对齐的索引进行重建
+            foreach (var index in unalignedIndexes)
+            {
+                log.AppendLine();
+                log.AppendLine($"处理索引: {index.IndexName}");
+
+                try
+                {
+                    // 2.1 删除索引
+                    var dropSql = $"DROP INDEX [{index.IndexName}] ON [{targetSchema}].[{targetTable}];";
+                    log.AppendLine($"  执行: {dropSql}");
+                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: 600);
+                    droppedIndexes.Add(index.IndexName);
+                    log.AppendLine($"  ✓ 索引已删除");
+
+                    // 2.2 重建索引(包含分区列,对齐到分区方案)
+                    var createSql = BuildAlignedIndexCreateSql(
+                        targetSchema,
+                        targetTable,
+                        index,
+                        configuration.PartitionColumn.Name,
+                        configuration.PartitionSchemeName);
+                    
+                    log.AppendLine($"  执行: {createSql}");
+                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 600);
+                    recreatedIndexes.Add(index.IndexName);
+                    log.AppendLine($"  ✓ 索引已重建并对齐到分区方案");
+                }
+                catch (Exception ex)
+                {
+                    log.AppendLine($"  ✗ 处理索引失败: {ex.Message}");
+                    logger.LogError(ex, "处理目标表索引 {IndexName} 时发生异常", index.IndexName);
+                    throw;
+                }
+            }
+
+            log.AppendLine();
+            log.AppendLine("目标表索引对齐完成:");
+            log.AppendLine($"  - 删除索引: {string.Join(", ", droppedIndexes)}");
+            log.AppendLine($"  - 重建索引: {string.Join(", ", recreatedIndexes)}");
+
+            return new AutoFixStepOutcome(
+                new PartitionSwitchAutoFixExecution(
+                    "AlignTargetIndexes",
+                    true,
+                    $"成功对齐 {recreatedIndexes.Count} 个索引",
+                    log.ToString(),
+                    0),
+                null);
+        }
+        catch (Exception ex)
+        {
+            log.AppendLine();
+            log.AppendLine($"对齐目标表索引失败: {ex.Message}");
+            logger.LogError(ex, "对齐目标表 [{Schema}].[{Table}] 索引时发生异常", targetSchema, targetTable);
+
+            return new AutoFixStepOutcome(
+                new PartitionSwitchAutoFixExecution(
+                    "AlignTargetIndexes",
+                    false,
+                    $"对齐目标表索引失败: {ex.Message}",
+                    log.ToString(),
+                    0),
+                null);
+        }
+    }
+
+    /// <summary>
+    /// 查询需要对齐的索引信息(用于修复)
+    /// </summary>
+    private async Task<List<IndexForFix>> GetUnalignedIndexesForFixAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        string partitionSchemeName,
+        CancellationToken cancellationToken)
+    {
+        var sql = @"
+SELECT 
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    STUFF((
+        SELECT ', ' + c.name
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS KeyColumns,
+    STUFF((
+        SELECT ', ' + c.name
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS IncludedColumns,
+    i.filter_definition AS FilterDefinition
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+LEFT JOIN sys.data_spaces ds ON i.data_space_id = ds.data_space_id
+WHERE s.name = @Schema
+  AND t.name = @Table
+  AND i.type IN (1, 2)  -- 聚集索引和非聚集索引
+  AND (
+      ds.type <> 'PS'  -- 不在分区方案上
+      OR ds.name <> @PartitionSchemeName  -- 或者不是目标分区方案
+  )
+ORDER BY i.index_id;";
+
+        var result = await sqlExecutor.QueryAsync<IndexForFix>(
+            connection,
+            sql,
+            new { Schema = schema, Table = table, PartitionSchemeName = partitionSchemeName });
+
+        return result.ToList();
+    }
+
+    /// <summary>
+    /// 构建对齐的索引创建SQL
+    /// </summary>
+    private string BuildAlignedIndexCreateSql(
+        string schema,
+        string table,
+        IndexForFix index,
+        string partitionColumn,
+        string partitionSchemeName)
+    {
+        var sb = new StringBuilder();
+
+        // CREATE [UNIQUE] [CLUSTERED|NONCLUSTERED] INDEX
+        sb.Append("CREATE ");
+        if (index.IsUnique)
+            sb.Append("UNIQUE ");
+        
+        sb.Append(index.IndexType == "CLUSTERED" ? "CLUSTERED " : "NONCLUSTERED ");
+        sb.Append($"INDEX [{index.IndexName}] ");
+        sb.AppendLine($"ON [{schema}].[{table}]");
+
+        // 键列(确保包含分区列)
+        var keyColumns = index.KeyColumns?.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
+        var keyColumnsList = new List<string>(keyColumns);
+        
+        // 如果分区列不在键列中,添加到末尾
+        if (!keyColumnsList.Any(c => c.Equals(partitionColumn, StringComparison.OrdinalIgnoreCase)))
+        {
+            keyColumnsList.Add(partitionColumn);
+        }
+
+        sb.Append("(");
+        sb.Append(string.Join(", ", keyColumnsList.Select(c => $"[{c}]")));
+        sb.AppendLine(")");
+
+        // INCLUDE列
+        if (!string.IsNullOrWhiteSpace(index.IncludedColumns))
+        {
+            var includedColumns = index.IncludedColumns.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries);
+            sb.Append("INCLUDE (");
+            sb.Append(string.Join(", ", includedColumns.Select(c => $"[{c}]")));
+            sb.AppendLine(")");
+        }
+
+        // WHERE过滤条件
+        if (!string.IsNullOrWhiteSpace(index.FilterDefinition))
+        {
+            sb.AppendLine($"WHERE {index.FilterDefinition}");
+        }
+
+        // ON分区方案(使用分区列)
+        sb.AppendLine($"ON [{partitionSchemeName}]([{partitionColumn}]);");
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 用于修复的索引信息
+    /// </summary>
+    private sealed class IndexForFix
+    {
+        public string IndexName { get; set; } = string.Empty;
+        public string IndexType { get; set; } = string.Empty;
+        public bool IsUnique { get; set; }
+        public bool IsPrimaryKey { get; set; }
+        public string? KeyColumns { get; set; }
+        public string? IncludedColumns { get; set; }
+        public string? FilterDefinition { get; set; }
+    }
+
+    /// <summary>
+    /// 加载表的所有索引(用于SyncIndexes)
+    /// </summary>
+    private async Task<List<TableIndexDefinition>> LoadAllIndexesAsync(
+        SqlConnection connection,
+        string schema,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        var sql = @"
+SELECT 
+    i.name AS IndexName,
+    i.type AS IndexType,
+    i.type_desc AS IndexTypeDesc,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    i.is_unique_constraint AS IsUniqueConstraint,
+    STUFF((
+        SELECT ', ' + c.name + CASE WHEN ic.is_descending_key = 1 THEN ' DESC' ELSE ' ASC' END
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 0
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS KeyColumns,
+    STUFF((
+        SELECT ', ' + c.name
+        FROM sys.index_columns ic
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.is_included_column = 1
+        ORDER BY ic.key_ordinal
+        FOR XML PATH(''), TYPE).value('.', 'NVARCHAR(MAX)'), 1, 2, '') AS IncludedColumns,
+    i.filter_definition AS FilterDefinition
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @Schema
+  AND t.name = @Table
+  AND i.type IN (1, 2)  -- 聚集索引和非聚集索引
+ORDER BY i.index_id;";
+
+        var result = await sqlExecutor.QueryAsync<TableIndexDefinition>(
+            connection,
+            sql,
+            new { Schema = schema, Table = table });
+
+        return result.ToList();
+    }
+
+    /// <summary>
+    /// 检查两个索引定义是否匹配
+    /// </summary>
+    private bool IsIndexDefinitionMatching(TableIndexDefinition source, TableIndexDefinition target)
+    {
+        // 比较索引类型
+        if (source.IndexType != target.IndexType)
+            return false;
+
+        // 比较唯一性
+        if (source.IsUnique != target.IsUnique)
+            return false;
+
+        // 比较键列(规范化后比较)
+        var sourceKeys = NormalizeColumnList(source.KeyColumns);
+        var targetKeys = NormalizeColumnList(target.KeyColumns);
+        if (sourceKeys != targetKeys)
+            return false;
+
+        // 比较INCLUDE列
+        var sourceIncludes = NormalizeColumnList(source.IncludedColumns);
+        var targetIncludes = NormalizeColumnList(target.IncludedColumns);
+        if (sourceIncludes != targetIncludes)
+            return false;
+
+        // 比较过滤条件
+        var sourceFilter = NormalizeFilterDefinition(source.FilterDefinition);
+        var targetFilter = NormalizeFilterDefinition(target.FilterDefinition);
+        if (sourceFilter != targetFilter)
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// 规范化列列表用于比较
+    /// </summary>
+    /// <remarks>
+    /// 注意:索引键列的顺序很重要,不能排序!只做空格规范化处理。
+    /// </remarks>
+    private string NormalizeColumnList(string? columns)
+    {
+        if (string.IsNullOrWhiteSpace(columns))
+            return string.Empty;
+
+        // 不能改变列的顺序!只规范化空格
+        var parts = columns.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim());
+
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>
+    /// 规范化过滤条件用于比较
+    /// </summary>
+    private string NormalizeFilterDefinition(string? filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter))
+            return string.Empty;
+
+        return filter.Trim();
+    }
+
+    /// <summary>
+    /// 构建删除索引的SQL脚本
+    /// </summary>
+    private string BuildDropIndexScript(string schema, string table, TableIndexDefinition index)
+    {
+        if (index.IsPrimaryKey)
+        {
+            return $"ALTER TABLE [{schema}].[{table}] DROP CONSTRAINT [{index.IndexName}];";
+        }
+        else if (index.IsUniqueConstraint)
+        {
+            return $"ALTER TABLE [{schema}].[{table}] DROP CONSTRAINT [{index.IndexName}];";
+        }
+        else
+        {
+            return $"DROP INDEX [{index.IndexName}] ON [{schema}].[{table}];";
+        }
+    }
 }
+

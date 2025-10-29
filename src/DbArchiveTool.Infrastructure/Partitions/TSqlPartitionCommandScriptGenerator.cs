@@ -131,8 +131,10 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
             builder.AppendLine("    -- TODO: 在模板目录中补全临时表结构定义");
         }
 
+        // 如果目标表也是分区表,需要指定目标分区号(通常与源分区号相同)
+        // 否则目标表应该是非分区表
         builder.AppendLine($"    ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] SWITCH PARTITION {partitionNumber}");
-        builder.AppendLine($"    TO {qualifiedTarget};");
+        builder.AppendLine($"    TO {qualifiedTarget} PARTITION {partitionNumber};");
         builder.AppendLine("    COMMIT TRANSACTION;");
         builder.AppendLine("END TRY");
         builder.AppendLine("BEGIN CATCH");

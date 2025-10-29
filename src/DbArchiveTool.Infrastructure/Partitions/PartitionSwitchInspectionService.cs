@@ -135,17 +135,29 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
             targetExists = await TableExistsAsync(connectionForTarget, targetSchema!, targetTable!, cancellationToken);
             if (!targetExists)
             {
-                blocking.Add(new PartitionSwitchIssue(
+                // 目标表不存在时,不作为阻塞项,而是提供自动创建选项
+                warnings.Add(new PartitionSwitchIssue(
                     "TargetTableMissing",
                     $"未找到目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)}。",
-                    "请确认目标表已在数据库中创建，且与源表结构保持一致。"));
+                    "将通过自动补齐一次性创建目标表并同步所有索引和约束。"));
 
                 targetTableInfo = new PartitionSwitchTableInfo(targetSchema!, targetTable!, 0, Array.Empty<PartitionSwitchColumnInfo>());
 
+                // 一次性添加所有补齐步骤:创建表 + 同步索引 + 同步约束
                 autoFix.Add(new PartitionSwitchAutoFixStep(
                     "CreateTargetTable",
-                    $"基于源表 {FormatQualifiedName(context.SourceDatabase, configuration.SchemaName, configuration.TableName)} 自动创建缺失的目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)}。",
-                    "自动补齐会复制源表的列结构并在目标库中创建空表，请在执行前确认权限。"));
+                    $"基于源表 {FormatQualifiedName(context.SourceDatabase, configuration.SchemaName, configuration.TableName)} 自动创建目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)}。",
+                    "自动补齐会复制源表的列结构(包含分区方案)并在目标库中创建空表。"));
+                
+                autoFix.Add(new PartitionSwitchAutoFixStep(
+                    "SyncIndexes",
+                    "从源表复制所有索引(聚集索引、主键、唯一索引)到新创建的目标表。",
+                    "确保目标表的索引结构与源表完全一致,满足 SWITCH 操作要求。"));
+                
+                autoFix.Add(new PartitionSwitchAutoFixStep(
+                    "SyncConstraints",
+                    "从源表复制所有约束(DEFAULT约束、CHECK约束)到新创建的目标表。",
+                    "确保目标表的数据完整性规则与源表完全一致。"));
             }
             else
             {
@@ -190,12 +202,29 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
                     targetTable!,
                     cancellationToken);
 
+                // 检查目标表是否为空
+                // 累积式归档:如果目标表是分区表,允许非空(SWITCH 会追加到对应分区)
+                // 但如果目标表不是分区表,必须为空
                 if (targetTableInfo.RowCount > 0)
                 {
-                    blocking.Add(new PartitionSwitchIssue(
-                        "TargetTableNotEmpty",
-                        $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 当前仍包含 {targetTableInfo.RowCount} 行数据。",
-                        "请在执行 SWITCH 前清空目标表，或切换至其他临时表。"));
+                    var isTargetPartitioned = targetPartitionMetadata != null && targetPartitionMetadata.IsPartitioned;
+                    
+                    if (isTargetPartitioned)
+                    {
+                        // 目标表是分区表:非空是正常的,只给出提示信息
+                        warnings.Add(new PartitionSwitchIssue(
+                            "TargetTableNotEmpty",
+                            $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 当前包含 {targetTableInfo.RowCount} 行数据（累积式归档模式）。",
+                            "数据将追加到目标表的对应分区中。如需重新开始归档,请手动清空目标表。"));
+                    }
+                    else
+                    {
+                        // 目标表不是分区表:必须为空,否则无法 SWITCH
+                        blocking.Add(new PartitionSwitchIssue(
+                            "TargetTableNotEmpty",
+                            $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 不是分区表,但包含 {targetTableInfo.RowCount} 行数据。",
+                            "普通表必须为空才能接收分区切换的数据。请清空目标表,或将其转换为分区表以支持累积式归档。"));
+                    }
                 }
 
                 if (await HasDmlTriggerAsync(connectionForTarget, context.TargetDatabase, targetSchema!, targetTable!, cancellationToken))
@@ -226,25 +255,46 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
         }
 
         // 首先校验分区方案/函数/边界是否完全一致，避免结构差异导致 SWITCH 失败
-        EvaluatePartitionCompatibility(
-            configuration,
+        // 只有目标表存在且已加载分区元数据时才进行分区兼容性检查
+        if (targetExists && targetPartitionMetadata != null)
+        {
+            EvaluatePartitionCompatibility(
+                configuration,
+                context.SourceDatabase,
+                context.TargetDatabase,
+                targetSchema,
+                targetTable,
+                partitionNumber,
+                sourcePartitionMetadata,
+                targetPartitionMetadata,
+                targetExists,
+                blocking);
+        }
+        
+        // 检查源表和目标表的索引是否对齐到分区方案
+        await EvaluateIndexPartitionAlignmentAsync(
+            sourceConnection,
+            connectionForTarget,
             context.SourceDatabase,
             context.TargetDatabase,
+            configuration.SchemaName,
+            configuration.TableName,
             targetSchema,
             targetTable,
-            partitionNumber,
-            sourcePartitionMetadata,
-            targetPartitionMetadata,
             targetExists,
-            blocking);
+            configuration.PartitionSchemeName,
+            blocking,
+            autoFix,
+            warnings,
+            cancellationToken);
 
         if (targetExists)
         {
             // 目标表存在时才执行列、索引、约束等结构核对
             EvaluateColumnCompatibility(sourceTableInfo, targetTableInfo, blocking);
-            EvaluateIndexCompatibility(sourceIndexes, targetIndexes, blocking);
-            EvaluateDefaultConstraintCompatibility(sourceDefaultConstraints, targetDefaultConstraints, blocking);
-            EvaluateCheckConstraintCompatibility(sourceCheckConstraints, targetCheckConstraints, blocking);
+            EvaluateIndexCompatibility(sourceIndexes, targetIndexes, blocking, autoFix, warnings);
+            var hasDefaultMismatch = EvaluateDefaultConstraintCompatibility(sourceDefaultConstraints, targetDefaultConstraints, blocking, autoFix, warnings);
+            EvaluateCheckConstraintCompatibility(sourceCheckConstraints, targetCheckConstraints, blocking, autoFix, hasDefaultMismatch, warnings);
         }
 
         if (!context.UseSourceAsTarget && !string.Equals(context.TargetDatabase, context.SourceDatabase, StringComparison.OrdinalIgnoreCase))
@@ -255,8 +305,12 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
                 "请在执行前检查目标数据库的分区配置，必要时同步分区架构。"));
         }
 
+        // 判断是否可以继续: 无阻塞项 且 (无自动补齐步骤 或 所有步骤已执行)
+        // 如果有未执行的自动补齐步骤,也应该阻止继续,提示用户先执行自动补齐
+        var canProceed = blocking.Count == 0 && autoFix.Count == 0;
+
         var result = new PartitionSwitchInspectionResult(
-            blocking.Count == 0,
+            canProceed,
             blocking,
             warnings,
             autoFix,
@@ -860,7 +914,9 @@ ORDER BY dds.destination_id;";
             .Select(boundary => boundary.Value.ToInvariantString())
             .ToList();
 
-        // 分区边界列表需与配置完全一致，否则代表分区划分存在偏差
+        // 注释掉分区边界严格检查 - 用户可能已经对源表进行过分区拆分/合并操作
+        // 只要源表是分区表即可,不需要与初始配置完全一致
+        /*
         if (!configBoundaries.SequenceEqual(sourceMetadata.Boundaries, StringComparer.Ordinal))
         {
             blocking.Add(new PartitionSwitchIssue(
@@ -877,6 +933,7 @@ ORDER BY dds.destination_id;";
                 $"源表 {sourceQualifiedName} 实际包含 {sourceMetadata.PartitionCount} 个分区，与配置预期的 {expectedPartitionCount} 个不一致。",
                 "请检查分区函数是否缺失边界或存在未同步的分区。"));
         }
+        */
 
         if (requestedPartitionNumber > 0 && requestedPartitionNumber > sourceMetadata.PartitionCount)
         {
@@ -957,8 +1014,12 @@ ORDER BY dds.destination_id;";
     private static void EvaluateIndexCompatibility(
         IReadOnlyList<TableIndexDefinition> sourceIndexes,
         IReadOnlyList<TableIndexDefinition> targetIndexes,
-        List<PartitionSwitchIssue> blocking)
+        List<PartitionSwitchIssue> blocking,
+        List<PartitionSwitchAutoFixStep> autoFix,
+        List<PartitionSwitchIssue> warnings)
     {
+        bool hasIndexMismatch = false;
+        
         var sourceClustered = sourceIndexes.FirstOrDefault(index => index.IsClustered);
         var targetClustered = targetIndexes.FirstOrDefault(index => index.IsClustered);
 
@@ -966,13 +1027,16 @@ ORDER BY dds.destination_id;";
         {
             if (targetClustered is null)
             {
-                blocking.Add(new PartitionSwitchIssue(
+                hasIndexMismatch = true;
+                // 可自动补齐的问题降级为警告,不阻塞流程
+                warnings.Add(new PartitionSwitchIssue(
                     "TargetMissingClusteredIndex",
                     "目标表缺少与源表一致的聚集索引。",
-                    "请在目标表上创建与源表相同键列及排序的聚集索引。"));
+                    "将通过自动补齐创建与源表相同的聚集索引。"));
             }
             else if (!MatchingIndexDefinition(sourceClustered, targetClustered))
             {
+                hasIndexMismatch = true;
                 blocking.Add(new PartitionSwitchIssue(
                     "ClusteredIndexMismatch",
                     "目标表的聚集索引与源表不一致。",
@@ -981,6 +1045,7 @@ ORDER BY dds.destination_id;";
         }
         else if (targetClustered is not null)
         {
+            hasIndexMismatch = true;
             blocking.Add(new PartitionSwitchIssue(
                 "ClusteredIndexMismatch",
                 "目标表存在聚集索引，但源表未定义聚集索引。",
@@ -994,13 +1059,16 @@ ORDER BY dds.destination_id;";
         {
             if (targetPrimaryKey is null)
             {
-                blocking.Add(new PartitionSwitchIssue(
+                hasIndexMismatch = true;
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
                     "TargetMissingPrimaryKey",
                     "目标表缺少与源表一致的主键约束。",
-                    "请在目标表上创建与源表相同列组合的主键约束。"));
+                    "将通过自动补齐创建与源表相同的主键约束。"));
             }
             else if (!MatchingIndexDefinition(sourcePrimaryKey, targetPrimaryKey))
             {
+                hasIndexMismatch = true;
                 blocking.Add(new PartitionSwitchIssue(
                     "PrimaryKeyMismatch",
                     "目标表的主键定义与源表不一致。",
@@ -1009,6 +1077,7 @@ ORDER BY dds.destination_id;";
         }
         else if (targetPrimaryKey is not null)
         {
+            hasIndexMismatch = true;
             blocking.Add(new PartitionSwitchIssue(
                 "PrimaryKeyMismatch",
                 "目标表存在主键约束，但源表未定义主键。",
@@ -1027,11 +1096,13 @@ ORDER BY dds.destination_id;";
             var match = targetUniqueConstraints.FirstOrDefault(target => MatchingIndexDefinition(sourceConstraint, target));
             if (match is null)
             {
+                hasIndexMismatch = true;
                 var name = sourceConstraint.ConstraintName ?? sourceConstraint.IndexName;
-                blocking.Add(new PartitionSwitchIssue(
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
                     "UniqueConstraintMismatch",
                     $"目标表缺少与源表唯一约束（{name}）对应的定义。",
-                    "请在目标表上创建相同列组合的唯一约束，确保列顺序与排序方向一致。"));
+                    "将通过自动补齐创建相同列组合的唯一约束。"));
             }
             else
             {
@@ -1051,23 +1122,74 @@ ORDER BY dds.destination_id;";
             var match = targetUniqueIndexes.FirstOrDefault(target => MatchingIndexDefinition(sourceIndex, target));
             if (match is null)
             {
-                blocking.Add(new PartitionSwitchIssue(
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
                     "UniqueIndexMismatch",
                     $"目标表缺少与源表唯一索引 {sourceIndex.IndexName} 对应的定义。",
-                    "请同步唯一索引的键列、INCLUDE 列以及筛选条件。"));
+                    "将通过自动补齐同步唯一索引的键列、INCLUDE列以及筛选条件。"));
             }
             else
             {
                 targetUniqueIndexes.Remove(match);
             }
         }
+        
+        // 检查所有非聚集非唯一索引(普通索引)
+        var sourceNonClusteredIndexes = sourceIndexes
+            .Where(index => !index.IsClustered && !index.IsUnique && !index.IsPrimaryKey && !index.IsUniqueConstraint)
+            .ToList();
+        var targetNonClusteredIndexes = targetIndexes
+            .Where(index => !index.IsClustered && !index.IsUnique && !index.IsPrimaryKey && !index.IsUniqueConstraint)
+            .ToList();
+
+        foreach (var sourceIndex in sourceNonClusteredIndexes)
+        {
+            var match = targetNonClusteredIndexes.FirstOrDefault(target => MatchingIndexDefinition(sourceIndex, target));
+            if (match is null)
+            {
+                hasIndexMismatch = true;
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
+                    "NonClusteredIndexMismatch",
+                    $"目标表缺少与源表非聚集索引 {sourceIndex.IndexName} 对应的定义。",
+                    "将通过自动补齐同步非聚集索引的键列、INCLUDE列以及筛选条件。"));
+            }
+            else
+            {
+                targetNonClusteredIndexes.Remove(match);
+            }
+        }
+
+        // 检查目标表是否有多余的索引
+        if (targetNonClusteredIndexes.Any())
+        {
+            hasIndexMismatch = true;
+            var extraIndexNames = string.Join(", ", targetNonClusteredIndexes.Select(idx => idx.IndexName));
+            warnings.Add(new PartitionSwitchIssue(
+                "ExtraIndexesOnTarget",
+                $"目标表存在源表未定义的非聚集索引: {extraIndexNames}。",
+                "这些多余的索引不影响SWITCH操作,但建议保持索引一致性。"));
+        }
+        
+        // 如果发现索引不匹配,添加自动补齐步骤
+        if (hasIndexMismatch)
+        {
+            autoFix.Add(new PartitionSwitchAutoFixStep(
+                "SyncIndexes",
+                "自动从源表复制缺失的索引到目标表。",
+                "将创建与源表完全相同的索引结构(包括聚集索引、主键、唯一约束、唯一索引和非聚集索引),确保 SWITCH 操作的兼容性。"));
+        }
     }
 
-    private static void EvaluateDefaultConstraintCompatibility(
+    private static bool EvaluateDefaultConstraintCompatibility(
         IReadOnlyList<DefaultConstraintDefinition> sourceConstraints,
         IReadOnlyList<DefaultConstraintDefinition> targetConstraints,
-        List<PartitionSwitchIssue> blocking)
+        List<PartitionSwitchIssue> blocking,
+        List<PartitionSwitchAutoFixStep> autoFix,
+        List<PartitionSwitchIssue> warnings)
     {
+        bool hasConstraintMismatch = false;
+        
         // 以列名映射目标表默认约束，便于快速定位缺失或差异
         var targetByColumn = targetConstraints
             .GroupBy(constraint => constraint.ColumnName, StringComparer.OrdinalIgnoreCase)
@@ -1077,10 +1199,12 @@ ORDER BY dds.destination_id;";
         {
             if (!targetByColumn.TryGetValue(sourceConstraint.ColumnName, out var targetConstraint))
             {
-                blocking.Add(new PartitionSwitchIssue(
+                hasConstraintMismatch = true;
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
                     "TargetMissingDefaultConstraint",
                     $"目标表列 {sourceConstraint.ColumnName} 缺少默认约束{FormatConstraintName(sourceConstraint.ConstraintName)}。",
-                    "请创建与源表一致的 DEFAULT 约束，确保默认值逻辑一致。"));
+                    "将通过自动补齐创建与源表一致的 DEFAULT 约束。"));
                 continue;
             }
 
@@ -1089,6 +1213,7 @@ ORDER BY dds.destination_id;";
                     NormalizeConstraintDefinition(targetConstraint.Definition),
                     StringComparison.Ordinal))
             {
+                hasConstraintMismatch = true;
                 blocking.Add(new PartitionSwitchIssue(
                     "DefaultConstraintMismatch",
                     $"目标表列 {sourceConstraint.ColumnName} 的默认约束定义与源表不一致。",
@@ -1101,19 +1226,29 @@ ORDER BY dds.destination_id;";
         {
             if (!sourceColumns.Contains(targetConstraint.ColumnName))
             {
+                hasConstraintMismatch = true;
                 blocking.Add(new PartitionSwitchIssue(
                     "ExtraDefaultConstraintOnTarget",
                     $"目标表列 {targetConstraint.ColumnName} 存在源表未定义的默认约束{FormatConstraintName(targetConstraint.ConstraintName)}。",
                     "请移除或禁用多余的 DEFAULT 约束以保持结构一致。"));
             }
         }
+        
+        // 约束自动补齐会在检查约束评估后统一添加
+        // hasConstraintMismatch会被检查约束方法使用
+        return hasConstraintMismatch;
     }
 
     private static void EvaluateCheckConstraintCompatibility(
         IReadOnlyList<CheckConstraintDefinition> sourceConstraints,
         IReadOnlyList<CheckConstraintDefinition> targetConstraints,
-        List<PartitionSwitchIssue> blocking)
+        List<PartitionSwitchIssue> blocking,
+        List<PartitionSwitchAutoFixStep> autoFix,
+        bool hasDefaultMismatch,
+        List<PartitionSwitchIssue> warnings)
     {
+        bool hasCheckMismatch = false;
+        
         // 通过规范化定义将检查约束成组，比对逻辑表达式是否一致
         var targetByDefinition = targetConstraints
             .GroupBy(constraint => NormalizeConstraintDefinition(constraint.Definition))
@@ -1124,20 +1259,23 @@ ORDER BY dds.destination_id;";
             var key = NormalizeConstraintDefinition(sourceConstraint.Definition);
             if (!targetByDefinition.TryGetValue(key, out var candidates) || candidates.Count == 0)
             {
+                hasCheckMismatch = true;
                 var message = sourceConstraint.ColumnName is null
                     ? $"目标表缺少与源表检查约束 {sourceConstraint.ConstraintName} 对应的逻辑。"
                     : $"目标表缺少作用于列 {sourceConstraint.ColumnName} 的检查约束 {sourceConstraint.ConstraintName}。";
 
-                blocking.Add(new PartitionSwitchIssue(
+                // 可自动补齐的问题降级为警告
+                warnings.Add(new PartitionSwitchIssue(
                     "TargetMissingCheckConstraint",
                     message,
-                    "请创建相同表达式的 CHECK 约束，确保数据约束规则一致。"));
+                    "将通过自动补齐创建相同表达式的 CHECK 约束。"));
                 continue;
             }
 
             var targetConstraint = candidates.Dequeue();
             if (targetConstraint.IsDisabled != sourceConstraint.IsDisabled)
             {
+                hasCheckMismatch = true;
                 blocking.Add(new PartitionSwitchIssue(
                     "CheckConstraintMismatch",
                     $"检查约束 {sourceConstraint.ConstraintName} 的启用状态在源表和目标表之间不一致。",
@@ -1147,6 +1285,7 @@ ORDER BY dds.destination_id;";
 
         foreach (var remaining in targetByDefinition.Values.SelectMany(queue => queue))
         {
+            hasCheckMismatch = true;
             var message = remaining.ColumnName is null
                 ? $"目标表存在源表未定义的检查约束 {remaining.ConstraintName}。"
                 : $"目标表列 {remaining.ColumnName} 存在源表未定义的检查约束 {remaining.ConstraintName}。";
@@ -1155,6 +1294,15 @@ ORDER BY dds.destination_id;";
                 "ExtraCheckConstraintOnTarget",
                 message,
                 "请移除多余的 CHECK 约束或在源表上保持一致。"));
+        }
+        
+        // 如果发现默认约束或检查约束不匹配,添加自动补齐步骤
+        if (hasCheckMismatch || hasDefaultMismatch)
+        {
+            autoFix.Add(new PartitionSwitchAutoFixStep(
+                "SyncConstraints",
+                "自动从源表复制缺失的DEFAULT约束和CHECK约束到目标表。",
+                "将创建与源表完全相同的约束定义,确保数据完整性规则一致。"));
         }
     }
 
@@ -1385,16 +1533,18 @@ ORDER BY dds.destination_id;";
             ? $"{schema}.{table}"
             : $"{database}.{schema}.{table}";
 
-    private sealed record ColumnRow(
-        int ColumnId,
-        string ColumnName,
-        string DataType,
-        short MaxLength,
-        byte Precision,
-        int Scale,
-        bool IsNullable,
-        bool IsIdentity,
-        bool IsComputed);
+    private sealed class ColumnRow
+    {
+        public int ColumnId { get; set; }
+        public string ColumnName { get; set; } = string.Empty;
+        public string DataType { get; set; } = string.Empty;
+        public short MaxLength { get; set; }
+        public byte Precision { get; set; }
+        public int Scale { get; set; }
+        public bool IsNullable { get; set; }
+        public bool IsIdentity { get; set; }
+        public bool IsComputed { get; set; }
+    }
 
     private sealed record DefaultConstraintRow(string ColumnName, string? ConstraintName, string? Definition);
 
@@ -1436,5 +1586,167 @@ ORDER BY dds.destination_id;";
     {
         public int PartitionNumber { get; set; }
         public string FilegroupName { get; set; } = string.Empty;
+    }
+    
+    /// <summary>
+    /// 检查源表和目标表的索引是否对齐到分区方案
+    /// </summary>
+    private async Task EvaluateIndexPartitionAlignmentAsync(
+        SqlConnection sourceConnection,
+        SqlConnection targetConnection,
+        string sourceDatabase,
+        string? targetDatabase,
+        string sourceSchema,
+        string sourceTable,
+        string? targetSchema,
+        string? targetTable,
+        bool targetExists,
+        string partitionSchemeName,
+        List<PartitionSwitchIssue> blocking,
+        List<PartitionSwitchAutoFixStep> autoFix,
+        List<PartitionSwitchIssue> warnings,
+        CancellationToken cancellationToken)
+    {
+        // 检查源表索引是否对齐
+        var sourceUnalignedIndexes = await GetUnalignedIndexesAsync(
+            sourceConnection,
+            sourceDatabase,
+            sourceSchema,
+            sourceTable,
+            partitionSchemeName,
+            cancellationToken);
+
+        if (sourceUnalignedIndexes.Any())
+        {
+            var indexList = string.Join(", ", sourceUnalignedIndexes.Select(idx => idx.IndexName));
+            warnings.Add(new PartitionSwitchIssue(
+                "SourceIndexNotAligned",
+                $"源表 [{sourceSchema}].[{sourceTable}] 的以下索引未对齐到分区方案 {partitionSchemeName}: {indexList}",
+                "可以使用\"对齐源表索引\"自动补齐功能,系统将自动删除并重建这些索引。"));
+
+            autoFix.Add(new PartitionSwitchAutoFixStep(
+                "AlignSourceIndexes",
+                $"对齐源表索引(共{sourceUnalignedIndexes.Count}个未对齐索引)",
+                $"将删除并重建源表的未对齐索引,使其包含分区列并对齐到分区方案 {partitionSchemeName}。"));
+        }
+
+        // 如果目标表存在,也检查目标表索引对齐
+        if (targetExists && !string.IsNullOrWhiteSpace(targetTable))
+        {
+            var actualTargetSchema = targetSchema ?? sourceSchema;
+            var targetUnalignedIndexes = await GetUnalignedIndexesAsync(
+                targetConnection,
+                targetDatabase ?? sourceDatabase,
+                actualTargetSchema,
+                targetTable,
+                partitionSchemeName,
+                cancellationToken);
+
+            if (targetUnalignedIndexes.Any())
+            {
+                var indexList = string.Join(", ", targetUnalignedIndexes.Select(idx => idx.IndexName));
+                warnings.Add(new PartitionSwitchIssue(
+                    "TargetIndexNotAligned",
+                    $"目标表 [{actualTargetSchema}].[{targetTable}] 的以下索引未对齐到分区方案 {partitionSchemeName}: {indexList}",
+                    "可以使用\"对齐目标表索引\"自动补齐功能,系统将自动删除并重建这些索引。"));
+
+                autoFix.Add(new PartitionSwitchAutoFixStep(
+                    "AlignTargetIndexes",
+                    $"对齐目标表索引(共{targetUnalignedIndexes.Count}个未对齐索引)",
+                    $"将删除并重建目标表的未对齐索引,使其包含分区列并对齐到分区方案 {partitionSchemeName}。"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 获取表中未对齐到分区方案的索引列表
+    /// </summary>
+    private async Task<List<UnalignedIndexInfo>> GetUnalignedIndexesAsync(
+        SqlConnection connection,
+        string database,
+        string schema,
+        string table,
+        string partitionSchemeName,
+        CancellationToken cancellationToken)
+    {
+        var sql = @"
+SELECT 
+    i.name AS IndexName,
+    i.type_desc AS IndexType,
+    i.is_unique AS IsUnique,
+    i.is_primary_key AS IsPrimaryKey,
+    CASE WHEN ds.type = 'PS' THEN 1 ELSE 0 END AS IsPartitioned,
+    ds.name AS DataSpaceName,
+    c.name AS PartitionColumnName
+FROM sys.indexes i
+INNER JOIN sys.tables t ON i.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+LEFT JOIN sys.data_spaces ds ON i.data_space_id = ds.data_space_id
+LEFT JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.partition_ordinal > 0
+LEFT JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+WHERE s.name = @Schema
+    AND t.name = @Table
+    AND i.type > 0  -- 排除堆
+    AND (
+        -- 索引不在分区方案上
+        ds.type != 'PS'
+        -- 或者索引在分区方案上但不是目标分区方案
+        OR (ds.type = 'PS' AND ds.name != @PartitionSchemeName)
+        -- 或者索引在分区方案上但没有分区列
+        OR (ds.type = 'PS' AND ic.partition_ordinal IS NULL)
+    )
+ORDER BY i.index_id;";
+
+        var parameters = new[]
+        {
+            new SqlParameter("@Schema", schema),
+            new SqlParameter("@Table", table),
+            new SqlParameter("@PartitionSchemeName", partitionSchemeName)
+        };
+
+        var result = new List<UnalignedIndexInfo>();
+        
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(database))
+            {
+                await connection.ChangeDatabaseAsync(database, cancellationToken);
+            }
+
+            await using var command = new SqlCommand(sql, connection);
+            command.Parameters.AddRange(parameters);
+            
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                result.Add(new UnalignedIndexInfo
+                {
+                    IndexName = reader.GetString(0),
+                    IndexType = reader.GetString(1),
+                    IsUnique = reader.GetBoolean(2),
+                    IsPrimaryKey = reader.GetBoolean(3),
+                    IsPartitioned = reader.GetInt32(4) == 1,
+                    DataSpaceName = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    PartitionColumnName = reader.IsDBNull(6) ? null : reader.GetString(6)
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "检查表 [{Schema}].[{Table}] 索引对齐状态时发生异常", schema, table);
+        }
+
+        return result;
+    }
+
+    private sealed class UnalignedIndexInfo
+    {
+        public string IndexName { get; set; } = string.Empty;
+        public string IndexType { get; set; } = string.Empty;
+        public bool IsUnique { get; set; }
+        public bool IsPrimaryKey { get; set; }
+        public bool IsPartitioned { get; set; }
+        public string? DataSpaceName { get; set; }
+        public string? PartitionColumnName { get; set; }
     }
 }
