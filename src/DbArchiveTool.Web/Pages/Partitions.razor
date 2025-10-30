@@ -440,6 +440,9 @@
                         await LoadConfigurationDraftsAsync();
                         if (_selectedTable is not null)
                         {
+                            // 清空分区勾选状态,避免缓存旧数据
+                            _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+                            _partitionDetailsTableRenderKey++;
                             // 自动刷新时静默处理错误,避免弹出提示
                             await LoadPartitionDetailsAsync(_selectedTable, suppressErrorMessage: true);
                         }
@@ -828,7 +831,13 @@
     private async Task ReloadAsync()
     {
         await LoadPartitionTablesAsync();
-        if (_selectedTable != null) await LoadPartitionDetailsAsync(_selectedTable);
+        if (_selectedTable != null)
+        {
+            // 清空分区勾选状态,避免缓存旧数据
+            _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+            _partitionDetailsTableRenderKey++;
+            await LoadPartitionDetailsAsync(_selectedTable);
+        }
     }
 
     private void NavigateBack() => Navigation.NavigateTo("/");
@@ -1025,6 +1034,8 @@
     private async Task OnArchiveWizardSuccessAsync(Guid taskId)
     {
         _archiveWizardVisible = false;
+        // 清空归档参数缓存
+        _archiveTargetPartitionKey = string.Empty;
         await ReloadAsync();
         NavigateToTaskMonitor(taskId);
     }
@@ -1035,6 +1046,9 @@
         // 刷新分区详情
         if (_selectedTable != null)
         {
+            // 清空分区勾选状态,避免缓存旧数据
+            _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+            _partitionDetailsTableRenderKey++;
             await LoadPartitionDetailsAsync(_selectedTable);
         }
     }
@@ -1066,6 +1080,9 @@
         // 刷新分区详情
         if (_selectedTable is not null)
         {
+            // 清空分区勾选状态,避免缓存旧数据
+            _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+            _partitionDetailsTableRenderKey++;
             await LoadPartitionDetailsAsync(_selectedTable);
         }
     }
@@ -1089,6 +1106,9 @@
         // 刷新分区详情
         if (_selectedTable is not null)
         {
+            // 清空分区勾选状态,避免缓存旧数据
+            _selectedPartitionRows = Array.Empty<PartitionDetailInfo>();
+            _partitionDetailsTableRenderKey++;
             await LoadPartitionDetailsAsync(_selectedTable);
         }
     }
