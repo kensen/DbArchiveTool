@@ -114,26 +114,10 @@
                     </PropertyColumn>
                     <PropertyColumn Property="c => c.ExecutionStage" Title="执行状态">
                         <Template>
-                            @if (string.IsNullOrWhiteSpace(context.ExecutionStage))
-                            {
-                                <Tag Color="TagColor.Default">草稿</Tag>
+                            @{
+                                var statusDisplay = GetExecutionStageDisplay(context.ExecutionStage);
                             }
-                            else if (context.ExecutionStage == "Queued" || context.ExecutionStage == "Running")
-                            {
-                                <Tag Color="TagColor.Processing">@context.ExecutionStage</Tag>
-                            }
-                            else if (context.ExecutionStage == "Completed")
-                            {
-                                <Tag Color="TagColor.Success">已完成</Tag>
-                            }
-                            else if (context.ExecutionStage == "Failed")
-                            {
-                                <Tag Color="TagColor.Error">失败</Tag>
-                            }
-                            else
-                            {
-                                <Tag Color="TagColor.Default">@context.ExecutionStage</Tag>
-                            }
+                            <Tag Color="@statusDisplay.Color">@statusDisplay.Text</Tag>
                         </Template>
                     </PropertyColumn>
                     <PropertyColumn Property="c => c.CreatedAtUtc" Title="创建时间" Format="yyyy-MM-dd HH:mm" />
@@ -167,11 +151,11 @@
                                             OnConfirm="() => DeleteConfigurationDraftAsync(context.Id)"
                                             OkText="删除"
                                             CancelText="取消"
-                                            Disabled="@(!string.IsNullOrWhiteSpace(context.ExecutionStage) && context.ExecutionStage != "Failed" && context.ExecutionStage != "Completed")">
+                                            Disabled="@CannotDeleteDraft(context)">
                                     <Button Type="@ButtonType.Link" 
                                             Size="@ButtonSize.Small" 
                                             Danger
-                                            Disabled="@(!string.IsNullOrWhiteSpace(context.ExecutionStage) && context.ExecutionStage != "Failed" && context.ExecutionStage != "Completed")">删除</Button>
+                                            Disabled="@CannotDeleteDraft(context)">删除</Button>
                                 </Popconfirm>
                             </SpaceItem>
                         </Space>
@@ -790,6 +774,56 @@
 
     private string GetDraftRowClass(RowData<ConfigurationDraftInfo> row) =>
         _selectedDraft is not null && row.Data.Id == _selectedDraft.Id ? "table-row-selected" : string.Empty;
+
+    /// <summary>
+    /// 获取执行状态的显示信息
+    /// </summary>
+    private (string Text, string Color) GetExecutionStageDisplay(string? executionStage)
+    {
+        if (string.IsNullOrWhiteSpace(executionStage))
+        {
+            return ("草稿", "default");
+        }
+
+        return executionStage switch
+        {
+            "PendingValidation" => ("待校验", "default"),
+            "Validating" => ("校验中", "processing"),
+            "Queued" => ("已排队", "processing"),
+            "Running" => ("执行中", "processing"),
+            "Succeeded" or "Completed" => ("已完成", "success"),
+            "Failed" => ("失败", "error"),
+            "Cancelled" => ("已取消", "warning"),
+            _ => (executionStage, "default")
+        };
+    }
+
+    /// <summary>
+    /// 判断是否可以删除配置草稿
+    /// </summary>
+    private bool CannotDeleteDraft(ConfigurationDraftInfo draft)
+    {
+        // 如果没有执行阶段，说明是纯草稿，可以删除
+        if (string.IsNullOrWhiteSpace(draft.ExecutionStage))
+        {
+            return false;
+        }
+
+        // 已完成的配置不允许删除
+        if (draft.ExecutionStage is "Completed" or "Succeeded")
+        {
+            return true;
+        }
+
+        // 正在执行的任务不允许删除
+        if (draft.ExecutionStage is "Running" or "Queued" or "Validating" or "PendingValidation")
+        {
+            return true;
+        }
+
+        // 失败或已取消的任务允许删除
+        return false;
+    }
 
     private async Task ReloadAsync()
     {

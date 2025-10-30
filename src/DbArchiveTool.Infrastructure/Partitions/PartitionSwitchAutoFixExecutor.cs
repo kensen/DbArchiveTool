@@ -283,22 +283,84 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
             new AutoFixRollbackAction(async ct => await RollbackCreateTargetTableAsync(dataSourceId, context, ct)));
     }
 
-    // 清空目标表残留数据已移除 - 改为累积式归档,保留历史数据
-    // 如果目标表是分区表,SWITCH 会自动追加到对应分区;如果是普通表,需要确保目标分区为空
-    private Task<AutoFixStepOutcome> ExecuteCleanupTargetTableAsync(
+    /// <summary>
+    /// 清空目标分区的残留数据，以满足 SWITCH 操作要求（目标分区必须为空）
+    /// </summary>
+    private async Task<AutoFixStepOutcome> ExecuteCleanupTargetTableAsync(
         Guid dataSourceId,
         PartitionSwitchInspectionContext context,
         CancellationToken cancellationToken)
     {
-        // 累积式归档:不清空目标表,保留多次归档的历史数据
-        return Task.FromResult(new AutoFixStepOutcome(
+        await using var targetConnection = context.UseSourceAsTarget
+            ? await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken)
+            : await connectionFactory.CreateTargetSqlConnectionAsync(dataSourceId, cancellationToken);
+
+        if (!context.UseSourceAsTarget && !string.IsNullOrWhiteSpace(context.TargetDatabase))
+        {
+            targetConnection.ChangeDatabase(context.TargetDatabase);
+        }
+
+        // 解析分区号
+        if (!int.TryParse(context.SourcePartitionKey, System.Globalization.NumberStyles.Integer, 
+            System.Globalization.CultureInfo.InvariantCulture, out var partitionNumber) || partitionNumber <= 0)
+        {
+            throw new InvalidOperationException($"无效的分区编号: {context.SourcePartitionKey}");
+        }
+
+        // 检查目标表是否为分区表
+        const string checkPartitionedSql = @"
+SELECT COUNT(1)
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON t.object_id = i.object_id
+INNER JOIN sys.partition_schemes ps ON i.data_space_id = ps.data_space_id
+WHERE s.name = @Schema AND t.name = @Table AND i.index_id IN (0, 1);";
+
+        var isPartitioned = await sqlExecutor.QuerySingleAsync<int>(
+            targetConnection,
+            checkPartitionedSql,
+            new { Schema = context.TargetSchema, Table = context.TargetTable },
+            transaction: null) > 0;
+
+        string script;
+        string message;
+
+        if (isPartitioned)
+        {
+            // 目标表是分区表，使用 TRUNCATE TABLE ... WITH (PARTITIONS (...)) 清空特定分区
+            script = $@"-- 清空目标表分区 {partitionNumber} 的残留数据
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+    TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}] 
+    WITH (PARTITIONS ({partitionNumber}));
+COMMIT TRANSACTION;";
+            message = $"已清空目标表 [{context.TargetSchema}].[{context.TargetTable}] 分区 {partitionNumber} 的残留数据。";
+        }
+        else
+        {
+            // 目标表是普通表，使用 TRUNCATE TABLE 清空整个表
+            script = $@"-- 清空目标表的残留数据（普通表）
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+    TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}];
+COMMIT TRANSACTION;";
+            message = $"已清空目标表 [{context.TargetSchema}].[{context.TargetTable}] 的所有数据（普通表）。";
+        }
+
+        // 执行清空操作
+        await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: 300);
+
+        logger.LogInformation("已清空目标表 {Schema}.{Table} 的残留数据，分区号: {PartitionNumber}, 是否分区表: {IsPartitioned}", 
+            context.TargetSchema, context.TargetTable, partitionNumber, isPartitioned);
+
+        return new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution(
                 "CleanupResidualData",
                 true,
-                "累积式归档模式,保留目标表历史数据。",
-                $"-- Cumulative archive mode: keep historical data in [{context.TargetSchema}].[{context.TargetTable}]",
+                message,
+                script,
                 0),
-            null));
+            null); // 清空数据操作不支持回滚
     }
 
     // 刷新统计信息，降低执行计划偏差风险

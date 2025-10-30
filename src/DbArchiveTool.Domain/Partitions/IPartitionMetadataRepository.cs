@@ -20,6 +20,9 @@ public interface IPartitionMetadataRepository
     /// <summary>获取指定边界当前的安全快照。</summary>
     Task<PartitionSafetySnapshot> GetSafetySnapshotAsync(Guid dataSourceId, string schemaName, string tableName, string boundaryKey, CancellationToken cancellationToken = default);
 
+        /// <summary>获取所有分区的行数统计。</summary>
+        Task<IReadOnlyList<PartitionRowStatistics>> GetPartitionRowStatisticsAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// 检查目标表的索引/约束与分区列的对齐状态。
     /// </summary>

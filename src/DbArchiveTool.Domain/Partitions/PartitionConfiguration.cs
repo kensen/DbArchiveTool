@@ -74,6 +74,33 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// <summary>当前注册的分区边界集合。</summary>
     public IReadOnlyList<PartitionBoundary> Boundaries => new ReadOnlyCollection<PartitionBoundary>(boundaries);
 
+    /// <summary>
+    /// 根据分区号查找对应的边界排序键。
+    /// </summary>
+    /// <remarks>
+    /// Range Right: 分区号 = 边界索引 + 1；Range Left: 分区号 = 边界索引。
+    /// </remarks>
+    public string? FindBoundaryKeyByPartitionNumber(int partitionNumber)
+    {
+        if (partitionNumber <= 0)
+        {
+            return null;
+        }
+
+        if (boundaries.Count == 0)
+        {
+            return null;
+        }
+
+        var index = IsRangeRight ? partitionNumber - 1 : partitionNumber;
+        if (index < 0 || index >= boundaries.Count)
+        {
+            return null;
+        }
+
+        return boundaries[index].SortKey;
+    }
+
     /// <summary>当前的文件组映射集合。</summary>
     public IReadOnlyList<PartitionFilegroupMapping> FilegroupMappings => new ReadOnlyCollection<PartitionFilegroupMapping>(filegroupMappings);
 

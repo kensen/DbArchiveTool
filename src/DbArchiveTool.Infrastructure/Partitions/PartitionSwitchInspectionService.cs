@@ -211,11 +211,38 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
                     
                     if (isTargetPartitioned)
                     {
-                        // 目标表是分区表:非空是正常的,只给出提示信息
-                        warnings.Add(new PartitionSwitchIssue(
-                            "TargetTableNotEmpty",
-                            $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 当前包含 {targetTableInfo.RowCount} 行数据（累积式归档模式）。",
-                            "数据将追加到目标表的对应分区中。如需重新开始归档,请手动清空目标表。"));
+                        // 目标表是分区表:检查目标分区是否为空
+                        // SQL Server 要求目标分区必须为空才能执行 SWITCH
+                        var targetPartitionRowCount = await LoadPartitionRowCountAsync(
+                            connectionForTarget,
+                            context.TargetDatabase,
+                            targetSchema!,
+                            targetTable!,
+                            partitionNumber,
+                            cancellationToken);
+
+                        if (targetPartitionRowCount > 0)
+                        {
+                            // 目标分区不为空,提供自动补齐选项(清空目标分区)
+                            warnings.Add(new PartitionSwitchIssue(
+                                "TargetPartitionNotEmpty",
+                                $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 的分区 {partitionNumber} 包含 {targetPartitionRowCount:N0} 行数据。",
+                                "SWITCH 操作要求目标分区必须为空。建议勾选'清空目标表残留数据'选项,系统将自动清空该分区的数据。"));
+                            
+                            // 添加自动补齐步骤:清空目标分区数据
+                            autoFix.Add(new PartitionSwitchAutoFixStep(
+                                "CleanupResidualData",
+                                $"清空目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 分区 {partitionNumber} 的残留数据（当前 {targetPartitionRowCount:N0} 行）",
+                                $"将执行 TRUNCATE TABLE ... WITH (PARTITIONS ({partitionNumber})) 清空目标分区,以满足 SWITCH 要求。请确认该分区的数据可以删除。"));
+                        }
+                        else
+                        {
+                            // 目标分区为空,只给出整表数据的提示信息
+                            warnings.Add(new PartitionSwitchIssue(
+                                "TargetTableNotEmpty",
+                                $"目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)} 当前包含 {targetTableInfo.RowCount} 行数据（累积式归档模式），但目标分区 {partitionNumber} 为空。",
+                                "数据将追加到目标表的对应分区中。"));
+                        }
                     }
                     else
                     {
@@ -457,6 +484,35 @@ WHERE p.object_id = OBJECT_ID(@FullName)
             connection,
             sql,
             new { FullName = fullName },
+            transaction: null);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return count;
+    }
+
+    /// <summary>
+    /// 查询指定分区的行数
+    /// </summary>
+    private async Task<long> LoadPartitionRowCountAsync(
+        SqlConnection connection, 
+        string database, 
+        string schema, 
+        string table, 
+        int partitionNumber,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT COALESCE(SUM(p.rows), 0)
+FROM sys.partitions p
+WHERE p.object_id = OBJECT_ID(@FullName)
+  AND p.index_id IN (0, 1)
+  AND p.partition_number = @PartitionNumber;";
+
+        var fullName = FormatQualifiedName(database, schema, table);
+        var count = await sqlExecutor.QuerySingleAsync<long>(
+            connection,
+            sql,
+            new { FullName = fullName, PartitionNumber = partitionNumber },
             transaction: null);
 
         cancellationToken.ThrowIfCancellationRequested();

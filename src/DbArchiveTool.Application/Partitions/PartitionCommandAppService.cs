@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using DbArchiveTool.Domain.Partitions;
@@ -412,6 +411,44 @@ internal sealed class PartitionCommandAppService : IPartitionCommandAppService
         if (boundary is null)
         {
             return Result<PartitionCommandPreviewDto>.Failure($"未找到分区边界 {request.BoundaryKey}，请刷新后重试。");
+        }
+
+        // 获取分区行数,用以判断是否存在归档后的空分区
+        var partitionRows = await metadataRepository.GetPartitionRowStatisticsAsync(request.DataSourceId, request.SchemaName, request.TableName, cancellationToken);
+        if (partitionRows.Count == 0)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure("无法读取分区行数，请确认目标表仍为分区表。");
+        }
+
+        // 通过配置确定当前边界的位置，避免 Range Left/Right 差异导致分区号计算错误
+        var boundaryIndex = -1;
+        for (var i = 0; i < configuration.Boundaries.Count; i++)
+        {
+            if (ReferenceEquals(configuration.Boundaries[i], boundary) ||
+                configuration.Boundaries[i].SortKey.Equals(boundary.SortKey, StringComparison.Ordinal))
+            {
+                boundaryIndex = i;
+                break;
+            }
+        }
+
+        if (boundaryIndex < 0)
+        {
+            return Result<PartitionCommandPreviewDto>.Failure("未能定位分区边界顺序，无法完成安全校验。");
+        }
+
+        var leftPartitionNumber = boundaryIndex + 1;
+        var rightPartitionNumber = boundaryIndex + 2;
+
+        var leftPartition = partitionRows.FirstOrDefault(x => x.PartitionNumber == leftPartitionNumber);
+        var rightPartition = partitionRows.FirstOrDefault(x => x.PartitionNumber == rightPartitionNumber);
+
+        bool IsArchived(PartitionRowStatistics? stats) => stats != null && stats.RowCount == 0;
+
+        if (IsArchived(leftPartition) || IsArchived(rightPartition))
+        {
+            return Result<PartitionCommandPreviewDto>.Failure(
+                $"分区合并被阻止：待合并范围内存在已归档分区（分区 {leftPartitionNumber} 或 {rightPartitionNumber} 当前行为 0）。请先恢复或扩展分区后再尝试合并。");
         }
 
         var scriptResult = scriptGenerator.GenerateMergeScript(configuration, request.BoundaryKey);

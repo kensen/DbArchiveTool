@@ -206,6 +206,32 @@ internal sealed class SqlServerPartitionMetadataRepository : IPartitionMetadataR
             return new PartitionSafetySnapshot(boundaryKey, 0, false, false, "未找到分区信息，可能已被合并或表未分区。");
         }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PartitionRowStatistics>> GetPartitionRowStatisticsAsync(Guid dataSourceId, string schemaName, string tableName, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.CreateSqlConnectionAsync(dataSourceId, cancellationToken);
+                const string sql = @"SELECT
+        p.partition_number AS [PartitionNumber],
+        SUM(p.rows) AS [RowCount]
+FROM sys.partitions p
+INNER JOIN sys.indexes i ON p.object_id = i.object_id AND p.index_id = i.index_id
+WHERE p.object_id = OBJECT_ID(@FullName)
+  AND i.index_id IN (0, 1)
+GROUP BY p.partition_number
+ORDER BY p.partition_number;";
+
+        var rows = await connection.QueryAsync(sql, new { FullName = $"[{schemaName}].[{tableName}]" });
+        var result = new List<PartitionRowStatistics>();
+        foreach (var row in rows)
+        {
+            var number = (int)row.PartitionNumber;
+            var count = row.RowCount is null ? 0L : (long)row.RowCount;
+            result.Add(new PartitionRowStatistics(number, count));
+        }
+
+        return result;
+    }
+
         /// <inheritdoc />
     public async Task<PartitionIndexInspection> GetIndexInspectionAsync(
         Guid dataSourceId,

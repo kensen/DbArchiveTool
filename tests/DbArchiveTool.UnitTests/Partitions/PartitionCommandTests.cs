@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions;
@@ -144,6 +145,14 @@ public class PartitionCommandTests
             .Setup(x => x.GenerateMergeScript(configuration, "0001"))
             .Returns(Result<string>.Success("MERGE SCRIPT"));
 
+        metadataRepository
+            .Setup(x => x.GetPartitionRowStatisticsAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PartitionRowStatistics>
+            {
+                new(1, 10),
+                new(2, 5)
+            });
+
         BackgroundTask? capturedTask = null;
         backgroundTaskRepository
             .Setup(x => x.AddAsync(It.IsAny<BackgroundTask>(), It.IsAny<CancellationToken>()))
@@ -172,6 +181,37 @@ public class PartitionCommandTests
         Assert.Equal(dataSourceId, capturedTask!.DataSourceId);
         Assert.Equal(BackgroundTaskOperationType.MergeBoundary, capturedTask.OperationType);
         Assert.Contains("\"BoundaryKey\":\"0001\"", capturedTask.ConfigurationSnapshot ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task PreviewMergeAsync_Should_Block_When_Partition_Row_Is_Zero()
+    {
+        var dataSourceId = Guid.NewGuid();
+        var configuration = CreateConfiguration(dataSourceId, new[]
+        {
+            new PartitionBoundary("0001", PartitionValue.FromDate(new DateOnly(2024, 01, 01)))
+        });
+
+        metadataRepository
+            .Setup(x => x.GetConfigurationAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(configuration);
+
+        metadataRepository
+            .Setup(x => x.GetPartitionRowStatisticsAsync(dataSourceId, "dbo", "Orders", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<PartitionRowStatistics>
+            {
+                new(1, 0),
+                new(2, 500)
+            });
+
+        var service = CreateService();
+        var request = new MergePartitionRequest(dataSourceId, "dbo", "Orders", "0001", true, "tester");
+
+        var result = await service.PreviewMergeAsync(request);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("分区合并被阻止：待合并范围内存在已归档分区（分区 1 或 2 当前行为 0）。请先恢复或扩展分区后再尝试合并。", result.Error);
+        scriptGenerator.Verify(x => x.GenerateMergeScript(It.IsAny<PartitionConfiguration>(), It.IsAny<string>()), Times.Never);
     }
 
     [Fact]

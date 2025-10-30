@@ -661,24 +661,49 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
         try
         {
             var configurations = await configurationRepository.GetByDataSourceAsync(dataSourceId, cancellationToken);
-            var summaries = configurations.Select(c => new PartitionConfigurationSummaryDto
+            
+            // 查询所有关联的执行任务，用于动态获取最新状态
+            var configIds = configurations.Select(c => c.Id).ToHashSet();
+            var allTasks = await executionTaskRepository.ListRecentAsync(dataSourceId, 1000, cancellationToken);
+            var taskLookup = allTasks
+                .Where(t => configIds.Contains(t.PartitionConfigurationId))
+                .GroupBy(t => t.PartitionConfigurationId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.OrderByDescending(t => t.CreatedAtUtc).First());
+
+            var summaries = configurations.Select(c =>
             {
-                Id = c.Id,
-                SchemaName = c.SchemaName,
-                TableName = c.TableName,
-                PartitionColumnName = c.PartitionColumn.Name,
-                PartitionFunctionName = c.PartitionFunctionName,
-                PartitionSchemeName = c.PartitionSchemeName,
-                BoundaryCount = c.Boundaries.Count,
-                StorageMode = c.StorageSettings.Mode.ToString(),
-                TargetTableName = c.TargetTable?.TableName ?? c.TableName,
-                CreatedAtUtc = c.CreatedAtUtc,
-                CreatedBy = c.CreatedBy,
-                UpdatedAtUtc = c.UpdatedAtUtc,
-                Remarks = c.Remarks,
-                IsCommitted = c.IsCommitted,
-                ExecutionStage = c.ExecutionStage,
-                LastExecutionTaskId = c.LastExecutionTaskId
+                // 默认使用配置自身的 ExecutionStage
+                var executionStage = c.ExecutionStage;
+                var lastTaskId = c.LastExecutionTaskId;
+
+                // 如果有关联的任务，使用任务的最新状态
+                if (taskLookup.TryGetValue(c.Id, out var latestTask))
+                {
+                    executionStage = MapTaskStatusToStage(latestTask.Status);
+                    lastTaskId = latestTask.Id;
+                }
+
+                return new PartitionConfigurationSummaryDto
+                {
+                    Id = c.Id,
+                    SchemaName = c.SchemaName,
+                    TableName = c.TableName,
+                    PartitionColumnName = c.PartitionColumn.Name,
+                    PartitionFunctionName = c.PartitionFunctionName,
+                    PartitionSchemeName = c.PartitionSchemeName,
+                    BoundaryCount = c.Boundaries.Count,
+                    StorageMode = c.StorageSettings.Mode.ToString(),
+                    TargetTableName = c.TargetTable?.TableName ?? c.TableName,
+                    CreatedAtUtc = c.CreatedAtUtc,
+                    CreatedBy = c.CreatedBy,
+                    UpdatedAtUtc = c.UpdatedAtUtc,
+                    Remarks = c.Remarks,
+                    IsCommitted = c.IsCommitted,
+                    ExecutionStage = executionStage,
+                    LastExecutionTaskId = lastTaskId
+                };
             }).ToList();
 
             return Result<List<PartitionConfigurationSummaryDto>>.Success(summaries);
@@ -688,6 +713,24 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             logger.LogError(ex, "Failed to get configurations for data source {DataSourceId}", dataSourceId);
             return Result<List<PartitionConfigurationSummaryDto>>.Failure("获取配置列表失败，请稍后重试。");
         }
+    }
+
+    /// <summary>
+    /// 将 BackgroundTaskStatus 映射为 ExecutionStage 字符串
+    /// </summary>
+    private static string MapTaskStatusToStage(BackgroundTaskStatus status)
+    {
+        return status switch
+        {
+            BackgroundTaskStatus.PendingValidation => "PendingValidation",
+            BackgroundTaskStatus.Validating => "Validating",
+            BackgroundTaskStatus.Queued => "Queued",
+            BackgroundTaskStatus.Running => "Running",
+            BackgroundTaskStatus.Succeeded => "Succeeded",
+            BackgroundTaskStatus.Failed => "Failed",
+            BackgroundTaskStatus.Cancelled => "Cancelled",
+            _ => status.ToString()
+        };
     }
 
     public async Task<Result> DeleteAsync(Guid configurationId, CancellationToken cancellationToken = default)

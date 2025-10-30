@@ -117,8 +117,28 @@
   - [x] DDL 脚本成功执行(ALTER PARTITION FUNCTION MERGE RANGE)
   - [x] 执行日志正确显示
 
-### 5.4 数据归档(后置)
-- [ ] `PartitionArchiveWizard` 组件（方案选择 + 分区切换实现 + BCP/BulkCopy 占位）
+### 5.4 数据归档（已完成 ✅ 2025-10-30）
+- [x] `PartitionArchiveWizard` 组件（方案选择 + 分区切换实现 + BCP/BulkCopy 占位）✅
+  - [x] 四步向导框架（Steps + Drawer + 状态管理）
+  - [x] Step 1 - 方案选择（分区切换/BCP/BulkCopy）
+  - [x] Step 2 - 参数配置（源分区、目标库/表、配置关联）
+  - [x] Step 3 - 预检结果（Blocker/AutoFix/Warning 展示）
+  - [x] Step 4 - 执行确认（Markdown 脚本预览、任务提交）
+  - [x] 批量归档支持（多分区选择、依次执行、进度展示）
+  - [x] 主页面集成（"切换分区"按钮、回调刷新）
+- [x] 后端服务完整实现 ✅
+  - [x] `IPartitionSwitchAppService`（预检/自动补齐/执行）
+  - [x] `PartitionSwitchInspectionService`（结构/索引/约束检查）
+  - [x] `PartitionSwitchAutoFixExecutor`（6 种自动补齐步骤）
+  - [x] `BackgroundTaskProcessor.ExecuteArchiveSwitchAsync`（8 阶段执行流程）
+  - [x] API 端点（/api/v1/partition-archive/switch/{inspect,autofix,execute}）
+- [x] 端到端验证 ✅
+  - [x] 单分区归档测试通过
+  - [x] 批量分区归档测试通过（多分区依次执行）
+  - [x] 索引对齐检测与修复验证
+  - [x] Markdown 日志渲染正常
+  - [x] 错误处理与用户反馈完善
+- [ ] **悬挂问题**：在“无分区配置草稿”但同源同库的场景下，需要补充覆盖流程（建模、API、UI 行为尚待验证）
 
 ### 5.5 测试
 - [ ] 对应的 UI 单元/集成测试（BUnit / Playwright）
@@ -138,7 +158,7 @@
 3. **Milestone C** 📋：数据归档（分区切换）闭环 + 任务调度平台 UI 扩展(待启动,预计 2025-11-10 完成)
 4. **Milestone D** 📋：BCP/BulkCopy 占位与后续调研记录(后续规划)
 
-## 当前进度(2025-10-27)
+## 当前进度(2025-10-30)
 - ✅ **添加分区值功能**:已完成并测试通过
 - ✅ **分区拆分功能**:全流程完成并验证
   - 前端向导组件开发完成
@@ -151,6 +171,17 @@
   - API客户端集成(`PreviewMergeAsync` + `ExecuteMergeAsync`)
   - 主页面集成("合并分区"按钮 + 回调刷新)
   - 端到端测试通过(DDL 执行成功,日志正常)
-- 🎉 **里程碑**: **Milestone B 全部完成！**分区边界管理的核心功能(添加/拆分/合并)已全部交付并验证通过
-- 📋 **下一阶段**: 进入 Milestone C,开发数据归档功能(分区切换方案)
+- ✅ **数据归档功能（分区切换）**:全流程完成并验证
+  - 4步向导UI实现(方案选择 → 参数配置 → 预检结果 → 执行确认)
+  - 批量归档支持(多分区依次执行、实时进度展示)
+  - 预检服务完整(结构/索引/约束/权限/锁检查)
+  - 自动补齐执行器(6种修复步骤、失败回滚)
+  - 后台任务执行(8阶段流程、Markdown日志)
+  - 端到端测试通过(单分区/批量归档验证)
+- 🎉 **里程碑**: **Milestone C 全部完成！**数据归档（分区切换）功能已全面交付，分区管理平台核心能力闭环
+- 📋 **下一阶段**: 
+  - 编写用户操作手册和 FAQ 文档
+  - 性能优化和监控增强
+  - BCP/BulkCopy 方案技术调研（Milestone D）
+  - 完成无分区配置草稿场景的归档流程及回归测试
 
