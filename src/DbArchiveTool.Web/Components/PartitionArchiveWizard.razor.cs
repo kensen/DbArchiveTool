@@ -256,77 +256,6 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		return Environment.UserName;
 	}
 
-	/// <summary>确保存在临时配置，如不存在则创建。</summary>
-	private async Task<Guid?> EnsureTemporaryConfigurationAsync()
-	{
-		try
-		{
-			// 查找是否已有临时配置
-			var existing = _configurationOptions.FirstOrDefault();
-			if (existing is not null)
-			{
-				return existing.Id;
-			}
-
-			Logger.LogInformation("为表 {Schema}.{Table} 创建临时归档配置", SchemaName, TableName);
-
-			// 从 ArchiveDataSource 读取源和目标服务器信息
-			var dataSourceResult = await DataSourceApi.GetAsync();
-			if (!dataSourceResult.IsSuccess || dataSourceResult.Value is null)
-			{
-				Logger.LogWarning("无法加载数据源列表: {Error}", dataSourceResult.Error);
-				return null;
-			}
-
-			var dataSource = dataSourceResult.Value.FirstOrDefault(ds => ds.Id == DataSourceId);
-			if (dataSource is null)
-			{
-				Logger.LogWarning("未找到 ID={DataSourceId} 的数据源", DataSourceId);
-				return null;
-			}
-
-			// 目标数据库: 如果 UseSourceAsTarget, 使用源数据库; 否则使用目标数据库
-			var targetDatabase = dataSource.UseSourceAsTarget
-				? dataSource.DatabaseName
-				: (dataSource.TargetDatabaseName ?? dataSource.DatabaseName);
-
-			// 创建临时配置
-			var request = new CreatePartitionConfigurationRequestModel
-			{
-				DataSourceId = DataSourceId,
-				SchemaName = SchemaName,
-				TableName = TableName,
-				PartitionColumnName = "Id", // 占位，后端会从元数据自动检测
-				PartitionColumnKind = Domain.Partitions.PartitionValueKind.Int,
-				PartitionColumnIsNullable = false,
-				StorageMode = Domain.Partitions.PartitionStorageMode.PrimaryFilegroup,
-				FilegroupName = "PRIMARY",
-				TargetDatabaseName = targetDatabase,
-				TargetSchemaName = SchemaName,
-				TargetTableName = $"{TableName}_bak",
-				RequirePartitionColumnNotNull = true,
-				CreatedBy = ResolveOperator(),
-				Remarks = "由归档向导自动创建的临时配置"
-			};
-
-			var result = await PartitionConfigApi.CreateAsync(request);
-			if (result.IsSuccess && result.Value != Guid.Empty)
-			{
-				Logger.LogInformation("临时配置已创建: {ConfigId}, TargetDatabase={TargetDatabase}, TargetTable={TargetTable}", 
-					result.Value, targetDatabase, request.TargetTableName);
-				return result.Value;
-			}
-
-			Logger.LogWarning("创建临时配置失败: {Error}", result.Error);
-			return null;
-		}
-		catch (Exception ex)
-		{
-			Logger.LogError(ex, "创建临时配置时发生异常");
-			return null;
-		}
-	}
-
 	private async Task ApplyConfigurationAsync(PartitionConfigurationOption option)
 	{
 		_selectedConfiguration = option;
@@ -444,18 +373,6 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			return false;
 		}
 
-		// 如果没有选择配置，先自动创建一个临时配置
-		if (!_form.PartitionConfigurationId.HasValue)
-		{
-			var tempConfigId = await EnsureTemporaryConfigurationAsync();
-			if (!tempConfigId.HasValue)
-			{
-				Message.Error("无法创建临时配置，预检失败。");
-				return false;
-			}
-			_form.PartitionConfigurationId = tempConfigId;
-		}
-
 		_inspectionLoading = true;
 		_autoFixResult = null;
 		_autoFixOptions.Clear();
@@ -464,7 +381,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		try
 		{
 			var request = new SwitchArchiveInspectRequest(
-				_form.PartitionConfigurationId.Value,
+				_form.PartitionConfigurationId,
+				DataSourceId,
+				SchemaName,
+				TableName,
 				_form.SourcePartitionKey.Trim(),
 				_form.TargetTable.Trim(),
 				string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
@@ -493,12 +413,6 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 	private async Task ExecuteAutoFixAsync()
 	{
-		if (!_form.PartitionConfigurationId.HasValue)
-		{
-			Message.Warning("请选择分区配置后再执行自动补齐。");
-			return;
-		}
-
 		var selectedCodes = _autoFixOptions
 			.Where(option => option.IsSelected)
 			.Select(option => option.Code)
@@ -515,7 +429,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		try
 		{
 			var request = new SwitchArchiveAutoFixRequest(
-				_form.PartitionConfigurationId.Value,
+				_form.PartitionConfigurationId,
+				DataSourceId,
+				SchemaName,
+				TableName,
 				_form.SourcePartitionKey.Trim(),
 				_form.TargetTable.Trim(),
 				string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
@@ -524,7 +441,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				selectedCodes);
 
 			Logger.LogInformation("开始执行自动补齐: ConfigId={ConfigId}, Steps={Steps}", 
-				_form.PartitionConfigurationId.Value, string.Join(",", selectedCodes));
+				_form.PartitionConfigurationId?.ToString() ?? "(未指定)", string.Join(",", selectedCodes));
 
 			var result = await PartitionArchiveApi.AutoFixSwitchAsync(request);
 			if (!result.IsSuccess || result.Value is null)
@@ -573,12 +490,6 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 	private async Task SubmitAsync()
 	{
-		if (!_form.PartitionConfigurationId.HasValue)
-		{
-			Message.Warning("请选择分区配置。");
-			return;
-		}
-
 		if (!_form.BackupConfirmed)
 		{
 			Message.Warning("请确认已完成备份。");
@@ -609,7 +520,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 					try
 					{
 						var request = new SwitchArchiveExecuteRequest(
-							_form.PartitionConfigurationId.Value,
+							_form.PartitionConfigurationId,
+							DataSourceId,
+							SchemaName,
+							TableName,
 							partitionKey.Trim(),
 							_form.TargetTable.Trim(),
 							string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
@@ -671,7 +585,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			{
 				// 单个分区执行(原有逻辑)
 				var request = new SwitchArchiveExecuteRequest(
-					_form.PartitionConfigurationId.Value,
+					_form.PartitionConfigurationId,
+					DataSourceId,
+					SchemaName,
+					TableName,
 					_form.SourcePartitionKey.Trim(),
 					_form.TargetTable.Trim(),
 					string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),

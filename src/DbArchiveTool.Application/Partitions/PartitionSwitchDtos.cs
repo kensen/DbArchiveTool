@@ -7,7 +7,10 @@ namespace DbArchiveTool.Application.Partitions;
 /// 切换分区检查请求。
 /// </summary>
 public sealed record SwitchPartitionInspectionRequest(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,
@@ -18,7 +21,10 @@ public sealed record SwitchPartitionInspectionRequest(
 /// 切换分区执行请求。
 /// </summary>
 public sealed record SwitchPartitionExecuteRequest(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,
@@ -125,7 +131,10 @@ public sealed record PartitionSwitchColumnDto(
 /// 自动补齐执行请求，携带用户勾选的补齐步骤编码。
 /// </summary>
 public sealed record SwitchPartitionAutoFixRequest(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,

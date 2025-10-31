@@ -338,6 +338,79 @@ public class ArchivePartitionDetail : BaseEntity
 > - 登录失败返回 `401` 和错误描述，前端需提示“用户名或密码不正确”。  
 > - Blazor 首屏会调用 `exists` 接口决定跳转到登录页或注册页，注册成功后立即登录。  
 
+### 4.9 分区归档 API（分区切换）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/partition-archive/switch/inspect` | 预检分区切换条件 |
+| POST | `/api/v1/partition-archive/switch/autofix` | 执行自动补齐步骤 |
+| POST | `/api/v1/partition-archive/switch` | 提交分区切换归档任务 |
+
+#### 4.9.1 预检请求体示例
+
+```json
+{
+  "partitionConfigurationId": "a4c0d93a-8e46-4e0b-9f7c-6a60c4e4aff1",
+  "dataSourceId": "d5a9b9f9-7db7-4d6a-9a61-6ff7c04476d3",
+  "schemaName": "dbo",
+  "tableName": "Orders",
+  "sourcePartitionKey": "5",
+  "targetTable": "Archive.OrdersHistory",
+  "targetDatabase": "ArchiveDB",
+  "createStagingTable": true,
+  "requestedBy": "tester"
+}
+```
+
+> 字段说明：
+> - `partitionConfigurationId` 可为空。当为空时，系统会基于 `dataSourceId` + `schemaName` + `tableName` 直接读取实时元数据执行检查，无需先创建“配置草稿”。
+> - `dataSourceId` 始终为必填，用于定位归档数据源。即便传入 `partitionConfigurationId`，接口仍会校验数据源是否存在。
+> - `schemaName`、`tableName` 在未指定配置时必填；指定配置时若留空则自动采用配置中的架构/表名。
+> - `createStagingTable` 控制是否在执行 SWITCH 前自动创建临时表。
+
+#### 4.9.2 自动补齐请求体示例
+
+```json
+{
+  "partitionConfigurationId": null,
+  "dataSourceId": "d5a9b9f9-7db7-4d6a-9a61-6ff7c04476d3",
+  "schemaName": "dbo",
+  "tableName": "Orders",
+  "sourcePartitionKey": "5",
+  "targetTable": "Archive.OrdersHistory",
+  "targetDatabase": "ArchiveDB",
+  "createStagingTable": true,
+  "requestedBy": "tester",
+  "autoFixStepCodes": [
+    "CreateTargetTable",
+    "SyncIndexes",
+    "SyncConstraints"
+  ]
+}
+```
+
+#### 4.9.3 提交执行请求体示例
+
+```json
+{
+  "partitionConfigurationId": null,
+  "dataSourceId": "d5a9b9f9-7db7-4d6a-9a61-6ff7c04476d3",
+  "schemaName": "dbo",
+  "tableName": "Orders",
+  "sourcePartitionKey": "5",
+  "targetTable": "Archive.OrdersHistory",
+  "targetDatabase": "ArchiveDB",
+  "createStagingTable": true,
+  "backupConfirmed": true,
+  "requestedBy": "tester"
+}
+```
+
+> 约束说明：
+> - `backupConfirmed` 必须为 `true` 才能提交后台任务。
+> - 服务端会根据是否提供 `partitionConfigurationId` 自动选择配置仓储或 `IPartitionMetadataRepository` 加载元数据，并在审计日志中标记来源（保存配置 / 元数据直连）。
+> - 所有请求均复用共享 `Result<T>` 响应模型，错误时返回 `isSuccess = false` + `error` 文案。
+
 ---
 
 ## 5. 数据迁移 API

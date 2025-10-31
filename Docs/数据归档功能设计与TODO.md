@@ -43,7 +43,7 @@
   - 同步分区函数、分区方案，并映射到目标文件组。
   - 批量创建索引、约束、统计，保持 PERSISTED/NOT FOR REPLICATION 等属性一致。
 - **环境准备**：
-  - 清空目标表残留数据。
+  - 检测目标表是否存在残留数据，若有则提示用户手动清空。
   - 如需，自动更新统计、重建索引。
 - **事务控制**：全部 DDL 在一个事务中执行，启用 `XACT_ABORT ON`；失败即回滚。
 - **日志记录**：补齐计划与实际执行 SQL 写入 Markdown 日志供审计。
@@ -102,7 +102,7 @@
      - [x] `SyncPartitionObjects` - 同步分区函数与分区方案
      - [x] `SyncIndexes` - 同步非聚集索引并支持回滚删除
      - [x] `SyncConstraints` - 同步 CHECK/DEFAULT 约束并支持回滚删除
-     - [x] `CleanupResidualData` - 清空目标表残留数据
+  - [x] `CleanupResidualData` - 检测残留数据并提示手动清空
      - [x] `RefreshStatistics` - 刷新统计信息
    - [x] 强化 `SqlPartitionCommandExecutor.ExecuteSwitchWithTransactionAsync`，支持多阶段日志与异常回滚。
      - [x] SWITCH 脚本生成支持 `[database].[schema].[table]` 全限定名。

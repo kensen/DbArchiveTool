@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using DbArchiveTool.Application.Partitions;
 
 namespace DbArchiveTool.Api.Models;
@@ -7,7 +8,10 @@ namespace DbArchiveTool.Api.Models;
 /// 切换分区检查请求 DTO。
 /// </summary>
 public sealed record SwitchArchiveInspectDto(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,
@@ -15,14 +19,17 @@ public sealed record SwitchArchiveInspectDto(
     string RequestedBy)
 {
     public SwitchPartitionInspectionRequest ToApplicationRequest()
-        => new(PartitionConfigurationId, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, RequestedBy);
+        => new(PartitionConfigurationId, DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, RequestedBy);
 }
 
 /// <summary>
 /// 切换分区执行请求 DTO。
 /// </summary>
 public sealed record SwitchArchiveExecuteDto(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,
@@ -31,14 +38,17 @@ public sealed record SwitchArchiveExecuteDto(
     string RequestedBy)
 {
     public SwitchPartitionExecuteRequest ToApplicationRequest()
-        => new(PartitionConfigurationId, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, BackupConfirmed, RequestedBy);
+        => new(PartitionConfigurationId, DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, BackupConfirmed, RequestedBy);
 }
 
 /// <summary>
 /// 切换分区自动补齐请求 DTO。
 /// </summary>
 public sealed record SwitchArchiveAutoFixDto(
-    Guid PartitionConfigurationId,
+    Guid? PartitionConfigurationId,
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
     string SourcePartitionKey,
     string TargetTable,
     string? TargetDatabase,
@@ -47,5 +57,5 @@ public sealed record SwitchArchiveAutoFixDto(
     IReadOnlyList<string> AutoFixStepCodes)
 {
     public SwitchPartitionAutoFixRequest ToApplicationRequest()
-        => new(PartitionConfigurationId, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, RequestedBy, AutoFixStepCodes);
+        => new(PartitionConfigurationId, DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, RequestedBy, AutoFixStepCodes);
 }

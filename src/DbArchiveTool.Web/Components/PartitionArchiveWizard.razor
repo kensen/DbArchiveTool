@@ -36,6 +36,17 @@
                                 <Radio RadioButton Value="@ArchiveMode.Bcp" Disabled>BCP（规划中）</Radio>
                                 <Radio RadioButton Value="@ArchiveMode.BulkCopy" Disabled>BulkCopy（规划中）</Radio>
                             </RadioGroup>
+                            <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-top:16px;">
+                                <MessageTemplate>
+                                    <p><strong>适用场景：</strong>需要将历史分区快速迁移到归档表，并保持源/目标表结构一致的场景，例如月度或季度归档。</p>
+                                    <p><strong>前置条件：</strong></p>
+                                    <ul>
+                                        <li>源表与目标表使用同一分区方案，主键及所有索引均包含分区列。</li>
+                                        <li>目标分区为空，或已通过自动补齐步骤清理残留数据。</li>
+                                        <li>切换期间业务允许短暂的排他锁；建议在维护窗口执行，并提前完成备份。</li>
+                                    </ul>
+                                </MessageTemplate>
+                            </Alert>
                         </div>
                         break;
                     case 1:

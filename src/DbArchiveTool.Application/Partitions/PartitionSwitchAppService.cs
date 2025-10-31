@@ -22,6 +22,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
     private readonly IPartitionCommandAppService commandAppService;
     private readonly IPartitionAuditLogRepository auditLogRepository;
     private readonly IDataSourceRepository dataSourceRepository;
+    private readonly IPartitionMetadataRepository metadataRepository;
     private readonly IPartitionSwitchAutoFixExecutor autoFixExecutor;
     private readonly ILogger<PartitionSwitchAppService> logger;
 
@@ -31,6 +32,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
         IPartitionCommandAppService commandAppService,
         IPartitionAuditLogRepository auditLogRepository,
         IDataSourceRepository dataSourceRepository,
+        IPartitionMetadataRepository metadataRepository,
         IPartitionSwitchAutoFixExecutor autoFixExecutor,
         ILogger<PartitionSwitchAppService> logger)
     {
@@ -39,6 +41,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
         this.commandAppService = commandAppService;
         this.auditLogRepository = auditLogRepository;
         this.dataSourceRepository = dataSourceRepository;
+        this.metadataRepository = metadataRepository;
         this.autoFixExecutor = autoFixExecutor;
         this.logger = logger;
     }
@@ -51,17 +54,20 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result<PartitionSwitchInspectionResultDto>.Failure(validation.Error!);
         }
 
-        var configuration = await configurationRepository.GetByIdAsync(request.PartitionConfigurationId, cancellationToken);
-        if (configuration is null)
+        var contextResult = await ResolveConfigurationContextAsync(
+            request.PartitionConfigurationId,
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            cancellationToken);
+        if (!contextResult.IsSuccess)
         {
-            return Result<PartitionSwitchInspectionResultDto>.Failure("未找到指定的分区配置。");
+            return Result<PartitionSwitchInspectionResultDto>.Failure(contextResult.Error!);
         }
 
-        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
-        if (dataSource is null)
-        {
-            return Result<PartitionSwitchInspectionResultDto>.Failure("未找到归档数据源配置，请检查数据源列表。");
-        }
+        var contextData = contextResult.Value!;
+        var configuration = contextData.Configuration;
+        var dataSource = contextData.DataSource;
 
         var target = NormalizeTargetTable(
             request.TargetTable,
@@ -106,17 +112,20 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result<Guid>.Failure(validation.Error!);
         }
 
-        var configuration = await configurationRepository.GetByIdAsync(request.PartitionConfigurationId, cancellationToken);
-        if (configuration is null)
+        var contextResult = await ResolveConfigurationContextAsync(
+            request.PartitionConfigurationId,
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            cancellationToken);
+        if (!contextResult.IsSuccess)
         {
-            return Result<Guid>.Failure("未找到指定的分区配置。");
+            return Result<Guid>.Failure(contextResult.Error!);
         }
 
-        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
-        if (dataSource is null)
-        {
-            return Result<Guid>.Failure("未找到归档数据源配置，请检查数据源列表。");
-        }
+        var contextData = contextResult.Value!;
+        var configuration = contextData.Configuration;
+        var dataSource = contextData.DataSource;
 
         var target = NormalizeTargetTable(
             request.TargetTable,
@@ -180,6 +189,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
 
         await WriteAuditLogAsync(
             configuration,
+            contextData.ConfigurationId,
             request,
             target,
             preview.Value!.Script,
@@ -192,6 +202,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
 
     private async Task WriteAuditLogAsync(
         PartitionConfiguration configuration,
+        Guid? configurationId,
         SwitchPartitionExecuteRequest request,
         NormalizedTarget target,
         string script,
@@ -200,7 +211,7 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
     {
         var payload = new
         {
-            configurationId = configuration.Id,
+            configurationId = configurationId ?? configuration.Id,
             configuration.SchemaName,
             configuration.TableName,
             request.SourcePartitionKey,
@@ -212,11 +223,17 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             commandId
         };
 
+        var resourceType = configurationId.HasValue
+            ? nameof(PartitionConfiguration)
+            : "PartitionMetadata";
+        var resourceId = configurationId?.ToString()
+            ?? $"{configuration.SchemaName}.{configuration.TableName}@{configuration.ArchiveDataSourceId}";
+
         var audit = PartitionAuditLog.Create(
             request.RequestedBy,
             BackgroundTaskOperationType.ArchiveSwitch.ToString(),
-            nameof(PartitionConfiguration),
-            configuration.Id.ToString(),
+            resourceType,
+            resourceId,
             "提交分区切换任务",
             JsonSerializer.Serialize(payload),
             "Success",
@@ -236,17 +253,20 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
             return Result<PartitionSwitchAutoFixResultDto>.Failure(validation.Error!);
         }
 
-        var configuration = await configurationRepository.GetByIdAsync(request.PartitionConfigurationId, cancellationToken);
-        if (configuration is null)
+        var contextResult = await ResolveConfigurationContextAsync(
+            request.PartitionConfigurationId,
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            cancellationToken);
+        if (!contextResult.IsSuccess)
         {
-            return Result<PartitionSwitchAutoFixResultDto>.Failure("未找到指定的分区配置。");
+            return Result<PartitionSwitchAutoFixResultDto>.Failure(contextResult.Error!);
         }
 
-        var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
-        if (dataSource is null)
-        {
-            return Result<PartitionSwitchAutoFixResultDto>.Failure("未找到归档数据源配置，请检查数据源列表。");
-        }
+        var contextData = contextResult.Value!;
+        var configuration = contextData.Configuration;
+        var dataSource = contextData.DataSource;
 
         var target = NormalizeTargetTable(
             request.TargetTable,
@@ -313,9 +333,29 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
 
     private static Result ValidateInspectionRequest(SwitchPartitionInspectionRequest request)
     {
-        if (request.PartitionConfigurationId == Guid.Empty)
+        if (request.PartitionConfigurationId.HasValue)
         {
-            return Result.Failure("配置标识不能为空。");
+            if (request.PartitionConfigurationId.Value == Guid.Empty)
+            {
+                return Result.Failure("配置标识不能为空。");
+            }
+        }
+        else
+        {
+            if (request.DataSourceId == Guid.Empty)
+            {
+                return Result.Failure("请指定归档数据源。");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.SchemaName))
+            {
+                return Result.Failure("分区表架构名称不能为空。");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.TableName))
+            {
+                return Result.Failure("分区表名称不能为空。");
+            }
         }
 
         if (string.IsNullOrWhiteSpace(request.SourcePartitionKey))
@@ -343,29 +383,19 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
 
     private static Result ValidateAutoFixRequest(SwitchPartitionAutoFixRequest request)
     {
-        if (request.PartitionConfigurationId == Guid.Empty)
+        var inspectionValidation = ValidateInspectionRequest(new SwitchPartitionInspectionRequest(
+            request.PartitionConfigurationId,
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
+            request.SourcePartitionKey,
+            request.TargetTable,
+            request.TargetDatabase,
+            request.CreateStagingTable,
+            request.RequestedBy));
+        if (!inspectionValidation.IsSuccess)
         {
-            return Result.Failure("配置标识不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.SourcePartitionKey))
-        {
-            return Result.Failure("源分区编号不能为空。");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.TargetTable))
-        {
-            return Result.Failure("目标表不能为空。");
-        }
-
-        if (request.TargetDatabase is not null && string.IsNullOrWhiteSpace(request.TargetDatabase))
-        {
-            return Result.Failure("目标数据库名称格式不正确。");
-        }
-
-        if (string.IsNullOrWhiteSpace(request.RequestedBy))
-        {
-            return Result.Failure("操作人不能为空。");
+            return inspectionValidation;
         }
 
         if (request.AutoFixStepCodes is null || request.AutoFixStepCodes.Count == 0)
@@ -380,6 +410,9 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
     {
         var inspectionValidation = ValidateInspectionRequest(new SwitchPartitionInspectionRequest(
             request.PartitionConfigurationId,
+            request.DataSourceId,
+            request.SchemaName,
+            request.TableName,
             request.SourcePartitionKey,
             request.TargetTable,
             request.TargetDatabase,
@@ -477,6 +510,67 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
     // 映射风险提示，方便前端展示与重点提示
     private static PartitionSwitchPlanWarningDto MapPlanWarning(PartitionSwitchPlanWarning warning)
         => new(warning.Code, warning.Title, warning.Description, warning.Guidance);
+
+    private async Task<Result<ConfigurationContext>> ResolveConfigurationContextAsync(
+        Guid? configurationId,
+        Guid dataSourceId,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        if (configurationId.HasValue)
+        {
+            var configuration = await configurationRepository.GetByIdAsync(configurationId.Value, cancellationToken);
+            if (configuration is null)
+            {
+                return Result<ConfigurationContext>.Failure("未找到指定的分区配置。");
+            }
+
+            var dataSource = await dataSourceRepository.GetAsync(configuration.ArchiveDataSourceId, cancellationToken);
+            if (dataSource is null)
+            {
+                return Result<ConfigurationContext>.Failure("未找到归档数据源配置，请检查数据源列表。");
+            }
+
+            return Result<ConfigurationContext>.Success(new ConfigurationContext(configuration, dataSource, configurationId.Value, false));
+        }
+
+        if (dataSourceId == Guid.Empty)
+        {
+            return Result<ConfigurationContext>.Failure("请指定归档数据源。");
+        }
+
+        if (string.IsNullOrWhiteSpace(schemaName))
+        {
+            return Result<ConfigurationContext>.Failure("分区表架构名称不能为空。");
+        }
+
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            return Result<ConfigurationContext>.Failure("分区表名称不能为空。");
+        }
+
+        var normalizedSchema = schemaName.Trim();
+        var normalizedTable = tableName.Trim();
+
+        var dataSourceFallback = await dataSourceRepository.GetAsync(dataSourceId, cancellationToken);
+        if (dataSourceFallback is null)
+        {
+            return Result<ConfigurationContext>.Failure("未找到指定的数据源，请检查数据源配置。");
+        }
+
+        var configurationFromMetadata = await metadataRepository.GetConfigurationAsync(
+            dataSourceId,
+            normalizedSchema,
+            normalizedTable,
+            cancellationToken);
+        if (configurationFromMetadata is null)
+        {
+            return Result<ConfigurationContext>.Failure($"未找到 {normalizedSchema}.{normalizedTable} 的分区元数据，请确认该表存在并已配置分区。");
+        }
+
+        return Result<ConfigurationContext>.Success(new ConfigurationContext(configurationFromMetadata, dataSourceFallback, null, true));
+    }
 
     private static NormalizedTarget NormalizeTargetTable(string raw, string defaultSchema, string? explicitDatabase, string defaultDatabase)
     {
@@ -594,4 +688,10 @@ internal sealed class PartitionSwitchAppService : IPartitionSwitchAppService
         public static NormalizedTarget Invalid(string error)
             => new(false, string.Empty, string.Empty, string.Empty, error);
     }
+
+    private sealed record ConfigurationContext(
+        PartitionConfiguration Configuration,
+        ArchiveDataSource DataSource,
+        Guid? ConfigurationId,
+        bool IsFromMetadata);
 }

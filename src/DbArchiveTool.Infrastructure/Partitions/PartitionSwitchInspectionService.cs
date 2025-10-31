@@ -147,12 +147,12 @@ internal sealed class PartitionSwitchInspectionService : IPartitionSwitchInspect
                 autoFix.Add(new PartitionSwitchAutoFixStep(
                     "CreateTargetTable",
                     $"基于源表 {FormatQualifiedName(context.SourceDatabase, configuration.SchemaName, configuration.TableName)} 自动创建目标表 {FormatQualifiedName(context.TargetDatabase, targetSchema!, targetTable!)}。",
-                    "自动补齐会复制源表的列结构(包含分区方案)并在目标库中创建空表。"));
+                    "自动补齐会复制源表的列结构(包含分区方案)并创建聚集索引/主键，但不包括其他索引和约束。"));
                 
                 autoFix.Add(new PartitionSwitchAutoFixStep(
                     "SyncIndexes",
-                    "从源表复制所有索引(聚集索引、主键、唯一索引)到新创建的目标表。",
-                    "确保目标表的索引结构与源表完全一致,满足 SWITCH 操作要求。"));
+                    "从源表复制所有非聚集索引到目标表，并删除源表中不存在的索引。",
+                    "确保目标表的索引结构与源表完全一致,满足 SWITCH 操作要求。必须在 CreateTargetTable 之后执行。"));
                 
                 autoFix.Add(new PartitionSwitchAutoFixStep(
                     "SyncConstraints",
@@ -710,6 +710,8 @@ WHERE SCHEMA_NAME(t.schema_id) = @SchemaName
   AND t.name = @TableName
   AND i.type IN (1, 2)
   AND i.is_disabled = 0
+  AND i.is_hypothetical = 0  -- 排除假设索引(SQL Server 缺失索引建议)
+  AND i.name IS NOT NULL  -- 排除没有名称的索引
 ORDER BY i.index_id;";
 
         var result = await sqlExecutor.QueryAsync<TableIndexDefinition>(

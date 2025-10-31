@@ -276,15 +276,15 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
 
         var script = scriptBuilder.ToString();
         var message = partitionInfo != null 
-            ? $"已创建分区目标表 [{context.TargetSchema}].[{context.TargetTable}],分区列: {partitionInfo.ColumnName},并同步了聚集索引/主键。"
-            : $"已创建目标表 [{context.TargetSchema}].[{context.TargetTable}],并同步了聚集索引/主键。";
+            ? $"已创建分区目标表 [{context.TargetSchema}].[{context.TargetTable}]（分区列: {partitionInfo.ColumnName}），包含聚集索引/主键。其他索引需通过 SyncIndexes 步骤补齐。"
+            : $"已创建目标表 [{context.TargetSchema}].[{context.TargetTable}]，包含聚集索引/主键。其他索引需通过 SyncIndexes 步骤补齐。";
         return new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution("CreateTargetTable", true, message, script, 0),
             new AutoFixRollbackAction(async ct => await RollbackCreateTargetTableAsync(dataSourceId, context, ct)));
     }
 
     /// <summary>
-    /// 清空目标分区的残留数据，以满足 SWITCH 操作要求（目标分区必须为空）
+    /// 检测目标分区是否存在残留数据，如有则阻断自动补齐并提示手动处理
     /// </summary>
     private async Task<AutoFixStepOutcome> ExecuteCleanupTargetTableAsync(
         Guid dataSourceId,
@@ -322,45 +322,104 @@ WHERE s.name = @Schema AND t.name = @Table AND i.index_id IN (0, 1);";
             new { Schema = context.TargetSchema, Table = context.TargetTable },
             transaction: null) > 0;
 
-        string script;
-        string message;
+        long residualRowCount;
 
         if (isPartitioned)
         {
-            // 目标表是分区表，使用 TRUNCATE TABLE ... WITH (PARTITIONS (...)) 清空特定分区
-            script = $@"-- 清空目标表分区 {partitionNumber} 的残留数据
-SET XACT_ABORT ON;
-BEGIN TRANSACTION;
-    TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}] 
-    WITH (PARTITIONS ({partitionNumber}));
-COMMIT TRANSACTION;";
-            message = $"已清空目标表 [{context.TargetSchema}].[{context.TargetTable}] 分区 {partitionNumber} 的残留数据。";
+            const string residualCountSql = @"
+SELECT ISNULL(SUM(p.rows), 0)
+FROM sys.partitions p
+INNER JOIN sys.tables t ON p.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @Schema AND t.name = @Table AND p.index_id IN (0, 1) AND p.partition_number = @PartitionNumber;";
+
+            residualRowCount = await sqlExecutor.QuerySingleAsync<long>(
+                targetConnection,
+                residualCountSql,
+                new
+                {
+                    Schema = context.TargetSchema,
+                    Table = context.TargetTable,
+                    PartitionNumber = partitionNumber
+                },
+                transaction: null);
         }
         else
         {
-            // 目标表是普通表，使用 TRUNCATE TABLE 清空整个表
-            script = $@"-- 清空目标表的残留数据（普通表）
+            const string residualCountSql = @"
+SELECT ISNULL(SUM(p.rows), 0)
+FROM sys.partitions p
+INNER JOIN sys.tables t ON p.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @Schema AND t.name = @Table AND p.index_id IN (0, 1);";
+
+            residualRowCount = await sqlExecutor.QuerySingleAsync<long>(
+                targetConnection,
+                residualCountSql,
+                new
+                {
+                    Schema = context.TargetSchema,
+                    Table = context.TargetTable
+                },
+                transaction: null);
+        }
+
+        if (residualRowCount > 0)
+        {
+            var manualScript = isPartitioned
+                ? $@"-- 手动清空目标表分区 {partitionNumber} 的残留数据
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+    TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}]
+    WITH (PARTITIONS ({partitionNumber}));
+COMMIT TRANSACTION;"
+                : $@"-- 手动清空目标表的残留数据（普通表）
 SET XACT_ABORT ON;
 BEGIN TRANSACTION;
     TRUNCATE TABLE [{context.TargetSchema}].[{context.TargetTable}];
 COMMIT TRANSACTION;";
-            message = $"已清空目标表 [{context.TargetSchema}].[{context.TargetTable}] 的所有数据（普通表）。";
+
+            var message = isPartitioned
+                ? $"检测到目标表 [{context.TargetSchema}].[{context.TargetTable}] 分区 {partitionNumber} 中存在 {residualRowCount} 行数据。为确保数据安全，自动补齐已停止，请手动清空后重试。"
+                : $"检测到目标表 [{context.TargetSchema}].[{context.TargetTable}] 中存在 {residualRowCount} 行数据。为确保数据安全，自动补齐已停止，请手动清空后重试。";
+
+            logger.LogWarning(
+                "目标表 {Schema}.{Table} 检测到残留数据，分区号: {PartitionNumber}, 是否分区表: {IsPartitioned}, 行数: {RowCount}",
+                context.TargetSchema,
+                context.TargetTable,
+                partitionNumber,
+                isPartitioned,
+                residualRowCount);
+
+            return new AutoFixStepOutcome(
+                new PartitionSwitchAutoFixExecution(
+                    "CleanupResidualData",
+                    false,
+                    message,
+                    manualScript,
+                    0),
+                null);
         }
 
-        // 执行清空操作
-        await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: 300);
+        var successMessage = isPartitioned
+            ? $"目标表 [{context.TargetSchema}].[{context.TargetTable}] 分区 {partitionNumber} 已为空，无需执行清理。"
+            : $"目标表 [{context.TargetSchema}].[{context.TargetTable}] 已为空，无需执行清理。";
 
-        logger.LogInformation("已清空目标表 {Schema}.{Table} 的残留数据，分区号: {PartitionNumber}, 是否分区表: {IsPartitioned}", 
-            context.TargetSchema, context.TargetTable, partitionNumber, isPartitioned);
+        logger.LogInformation(
+            "目标表 {Schema}.{Table} 无残留数据，分区号: {PartitionNumber}, 是否分区表: {IsPartitioned}",
+            context.TargetSchema,
+            context.TargetTable,
+            partitionNumber,
+            isPartitioned);
 
         return new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution(
                 "CleanupResidualData",
                 true,
-                message,
-                script,
+                successMessage,
+                "-- 未执行清理操作，目标表/分区已为空。",
                 0),
-            null); // 清空数据操作不支持回滚
+            null);
     }
 
     // 刷新统计信息，降低执行计划偏差风险
@@ -574,9 +633,27 @@ COMMIT TRANSACTION;";
 
             if (sourceIndex == null)
             {
-                // 目标表有但源表没有的索引,保留
-                logger.LogInformation("目标表非聚集索引 {IndexName} 在源表中不存在,保留。", targetIndex.IndexName);
-                scriptBuilder.AppendLine($"-- 目标表索引 [{targetIndex.IndexName}] 在源表中不存在,保留");
+                // 目标表有但源表没有的索引,删除以确保与源表完全一致
+                logger.LogInformation("目标表非聚集索引 {IndexName} 在源表中不存在,将被删除以保持一致。", targetIndex.IndexName);
+                
+                var dropScript = BuildDropIndexScript(context.TargetSchema, context.TargetTable, targetIndex);
+                scriptBuilder.AppendLine($"-- 删除源表中不存在的索引 [{targetIndex.IndexName}]");
+                scriptBuilder.AppendLine(dropScript);
+                scriptBuilder.AppendLine("GO");
+                scriptBuilder.AppendLine();
+
+                try
+                {
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                    droppedIndexNames.Add(targetIndex.IndexName);
+                    logger.LogInformation("已删除源表中不存在的索引 {IndexName}", targetIndex.IndexName);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "删除索引 {IndexName} 失败", targetIndex.IndexName);
+                    failedIndexes.Add($"删除多余索引 {targetIndex.IndexName} 失败: {ex.Message}");
+                }
+                
                 continue;
             }
 
@@ -634,9 +711,21 @@ COMMIT TRANSACTION;";
                 var targetHasPrimaryKey = targetAllIndexes.Any(t => t.IsPrimaryKey && !droppedIndexNames.Contains(t.IndexName));
                 if (targetHasPrimaryKey)
                 {
-                    logger.LogWarning("目标表已有主键,跳过创建源表的非聚集主键 {IndexName}", sourceIndex.IndexName);
-                    scriptBuilder.AppendLine($"-- 跳过: 目标表已有主键,不创建非聚集主键 [{sourceIndex.IndexName}]");
-                    failedIndexes.Add($"⚠️ 跳过主键 {sourceIndex.IndexName}: 目标表已有主键(类型可能不同)");
+                    logger.LogInformation("目标表已有主键,跳过源表主键 {IndexName}（已在 CreateTargetTable 阶段创建）", sourceIndex.IndexName);
+                    scriptBuilder.AppendLine($"-- 跳过: 目标表已有主键 [{sourceIndex.IndexName}]（已在 CreateTargetTable 阶段创建）");
+                    continue;
+                }
+            }
+            
+            // 特殊检查:如果源索引是聚集索引,且目标表已经有聚集索引,则跳过
+            // SQL Server 规则:每个表只能有一个聚集索引
+            if (sourceIndex.IsClustered)
+            {
+                var targetHasClusteredIndex = targetAllIndexes.Any(t => t.IsClustered && !droppedIndexNames.Contains(t.IndexName));
+                if (targetHasClusteredIndex)
+                {
+                    logger.LogInformation("目标表已有聚集索引,跳过源表聚集索引 {IndexName}（已在 CreateTargetTable 阶段创建）", sourceIndex.IndexName);
+                    scriptBuilder.AppendLine($"-- 跳过: 目标表已有聚集索引 [{sourceIndex.IndexName}]（已在 CreateTargetTable 阶段创建）");
                     continue;
                 }
             }
@@ -656,7 +745,7 @@ COMMIT TRANSACTION;";
                 IndexName = sourceIndex.IndexName,
                 IsUnique = sourceIndex.IsUnique,
                 IsPrimaryKey = sourceIndex.IsPrimaryKey,
-                IndexType = (byte)2, // 非聚集
+                IndexType = sourceIndex.IsClustered ? (byte)1 : (byte)2, // 保持源索引的类型（聚集=1 或非聚集=2）
                 KeyColumns = sourceIndex.KeyColumns,
                 IncludedColumns = sourceIndex.IncludedColumns,
                 FilterDefinition = sourceIndex.FilterDefinition
@@ -1591,42 +1680,76 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
 
         builder.Append($"CREATE {uniqueKeyword}{clusteredKeyword} INDEX [{indexName}] ON [{schema}].[{table}] (");
         
-        var keyColumns = index.KeyColumns;
+    var keyColumns = index.KeyColumns;
+    var includeColumns = index.IncludedColumns;
         
         // 检查键列是否已包含分区列
         bool containsPartitionColumn = false;
         if (partitionInfo != null && !string.IsNullOrWhiteSpace(partitionInfo.ColumnName))
         {
             // 解析列名:去掉 [ ] 和排序关键字(ASC/DESC)
-            var columnList = keyColumns.Split(',')
-                .Select(c => {
-                    var trimmed = c.Trim();
-                    // 去掉方括号
-                    trimmed = trimmed.Replace("[", "").Replace("]", "");
-                    // 去掉 ASC/DESC
-                    trimmed = trimmed.Replace(" ASC", "").Replace(" DESC", "").Trim();
-                    return trimmed;
-                })
+            var keyTokens = keyColumns.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(c => c.Trim())
                 .ToList();
-            
-            containsPartitionColumn = columnList.Contains(partitionInfo.ColumnName, StringComparer.OrdinalIgnoreCase);
-        }
-        
-        // 对于分区表,所有索引都必须包含分区列才能对齐到分区方案
-        // 这对于 SWITCH PARTITION 操作是必需的
-        if (partitionInfo != null && !containsPartitionColumn && !string.IsNullOrWhiteSpace(partitionInfo.ColumnName))
-        {
-            // 添加分区列到键列末尾
-            keyColumns = $"{keyColumns}, [{partitionInfo.ColumnName}] ASC";
-            containsPartitionColumn = true;
+
+            var normalizedKeys = keyTokens
+                .Select(token => token
+                    .Replace("[", string.Empty, StringComparison.Ordinal)
+                    .Replace("]", string.Empty, StringComparison.Ordinal)
+                    .Replace(" ASC", string.Empty, StringComparison.OrdinalIgnoreCase)
+                    .Replace(" DESC", string.Empty, StringComparison.OrdinalIgnoreCase)
+                    .Trim())
+                .ToList();
+
+            containsPartitionColumn = normalizedKeys.Contains(partitionInfo.ColumnName, StringComparer.OrdinalIgnoreCase);
+
+            // 如果 INCLUDE 列包含分区列,需要移除,否则会在创建索引时触发重复列错误
+            static string NormalizeToken(string token)
+            {
+                return token.Replace("[", string.Empty, StringComparison.Ordinal)
+                    .Replace("]", string.Empty, StringComparison.Ordinal)
+                    .Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(includeColumns))
+            {
+                var includeTokens = includeColumns.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(token => token.Trim())
+                    .ToList();
+
+                var filteredIncludes = includeTokens
+                    .Where(token => !NormalizeToken(token)
+                        .Equals(partitionInfo.ColumnName, StringComparison.OrdinalIgnoreCase))
+                    .Select(token =>
+                    {
+                        var normalized = NormalizeToken(token);
+                        // 统一使用方括号,避免二次解析产生格式差异
+                        return $"[{normalized}]";
+                    })
+                    .ToList();
+
+                includeColumns = filteredIncludes.Count switch
+                {
+                    0 => null,
+                    _ => string.Join(", ", filteredIncludes)
+                };
+                index.IncludedColumns = includeColumns;
+            }
+
+            if (!containsPartitionColumn)
+            {
+                keyTokens.Add($"[{partitionInfo.ColumnName}] ASC");
+                keyColumns = string.Join(", ", keyTokens);
+                containsPartitionColumn = true;
+            }
         }
         
         builder.Append(keyColumns);
         builder.Append(")");
 
-        if (!string.IsNullOrWhiteSpace(index.IncludedColumns))
+        if (!string.IsNullOrWhiteSpace(includeColumns))
         {
-            builder.Append($" INCLUDE ({index.IncludedColumns})");
+            builder.Append($" INCLUDE ({includeColumns})");
         }
 
         if (!string.IsNullOrWhiteSpace(index.FilterDefinition))
@@ -1939,6 +2062,9 @@ LEFT JOIN sys.data_spaces ds ON i.data_space_id = ds.data_space_id
 WHERE s.name = @Schema
   AND t.name = @Table
   AND i.type IN (1, 2)  -- 聚集索引和非聚集索引
+  AND i.is_disabled = 0  -- 排除禁用的索引
+  AND i.is_hypothetical = 0  -- 排除假设索引(SQL Server 缺失索引建议)
+  AND i.name IS NOT NULL  -- 排除没有名称的索引
   AND (
       ds.type <> 'PS'  -- 不在分区方案上
       OR ds.name <> @PartitionSchemeName  -- 或者不是目标分区方案
@@ -2035,8 +2161,7 @@ ORDER BY i.index_id;";
         var sql = @"
 SELECT 
     i.name AS IndexName,
-    i.type AS IndexType,
-    i.type_desc AS IndexTypeDesc,
+    UPPER(i.type_desc) AS IndexType,
     i.is_unique AS IsUnique,
     i.is_primary_key AS IsPrimaryKey,
     i.is_unique_constraint AS IsUniqueConstraint,
@@ -2061,6 +2186,9 @@ INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
 WHERE s.name = @Schema
   AND t.name = @Table
   AND i.type IN (1, 2)  -- 聚集索引和非聚集索引
+  AND i.is_disabled = 0  -- 排除禁用的索引
+  AND i.is_hypothetical = 0  -- 排除假设索引(SQL Server 缺失索引建议)
+  AND i.name IS NOT NULL  -- 排除没有名称的索引(如堆)
 ORDER BY i.index_id;";
 
         var result = await sqlExecutor.QueryAsync<TableIndexDefinition>(

@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System;
+using System.Text;
 
 namespace DbArchiveTool.Infrastructure.Models;
 
@@ -70,7 +71,8 @@ public class TableIndexDefinition
     /// <summary>
     /// 是否为聚集索引
     /// </summary>
-    public bool IsClustered => IndexType == "CLUSTERED";
+    public bool IsClustered => string.Equals(IndexType, "CLUSTERED", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(IndexType, "1", StringComparison.Ordinal);
 
     /// <summary>
     /// 生成删除索引的 SQL

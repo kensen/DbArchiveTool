@@ -1124,6 +1124,22 @@ internal sealed class SqlPartitionCommandExecutor
 
         var hasPartitionColumn = keyTokens.Any(token => token.StartsWith($"[{partitionColumn}]", StringComparison.OrdinalIgnoreCase));
 
+        var includeTokens = string.IsNullOrWhiteSpace(definition.IncludedColumns)
+            ? new List<string>()
+            : definition.IncludedColumns
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(token => token.Trim())
+                .ToList();
+
+        var originalInclude = definition.IncludedColumns ?? string.Empty;
+        var removedFromInclude = false;
+
+        // 如果分区列出现在 INCLUDE 列表里,需要移除,否则会在重建索引时触发重复列错误。
+        if (includeTokens.RemoveAll(token => token.Equals($"[{partitionColumn}]", StringComparison.OrdinalIgnoreCase)) > 0)
+        {
+            removedFromInclude = true;
+        }
+
         if (!hasPartitionColumn)
         {
             keyTokens.Add($"[{partitionColumn}] ASC");
@@ -1135,6 +1151,13 @@ internal sealed class SqlPartitionCommandExecutor
         else if (!definition.ContainsPartitionColumn)
         {
             definition.ContainsPartitionColumn = true;
+        }
+
+        if (removedFromInclude)
+        {
+            definition.IncludedColumns = includeTokens.Count == 0
+                ? null
+                : string.Join(", ", includeTokens);
         }
     }
 

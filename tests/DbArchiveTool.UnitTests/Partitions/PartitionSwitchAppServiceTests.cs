@@ -20,6 +20,7 @@ public class PartitionSwitchAppServiceTests
     private readonly Mock<IPartitionCommandAppService> commandAppService = new();
     private readonly Mock<IPartitionAuditLogRepository> auditRepository = new();
     private readonly Mock<IDataSourceRepository> dataSourceRepository = new();
+    private readonly Mock<IPartitionMetadataRepository> metadataRepository = new();
     private readonly Mock<IPartitionSwitchAutoFixExecutor> autoFixExecutor = new();
     private readonly Mock<ILogger<PartitionSwitchAppService>> logger = new();
 
@@ -31,7 +32,16 @@ public class PartitionSwitchAppServiceTests
             .ReturnsAsync((PartitionConfiguration?)null);
 
         var service = CreateService();
-    var result = await service.InspectAsync(new SwitchPartitionInspectionRequest(Guid.NewGuid(), "5", "Archive.Target", "SourceDb", false, "tester"));
+    var result = await service.InspectAsync(new SwitchPartitionInspectionRequest(
+        Guid.NewGuid(),
+        Guid.Empty,
+        string.Empty,
+        string.Empty,
+        "5",
+        "Archive.Target",
+        "SourceDb",
+        false,
+        "tester"));
 
         Assert.False(result.IsSuccess);
         Assert.Equal("未找到指定的分区配置。", result.Error);
@@ -64,7 +74,17 @@ public class PartitionSwitchAppServiceTests
             .ReturnsAsync(CreateDataSource(configuration.ArchiveDataSourceId));
 
         var service = CreateService();
-    var request = new SwitchPartitionExecuteRequest(configurationId, "3", "Archive.Target", "SourceDb", false, true, "tester");
+    var request = new SwitchPartitionExecuteRequest(
+        configurationId,
+        configuration.ArchiveDataSourceId,
+        configuration.SchemaName,
+        configuration.TableName,
+        "3",
+        "Archive.Target",
+        "SourceDb",
+        false,
+        true,
+        "tester");
 
         var result = await service.ArchiveBySwitchAsync(request);
 
@@ -96,7 +116,17 @@ public class PartitionSwitchAppServiceTests
             .ReturnsAsync(CreateDataSource(configuration.ArchiveDataSourceId));
 
         var service = CreateService();
-    var request = new SwitchPartitionExecuteRequest(configurationId, "3", "Archive.Target", "SourceDb", false, true, "tester");
+    var request = new SwitchPartitionExecuteRequest(
+        configurationId,
+        configuration.ArchiveDataSourceId,
+        configuration.SchemaName,
+        configuration.TableName,
+        "3",
+        "Archive.Target",
+        "SourceDb",
+        false,
+        true,
+        "tester");
 
         var result = await service.ArchiveBySwitchAsync(request);
 
@@ -152,7 +182,17 @@ public class PartitionSwitchAppServiceTests
             .ReturnsAsync(PartitionSwitchAutoFixResult.Success(new[] { execution }));
 
         var service = CreateService();
-        var request = new SwitchPartitionAutoFixRequest(configurationId, "3", "Archive.Target", "SourceDb", false, "tester", new[] { "CreateTargetTable" });
+        var request = new SwitchPartitionAutoFixRequest(
+            configurationId,
+            configuration.ArchiveDataSourceId,
+            configuration.SchemaName,
+            configuration.TableName,
+            "3",
+            "Archive.Target",
+            "SourceDb",
+            false,
+            "tester",
+            new[] { "CreateTargetTable" });
 
         var result = await service.AutoFixAsync(request);
 
@@ -190,7 +230,17 @@ public class PartitionSwitchAppServiceTests
                 PartitionSwitchPlan.Empty));
 
         var service = CreateService();
-        var request = new SwitchPartitionAutoFixRequest(configurationId, "3", "Archive.Target", "SourceDb", false, "tester", new[] { "Unknown" });
+        var request = new SwitchPartitionAutoFixRequest(
+            configurationId,
+            configuration.ArchiveDataSourceId,
+            configuration.SchemaName,
+            configuration.TableName,
+            "3",
+            "Archive.Target",
+            "SourceDb",
+            false,
+            "tester",
+            new[] { "Unknown" });
 
         var result = await service.AutoFixAsync(request);
 
@@ -199,7 +249,15 @@ public class PartitionSwitchAppServiceTests
     }
 
     private PartitionSwitchAppService CreateService()
-        => new(configurationRepository.Object, inspectionService.Object, commandAppService.Object, auditRepository.Object, dataSourceRepository.Object, autoFixExecutor.Object, logger.Object);
+        => new(
+            configurationRepository.Object,
+            inspectionService.Object,
+            commandAppService.Object,
+            auditRepository.Object,
+            dataSourceRepository.Object,
+            metadataRepository.Object,
+            autoFixExecutor.Object,
+            logger.Object);
 
     private static PartitionSwitchInspectionResult CreateInspectionResult(bool canSwitch)
         => new(
