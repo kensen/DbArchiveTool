@@ -25,6 +25,9 @@ internal sealed class SqlPartitionCommandExecutor
     private readonly IDbConnectionFactory connectionFactory;
     private readonly ILogger<SqlPartitionCommandExecutor> logger;
 
+    /// <summary>适用于超大表 DDL 的命令超时（0 表示不限制）。</summary>
+    private const int LongRunningCommandTimeoutSeconds = 0;
+
     public SqlPartitionCommandExecutor(
         ISqlTemplateProvider templateProvider,
         ISqlExecutor sqlExecutor,
@@ -560,7 +563,8 @@ internal sealed class SqlPartitionCommandExecutor
                 connection, 
                 rowCountSql, 
                 new { SchemaName = configuration.SchemaName, TableName = configuration.TableName },
-                transaction: transaction);
+                transaction: transaction,
+                timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
             logger.LogInformation(
                 "开始将表 {Schema}.{Table} 转换为分区表（遵循 SQL Server 分区最佳实践），当前表总行数：{TotalRows:N0} 行...",
@@ -640,7 +644,8 @@ internal sealed class SqlPartitionCommandExecutor
                     var nullableCount = await sqlExecutor.QuerySingleAsync<int>(
                         connection,
                         $"SELECT COUNT(1) FROM [{configuration.SchemaName}].[{configuration.TableName}] WHERE [{configuration.PartitionColumn.Name}] IS NULL",
-                        transaction: transaction);
+                        transaction: transaction,
+                        timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                     if (nullableCount > 0)
                     {
@@ -696,7 +701,7 @@ internal sealed class SqlPartitionCommandExecutor
                 logger.LogInformation("  删除非聚集索引：{IndexName} ({Type})", index.IndexName, index.GetDescription());
                 logger.LogDebug("  执行 SQL: {Sql}", dropSql);
 
-                await sqlExecutor.ExecuteAsync(connection, dropSql, transaction: transaction, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connection, dropSql, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                 logger.LogInformation("  ✓ 已删除索引 {IndexName}", index.IndexName);
                 droppedIndexes.Add(index.IndexName);
             }
@@ -709,7 +714,7 @@ internal sealed class SqlPartitionCommandExecutor
             logger.LogInformation("  删除聚集索引：{IndexName} ({Type})", clusteredIndex.IndexName, clusteredIndex.GetDescription());
             logger.LogDebug("  执行 SQL: {Sql}", clusteredDropSql);
 
-            await sqlExecutor.ExecuteAsync(connection, clusteredDropSql, transaction: transaction, timeoutSeconds: 300);
+            await sqlExecutor.ExecuteAsync(connection, clusteredDropSql, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
             logger.LogInformation("  ✓ 已删除聚集索引 {IndexName}", clusteredIndex.IndexName);
             droppedIndexes.Add(clusteredIndex.IndexName);
 
@@ -720,7 +725,7 @@ internal sealed class SqlPartitionCommandExecutor
                 var alterSql = $"ALTER TABLE [{configuration.SchemaName}].[{configuration.TableName}] ALTER COLUMN [{configuration.PartitionColumn.Name}] {BuildColumnTypeDefinition(columnMetadata)} NOT NULL";
                 logger.LogDebug("  执行 SQL: {Sql}", alterSql);
                 
-                await sqlExecutor.ExecuteAsync(connection, alterSql, transaction: transaction, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connection, alterSql, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                 logger.LogInformation(
                     "  ✓ 已将分区列 {Schema}.{Table}.{Column} 转换为 NOT NULL。",
                     configuration.SchemaName,
@@ -741,7 +746,7 @@ internal sealed class SqlPartitionCommandExecutor
                 clusteredIndex.IndexName, configuration.PartitionSchemeName, configuration.PartitionColumn.Name);
             logger.LogDebug("  执行 SQL: {Sql}", clusteredCreateSql);
 
-            await sqlExecutor.ExecuteAsync(connection, clusteredCreateSql, transaction: transaction, timeoutSeconds: 1800);
+            await sqlExecutor.ExecuteAsync(connection, clusteredCreateSql, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
             logger.LogInformation("  ✓ 已重建聚集索引 {IndexName}，表已变为分区表", clusteredIndex.IndexName);
             recreatedIndexes.Add(clusteredIndex.IndexName);
 
@@ -759,7 +764,7 @@ internal sealed class SqlPartitionCommandExecutor
                 logger.LogInformation("  重建非聚集索引：{IndexName} ({Type})", index.IndexName, index.GetDescription());
                 logger.LogDebug("  执行 SQL: {Sql}", createSql);
 
-                await sqlExecutor.ExecuteAsync(connection, createSql, transaction: transaction, timeoutSeconds: 1800);
+                await sqlExecutor.ExecuteAsync(connection, createSql, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                 logger.LogInformation("  ✓ 已重建索引 {IndexName}", index.IndexName);
                 recreatedIndexes.Add(index.IndexName);
             }
@@ -784,7 +789,8 @@ internal sealed class SqlPartitionCommandExecutor
                 connection, 
                 finalRowCountSql,
                 new { SchemaName = configuration.SchemaName, TableName = configuration.TableName },
-                transaction: transaction);
+                transaction: transaction,
+                timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
             if (finalRowCount != totalRows)
             {
@@ -895,7 +901,7 @@ internal sealed class SqlPartitionCommandExecutor
                     connection,
                     script,
                     transaction: transaction,
-                    timeoutSeconds: 600); // 10分钟超时
+                    timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 await transaction.CommitAsync(cancellationToken);
 
@@ -950,7 +956,7 @@ internal sealed class SqlPartitionCommandExecutor
 
                 var script = RenderMergeScript(configuration, boundaryKey);
 
-                await sqlExecutor.ExecuteAsync(connection, script, transaction: transaction, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connection, script, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 await transaction.CommitAsync(cancellationToken);
 
@@ -1018,7 +1024,7 @@ internal sealed class SqlPartitionCommandExecutor
                 logger.LogDebug("分区切换脚本:\n{Script}", switchScript);
 
                 logger.LogInformation("阶段 3/3: 执行切换脚本并提交事务。");
-                await sqlExecutor.ExecuteAsync(connection, switchScript, transaction: transaction, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connection, switchScript, transaction: transaction, timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 await transaction.CommitAsync(cancellationToken);
 

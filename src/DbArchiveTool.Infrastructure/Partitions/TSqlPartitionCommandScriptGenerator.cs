@@ -41,6 +41,7 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
         {
             var boundary = newBoundaries[i];
             var literal = boundary.ToLiteral();
+            var literalForMessage = literal.Replace("'", "''");
             var varName = $"@ErrMsg_{i}";
 
             builder.AppendLine("BEGIN TRY");
@@ -52,7 +53,7 @@ internal sealed class TSqlPartitionCommandScriptGenerator : IPartitionCommandScr
             builder.AppendLine("BEGIN CATCH");
             builder.AppendLine("    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;");
             builder.AppendLine($"    DECLARE {varName} NVARCHAR(4000) = ERROR_MESSAGE();");
-            builder.AppendLine($"    RAISERROR ('分区拆分失败 (边界={literal}): %s', 16, 1, {varName});");
+            builder.AppendLine($"    RAISERROR ('分区拆分失败 (边界={literalForMessage}): %s', 16, 1, {varName});");
             builder.AppendLine("END CATCH");
             builder.AppendLine();
         }

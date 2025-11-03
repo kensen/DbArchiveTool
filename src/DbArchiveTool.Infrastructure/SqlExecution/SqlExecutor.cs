@@ -32,11 +32,12 @@ internal sealed class SqlExecutor : ISqlExecutor
         return await dbConnection.QueryAsync<T>(new CommandDefinition(sql, param, commandTimeout: timeoutSeconds));
     }
 
-    public async Task<T?> QuerySingleAsync<T>(string connection, string sql, object? param = null)
+    public async Task<T?> QuerySingleAsync<T>(string connection, string sql, object? param = null, int? timeoutSeconds = null)
     {
         using var dbConnection = CreateOpenConnection(connection);
         logger.LogDebug("Querying single SQL: {Sql}", sql);
-        return await dbConnection.QuerySingleOrDefaultAsync<T>(sql, param);
+        var definition = new CommandDefinition(sql, param, commandTimeout: timeoutSeconds);
+        return await dbConnection.QuerySingleOrDefaultAsync<T>(definition);
     }
 
     public async Task<int> ExecuteAsync(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null, int? timeoutSeconds = null)
@@ -55,11 +56,12 @@ internal sealed class SqlExecutor : ISqlExecutor
         return await connection.QueryAsync<T>(definition);
     }
 
-    public async Task<T?> QuerySingleAsync<T>(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null)
+    public async Task<T?> QuerySingleAsync<T>(IDbConnection connection, string sql, object? param = null, IDbTransaction? transaction = null, int? timeoutSeconds = null)
     {
         EnsureOpen(connection);
         logger.LogDebug("Querying single SQL: {Sql}", sql);
-        return await connection.QuerySingleOrDefaultAsync<T>(sql, param, transaction: transaction);
+        var definition = new CommandDefinition(sql, param, transaction, commandTimeout: timeoutSeconds);
+        return await connection.QuerySingleOrDefaultAsync<T>(definition);
     }
 
     private IDbConnection CreateOpenConnection(string connectionString)

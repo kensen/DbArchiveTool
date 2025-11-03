@@ -26,6 +26,9 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
     private readonly IPartitionAuditLogRepository auditLogRepository;
     private readonly ILogger<PartitionSwitchAutoFixExecutor> logger;
 
+    /// <summary>长时间运行的 DDL 操作使用的超时（0 表示不限制）。</summary>
+    private const int LongRunningCommandTimeoutSeconds = 0;
+
     public PartitionSwitchAutoFixExecutor(
         IDbConnectionFactory connectionFactory,
         ISqlExecutor sqlExecutor,
@@ -262,7 +265,7 @@ internal sealed class PartitionSwitchAutoFixExecutor : IPartitionSwitchAutoFixEx
             
             try
             {
-                await sqlExecutor.ExecuteAsync(targetConnection, indexScript, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(targetConnection, indexScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                 logger.LogInformation("已创建{IndexType} {IndexName}", 
                     index.IsPrimaryKey ? "主键" : "聚集索引", effectiveName);
             }
@@ -342,7 +345,8 @@ WHERE s.name = @Schema AND t.name = @Table AND p.index_id IN (0, 1) AND p.partit
                     Table = context.TargetTable,
                     PartitionNumber = partitionNumber
                 },
-                transaction: null);
+                transaction: null,
+                timeoutSeconds: LongRunningCommandTimeoutSeconds);
         }
         else
         {
@@ -361,7 +365,8 @@ WHERE s.name = @Schema AND t.name = @Table AND p.index_id IN (0, 1);";
                     Schema = context.TargetSchema,
                     Table = context.TargetTable
                 },
-                transaction: null);
+                transaction: null,
+                timeoutSeconds: LongRunningCommandTimeoutSeconds);
         }
 
         if (residualRowCount > 0)
@@ -438,7 +443,7 @@ COMMIT TRANSACTION;";
         }
 
         var script = $"UPDATE STATISTICS [{context.TargetSchema}].[{context.TargetTable}];";
-        await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: 120);
+    await sqlExecutor.ExecuteAsync(targetConnection, script, timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
         return new AutoFixStepOutcome(
             new PartitionSwitchAutoFixExecution(
@@ -558,7 +563,7 @@ COMMIT TRANSACTION;";
                     
                     try
                     {
-                        await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                        await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                         droppedIndexNames.Add(targetClusteredIndexName);
                         schemaExistingNames.Remove(targetClusteredIndexName);
                         logger.LogInformation("已删除聚集索引 {IndexName}", targetClusteredIndexName);
@@ -611,7 +616,7 @@ COMMIT TRANSACTION;";
 
                 try
                 {
-                    await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: 300);
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     createdIndexNames.Add(effectiveName);
                     logger.LogInformation("已创建聚集索引 {IndexName}", effectiveName);
                 }
@@ -644,7 +649,7 @@ COMMIT TRANSACTION;";
 
                 try
                 {
-                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     droppedIndexNames.Add(targetIndex.IndexName);
                     logger.LogInformation("已删除源表中不存在的索引 {IndexName}", targetIndex.IndexName);
                 }
@@ -671,7 +676,7 @@ COMMIT TRANSACTION;";
 
                 try
                 {
-                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: 300);
+                    await sqlExecutor.ExecuteAsync(connectionForTarget, dropScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     droppedIndexNames.Add(targetIndex.IndexName);
                     schemaExistingNames.Remove(targetIndex.IndexName);
                     logger.LogInformation("已删除索引 {IndexName}", targetIndex.IndexName);
@@ -759,7 +764,7 @@ COMMIT TRANSACTION;";
 
             try
             {
-                await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: 300);
+                await sqlExecutor.ExecuteAsync(connectionForTarget, indexScript, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                 createdIndexNames.Add(effectiveName);
                 logger.LogInformation("已创建索引 {IndexName}", effectiveName);
             }
@@ -1853,7 +1858,7 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
                     // 2.1 删除索引
                     var dropSql = $"DROP INDEX [{index.IndexName}] ON [{configuration.SchemaName}].[{configuration.TableName}];";
                     log.AppendLine($"  执行: {dropSql}");
-                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: 600);
+                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     droppedIndexes.Add(index.IndexName);
                     log.AppendLine($"  ✓ 索引已删除");
 
@@ -1866,7 +1871,7 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
                         configuration.PartitionSchemeName);
                     
                     log.AppendLine($"  执行: {createSql}");
-                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 600);
+                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     recreatedIndexes.Add(index.IndexName);
                     log.AppendLine($"  ✓ 索引已重建并对齐到分区方案");
                 }
@@ -1968,7 +1973,7 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
                     // 2.1 删除索引
                     var dropSql = $"DROP INDEX [{index.IndexName}] ON [{targetSchema}].[{targetTable}];";
                     log.AppendLine($"  执行: {dropSql}");
-                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: 600);
+                    await sqlExecutor.ExecuteAsync(connection, dropSql, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     droppedIndexes.Add(index.IndexName);
                     log.AppendLine($"  ✓ 索引已删除");
 
@@ -1981,7 +1986,7 @@ WHERE cc.parent_object_id = OBJECT_ID(@FullName)
                         configuration.PartitionSchemeName);
                     
                     log.AppendLine($"  执行: {createSql}");
-                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: 600);
+                    await sqlExecutor.ExecuteAsync(connection, createSql, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                     recreatedIndexes.Add(index.IndexName);
                     log.AppendLine($"  ✓ 索引已重建并对齐到分区方案");
                 }

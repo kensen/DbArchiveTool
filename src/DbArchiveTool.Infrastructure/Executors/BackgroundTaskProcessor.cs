@@ -33,6 +33,9 @@ internal sealed class BackgroundTaskProcessor
     private readonly IDbConnectionFactory connectionFactory;
     private readonly ILogger<BackgroundTaskProcessor> logger;
 
+    /// <summary>后台任务执行超大规模 DDL 时使用的无限超时。</summary>
+    private const int LongRunningCommandTimeoutSeconds = 0;
+
     public BackgroundTaskProcessor(
         IBackgroundTaskRepository taskRepository,
         IBackgroundTaskLogRepository logRepository,
@@ -1174,7 +1177,7 @@ internal sealed class BackgroundTaskProcessor
                     snapshot.DdlScript,
                     null,
                     null,
-                    timeoutSeconds: 300);
+                    timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 stepWatch.Stop();
 
@@ -1360,7 +1363,7 @@ internal sealed class BackgroundTaskProcessor
                     snapshot.DdlScript,
                     null,
                     null,
-                    timeoutSeconds: 600);  // 拆分操作可能需要更长时间
+                    timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 stepWatch.Stop();
 
@@ -1547,7 +1550,7 @@ internal sealed class BackgroundTaskProcessor
                     snapshot.DdlScript,
                     null,
                     null,
-                    timeoutSeconds: 600);
+                    timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 stepWatch.Stop();
 
@@ -1787,7 +1790,7 @@ WHERE s.name = @SchemaName
 
                         if (!string.IsNullOrWhiteSpace(rebuildSql))
                         {
-                            await sqlExecutor.ExecuteAsync(sourceConnection, rebuildSql, timeoutSeconds: 600);
+                            await sqlExecutor.ExecuteAsync(sourceConnection, rebuildSql, timeoutSeconds: LongRunningCommandTimeoutSeconds);
                             alignedCount++;
                             logger.LogInformation("已对齐索引 {IndexName} 到分区方案", index.IndexName);
                         }
@@ -1843,7 +1846,7 @@ WHERE s.name = @SchemaName
                     snapshot.DdlScript,
                     null,
                     null,
-                    timeoutSeconds: 600);  // 分区切换可能需要更长时间
+                    timeoutSeconds: LongRunningCommandTimeoutSeconds);
 
                 stepWatch.Stop();
 
