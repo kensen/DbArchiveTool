@@ -59,6 +59,12 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// <summary>是否为 Range Right 分区函数。</summary>
     public bool IsRangeRight { get; }
 
+    /// <summary>当前配置采用的归档方案类型。</summary>
+    public ArchiveMethodType ArchiveMethod { get; private set; }
+
+    /// <summary>关联的目标数据库配置标识。</summary>
+    public Guid? TargetDatabaseConfigId { get; private set; }
+
     /// <summary>指示该配置是否已经执行到数据库(一旦执行将不允许修改基础信息)。</summary>
     public bool IsCommitted { get; private set; }
 
@@ -119,6 +125,13 @@ public sealed class PartitionConfiguration : AggregateRoot
     /// <param name="existingBoundaries">数据库中已存在的分区边界集合。</param>
     /// <param name="existingFilegroupMappings">数据库中已存在的文件组映射。</param>
     /// <param name="safetyRule">安全规则配置。</param>
+    /// <param name="storageSettings">分区数据存放设置。</param>
+    /// <param name="targetTable">目标表信息。</param>
+    /// <param name="requirePartitionColumnNotNull">是否要求分区列强制为 NOT NULL。</param>
+    /// <param name="remarks">备注信息。</param>
+    /// <param name="isCommitted">是否已提交到数据库。</param>
+    /// <param name="archiveMethod">归档方案类型。</param>
+    /// <param name="targetDatabaseConfigId">目标数据库配置标识。</param>
     public PartitionConfiguration(
         Guid archiveDataSourceId,
         string schemaName,
@@ -136,7 +149,9 @@ public sealed class PartitionConfiguration : AggregateRoot
         PartitionTargetTable? targetTable = null,
         bool requirePartitionColumnNotNull = false,
         string? remarks = null,
-        bool isCommitted = false)
+        bool isCommitted = false,
+        ArchiveMethodType archiveMethod = ArchiveMethodType.PartitionSwitch,
+        Guid? targetDatabaseConfigId = null)
     {
         ArchiveDataSourceId = archiveDataSourceId != Guid.Empty ? archiveDataSourceId : throw new ArgumentException("数据源标识不能为空", nameof(archiveDataSourceId));
         SchemaName = string.IsNullOrWhiteSpace(schemaName) ? throw new ArgumentException("架构名不能为空", nameof(schemaName)) : schemaName.Trim();
@@ -153,6 +168,9 @@ public sealed class PartitionConfiguration : AggregateRoot
         RequirePartitionColumnNotNull = requirePartitionColumnNotNull;
         Remarks = string.IsNullOrWhiteSpace(remarks) ? null : remarks.Trim();
         IsCommitted = isCommitted;
+        ValidateArchiveMethodTargetPair(archiveMethod, targetDatabaseConfigId);
+        ArchiveMethod = archiveMethod;
+        TargetDatabaseConfigId = targetDatabaseConfigId;
 
         if (existingBoundaries is not null)
         {
@@ -187,6 +205,18 @@ public sealed class PartitionConfiguration : AggregateRoot
 
         IsCommitted = true;
         ExecutionStage = "Completed";
+        Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
+    }
+
+    /// <summary>更新归档方案与目标库配置。</summary>
+    /// <param name="method">新的归档方案类型。</param>
+    /// <param name="targetDatabaseConfigId">目标数据库配置标识。</param>
+    /// <param name="user">操作人。</param>
+    public void UpdateArchiveSettings(ArchiveMethodType method, Guid? targetDatabaseConfigId, string user)
+    {
+        ValidateArchiveMethodTargetPair(method, targetDatabaseConfigId);
+        ArchiveMethod = method;
+        TargetDatabaseConfigId = targetDatabaseConfigId;
         Touch(string.IsNullOrWhiteSpace(user) ? DefaultAuditUser : user);
     }
 
@@ -577,6 +607,24 @@ public sealed class PartitionConfiguration : AggregateRoot
             {
                 throw new InvalidOperationException("提供的初始分区边界顺序无效。");
             }
+        }
+    }
+
+    /// <summary>校验归档方案与目标库配置的组合是否合法。</summary>
+    /// <param name="method">归档方案类型。</param>
+    /// <param name="targetDatabaseConfigId">目标数据库配置标识。</param>
+    /// <exception cref="ArgumentException">组合不合法时抛出。</exception>
+    private static void ValidateArchiveMethodTargetPair(ArchiveMethodType method, Guid? targetDatabaseConfigId)
+    {
+        if (method == ArchiveMethodType.PartitionSwitch && targetDatabaseConfigId.HasValue && targetDatabaseConfigId.Value != Guid.Empty)
+        {
+            throw new ArgumentException("分区切换方案不应指定目标数据库配置。", nameof(targetDatabaseConfigId));
+        }
+
+        if ((method == ArchiveMethodType.Bcp || method == ArchiveMethodType.BulkCopy)
+            && (!targetDatabaseConfigId.HasValue || targetDatabaseConfigId.Value == Guid.Empty))
+        {
+            throw new ArgumentException("跨实例归档方案必须指定目标数据库配置。", nameof(targetDatabaseConfigId));
         }
     }
 
