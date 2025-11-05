@@ -1,0 +1,613 @@
+﻿using System.Diagnostics;
+using System.Text;
+using DbArchiveTool.Shared.Archive;
+using Microsoft.Extensions.Logging;
+using Microsoft.Data.SqlClient;
+
+namespace DbArchiveTool.Infrastructure.Executors;
+
+/// <summary>
+/// BCP 命令行工具执行器
+/// 封装 BCP 工具的调用,处理文件导出/导入、进度跟踪和清理
+/// </summary>
+public class BcpExecutor
+{
+    private readonly ILogger<BcpExecutor> _logger;
+
+    public BcpExecutor(ILogger<BcpExecutor> logger)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// 执行 BCP 归档(导出源数据到文件,再导入到目标)
+    /// </summary>
+    /// <param name="sourceConnectionString">源数据库连接字符串</param>
+    /// <param name="targetConnectionString">目标数据库连接字符串</param>
+    /// <param name="sourceQuery">源数据查询 SQL</param>
+    /// <param name="targetTable">目标表名 (格式: [schema].[table])</param>
+    /// <param name="options">BCP 执行选项</param>
+    /// <param name="progress">进度回调</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>BCP 执行结果</returns>
+    public async Task<BcpResult> ExecuteAsync(
+        string sourceConnectionString,
+        string targetConnectionString,
+        string sourceQuery,
+        string targetTable,
+        BcpOptions options,
+        IProgress<BulkCopyProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceConnectionString))
+        {
+            throw new ArgumentException("源连接字符串不能为空", nameof(sourceConnectionString));
+        }
+
+        if (string.IsNullOrWhiteSpace(targetConnectionString))
+        {
+            throw new ArgumentException("目标连接字符串不能为空", nameof(targetConnectionString));
+        }
+
+        if (string.IsNullOrWhiteSpace(sourceQuery))
+        {
+            throw new ArgumentException("源查询 SQL 不能为空", nameof(sourceQuery));
+        }
+
+        if (string.IsNullOrWhiteSpace(targetTable))
+        {
+            throw new ArgumentException("目标表名不能为空", nameof(targetTable));
+        }
+
+        var startTimeUtc = DateTime.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+        var totalRowsCopied = 0L;
+        string? tempFilePath = null;
+
+        try
+        {
+            // 1. 准备临时文件路径
+            var tempDir = string.IsNullOrWhiteSpace(options.TempDirectory)
+                ? Path.GetTempPath()
+                : options.TempDirectory;
+
+            tempFilePath = Path.Combine(tempDir, $"bcp_export_{Guid.NewGuid():N}.dat");
+
+            _logger.LogInformation(
+                "开始 BCP 归档: 目标表={TargetTable}, 临时文件={TempFile}",
+                targetTable, tempFilePath);
+
+            // 2. 执行 BCP 导出
+            var exportResult = await ExportDataAsync(
+                sourceConnectionString,
+                sourceQuery,
+                tempFilePath,
+                options,
+                cancellationToken);
+
+            if (!exportResult.Success)
+            {
+                return new BcpResult
+                {
+                    Succeeded = false,
+                    RowsCopied = 0,
+                    Duration = stopwatch.Elapsed,
+                    ErrorMessage = $"BCP 导出失败: {exportResult.ErrorMessage}",
+                    CommandOutput = exportResult.Output,
+                    StartTimeUtc = startTimeUtc,
+                    EndTimeUtc = DateTime.UtcNow
+                };
+            }
+
+            totalRowsCopied = exportResult.RowCount;
+
+            _logger.LogInformation(
+                "BCP 导出完成: {RowCount:N0} 行, 耗时={Duration}",
+                totalRowsCopied, exportResult.Duration);
+
+            // 3. 执行 BCP 导入
+            var importResult = await ImportDataAsync(
+                targetConnectionString,
+                targetTable,
+                tempFilePath,
+                options,
+                progress,
+                totalRowsCopied,
+                startTimeUtc,
+                cancellationToken);
+
+            if (!importResult.Success)
+            {
+                return new BcpResult
+                {
+                    Succeeded = false,
+                    RowsCopied = totalRowsCopied,
+                    Duration = stopwatch.Elapsed,
+                    ErrorMessage = $"BCP 导入失败: {importResult.ErrorMessage}",
+                    CommandOutput = $"Export:\n{exportResult.Output}\n\nImport:\n{importResult.Output}",
+                    TempFilePath = options.KeepTempFiles ? tempFilePath : null,
+                    StartTimeUtc = startTimeUtc,
+                    EndTimeUtc = DateTime.UtcNow
+                };
+            }
+
+            stopwatch.Stop();
+            var duration = stopwatch.Elapsed;
+            var throughput = duration.TotalSeconds > 0
+                ? totalRowsCopied / duration.TotalSeconds
+                : 0;
+
+            _logger.LogInformation(
+                "BCP 归档完成: 总行数={TotalRows:N0}, 总耗时={Duration}, 吞吐量={Throughput:N0} 行/秒",
+                totalRowsCopied, duration, throughput);
+
+            return new BcpResult
+            {
+                Succeeded = true,
+                RowsCopied = totalRowsCopied,
+                Duration = duration,
+                ThroughputRowsPerSecond = throughput,
+                CommandOutput = $"Export:\n{exportResult.Output}\n\nImport:\n{importResult.Output}",
+                TempFilePath = options.KeepTempFiles ? tempFilePath : null,
+                StartTimeUtc = startTimeUtc,
+                EndTimeUtc = DateTime.UtcNow
+            };
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+
+            _logger.LogError(
+                ex,
+                "BCP 归档失败: 已复制 {RowsCopied:N0} 行, 耗时={Duration}",
+                totalRowsCopied, stopwatch.Elapsed);
+
+            return new BcpResult
+            {
+                Succeeded = false,
+                RowsCopied = totalRowsCopied,
+                Duration = stopwatch.Elapsed,
+                ThroughputRowsPerSecond = stopwatch.Elapsed.TotalSeconds > 0
+                    ? totalRowsCopied / stopwatch.Elapsed.TotalSeconds
+                    : 0,
+                ErrorMessage = ex.Message,
+                TempFilePath = options.KeepTempFiles ? tempFilePath : null,
+                StartTimeUtc = startTimeUtc,
+                EndTimeUtc = DateTime.UtcNow
+            };
+        }
+        finally
+        {
+            // 4. 清理临时文件
+            if (!options.KeepTempFiles && !string.IsNullOrWhiteSpace(tempFilePath) && File.Exists(tempFilePath))
+            {
+                try
+                {
+                    File.Delete(tempFilePath);
+                    _logger.LogDebug("临时文件已删除: {TempFile}", tempFilePath);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "删除临时文件失败: {TempFile}", tempFilePath);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 执行 BCP 导出
+    /// </summary>
+    private async Task<BcpCommandResult> ExportDataAsync(
+        string connectionString,
+        string query,
+        string outputFile,
+        BcpOptions options,
+        CancellationToken cancellationToken)
+    {
+        var startTime = DateTime.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            // 构建 BCP 导出命令
+            // bcp "SELECT * FROM Table" queryout "file.dat" -c -S server -d database -U user -P password
+            var bcpPath = GetBcpToolPath(options);
+            var arguments = BuildExportArguments(connectionString, query, outputFile, options);
+
+            _logger.LogDebug("执行 BCP 导出: {BcpPath} {Arguments}", bcpPath, MaskPassword(arguments));
+
+            var result = await ExecuteBcpCommandAsync(bcpPath, arguments, cancellationToken);
+
+            stopwatch.Stop();
+
+            if (result.ExitCode != 0)
+            {
+                return new BcpCommandResult
+                {
+                    Success = false,
+                    Output = result.Output,
+                    ErrorMessage = $"BCP 进程退出码 {result.ExitCode}",
+                    Duration = stopwatch.Elapsed
+                };
+            }
+
+            // 解析导出的行数
+            var rowCount = ParseRowCountFromOutput(result.Output);
+
+            return new BcpCommandResult
+            {
+                Success = true,
+                Output = result.Output,
+                RowCount = rowCount,
+                Duration = stopwatch.Elapsed
+            };
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogError(ex, "BCP 导出执行异常");
+
+            return new BcpCommandResult
+            {
+                Success = false,
+                ErrorMessage = ex.Message,
+                Duration = stopwatch.Elapsed
+            };
+        }
+    }
+
+    /// <summary>
+    /// 执行 BCP 导入
+    /// </summary>
+    private async Task<BcpCommandResult> ImportDataAsync(
+        string connectionString,
+        string tableName,
+        string inputFile,
+        BcpOptions options,
+        IProgress<BulkCopyProgress>? progress,
+        long totalRows,
+        DateTime startTimeUtc,
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            // 构建 BCP 导入命令
+            // bcp [schema].[table] in "file.dat" -c -S server -d database -U user -P password -b batchsize
+            var bcpPath = GetBcpToolPath(options);
+            var arguments = BuildImportArguments(connectionString, tableName, inputFile, options);
+
+            _logger.LogDebug("执行 BCP 导入: {BcpPath} {Arguments}", bcpPath, MaskPassword(arguments));
+
+            var result = await ExecuteBcpCommandAsync(
+                bcpPath,
+                arguments,
+                cancellationToken,
+                (output) => ReportProgress(output, progress, totalRows, startTimeUtc));
+
+            stopwatch.Stop();
+
+            if (result.ExitCode != 0)
+            {
+                return new BcpCommandResult
+                {
+                    Success = false,
+                    Output = result.Output,
+                    ErrorMessage = $"BCP 进程退出码 {result.ExitCode}",
+                    Duration = stopwatch.Elapsed
+                };
+            }
+
+            // 解析导入的行数
+            var rowCount = ParseRowCountFromOutput(result.Output);
+
+            return new BcpCommandResult
+            {
+                Success = true,
+                Output = result.Output,
+                RowCount = rowCount,
+                Duration = stopwatch.Elapsed
+            };
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            _logger.LogError(ex, "BCP 导入执行异常");
+
+            return new BcpCommandResult
+            {
+                Success = false,
+                ErrorMessage = ex.Message,
+                Duration = stopwatch.Elapsed
+            };
+        }
+    }
+
+    /// <summary>
+    /// 执行 BCP 命令
+    /// </summary>
+    private async Task<ProcessResult> ExecuteBcpCommandAsync(
+        string bcpPath,
+        string arguments,
+        CancellationToken cancellationToken,
+        Action<string>? outputCallback = null)
+    {
+        var outputBuilder = new StringBuilder();
+        var errorBuilder = new StringBuilder();
+
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = bcpPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            }
+        };
+
+        process.OutputDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                outputBuilder.AppendLine(e.Data);
+                outputCallback?.Invoke(e.Data);
+            }
+        };
+
+        process.ErrorDataReceived += (sender, e) =>
+        {
+            if (!string.IsNullOrEmpty(e.Data))
+            {
+                errorBuilder.AppendLine(e.Data);
+            }
+        };
+
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
+        await process.WaitForExitAsync(cancellationToken);
+
+        var output = outputBuilder.ToString();
+        var error = errorBuilder.ToString();
+
+        return new ProcessResult
+        {
+            ExitCode = process.ExitCode,
+            Output = string.IsNullOrWhiteSpace(error) ? output : $"{output}\n{error}"
+        };
+    }
+
+    /// <summary>
+    /// 构建 BCP 导出命令参数
+    /// </summary>
+    private string BuildExportArguments(
+        string connectionString,
+        string query,
+        string outputFile,
+        BcpOptions options)
+    {
+        var connParams = ParseConnectionString(connectionString);
+        var args = new StringBuilder();
+
+        // 查询语句(需要引号)
+        args.Append($"\"{query}\" queryout \"{outputFile}\"");
+
+        // 数据格式
+        if (options.UseNativeFormat)
+        {
+            args.Append(" -n"); // 原生格式
+        }
+        else if (options.UseUnicode)
+        {
+            args.Append(" -w"); // Unicode 字符格式
+        }
+        else
+        {
+            args.Append(" -c"); // 字符格式
+        }
+
+        // 服务器和数据库
+        args.Append($" -S \"{connParams.Server}\"");
+        args.Append($" -d \"{connParams.Database}\"");
+
+        // 身份验证
+        if (connParams.UseIntegratedSecurity)
+        {
+            args.Append(" -T"); // 集成身份验证
+        }
+        else
+        {
+            args.Append($" -U \"{connParams.UserId}\"");
+            args.Append($" -P \"{connParams.Password}\"");
+        }
+
+        // 其他选项
+        args.Append($" -m {options.MaxErrors}"); // 最大错误数
+
+        return args.ToString();
+    }
+
+    /// <summary>
+    /// 构建 BCP 导入命令参数
+    /// </summary>
+    private string BuildImportArguments(
+        string connectionString,
+        string tableName,
+        string inputFile,
+        BcpOptions options)
+    {
+        var connParams = ParseConnectionString(connectionString);
+        var args = new StringBuilder();
+
+        // 表名和文件
+        args.Append($"{tableName} in \"{inputFile}\"");
+
+        // 数据格式
+        if (options.UseNativeFormat)
+        {
+            args.Append(" -n");
+        }
+        else if (options.UseUnicode)
+        {
+            args.Append(" -w");
+        }
+        else
+        {
+            args.Append(" -c");
+        }
+
+        // 服务器和数据库
+        args.Append($" -S \"{connParams.Server}\"");
+        args.Append($" -d \"{connParams.Database}\"");
+
+        // 身份验证
+        if (connParams.UseIntegratedSecurity)
+        {
+            args.Append(" -T");
+        }
+        else
+        {
+            args.Append($" -U \"{connParams.UserId}\"");
+            args.Append($" -P \"{connParams.Password}\"");
+        }
+
+        // 批次大小
+        args.Append($" -b {options.BatchSize}");
+
+        // 其他选项
+        args.Append($" -m {options.MaxErrors}");
+
+        return args.ToString();
+    }
+
+    /// <summary>
+    /// 获取 BCP 工具路径
+    /// </summary>
+    private string GetBcpToolPath(BcpOptions options)
+    {
+        if (!string.IsNullOrWhiteSpace(options.BcpToolPath))
+        {
+            return options.BcpToolPath;
+        }
+
+        // 使用系统 PATH 中的 bcp.exe
+        return "bcp";
+    }
+
+    /// <summary>
+    /// 解析连接字符串
+    /// </summary>
+    private ConnectionParams ParseConnectionString(string connectionString)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString);
+
+        return new ConnectionParams
+        {
+            Server = builder.DataSource,
+            Database = builder.InitialCatalog,
+            UseIntegratedSecurity = builder.IntegratedSecurity,
+            UserId = builder.UserID,
+            Password = builder.Password
+        };
+    }
+
+    /// <summary>
+    /// 从 BCP 输出解析行数
+    /// </summary>
+    private long ParseRowCountFromOutput(string output)
+    {
+        // BCP 输出格式: "1000 rows copied."
+        // 或: "Clock Time (ms.) Total     : 1234  Average : (123.45 rows per sec.)"
+        var match = System.Text.RegularExpressions.Regex.Match(output, @"(\d+)\s+rows?\s+copied", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (match.Success && long.TryParse(match.Groups[1].Value, out var rowCount))
+        {
+            return rowCount;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// 报告进度
+    /// </summary>
+    private void ReportProgress(
+        string output,
+        IProgress<BulkCopyProgress>? progress,
+        long totalRows,
+        DateTime startTimeUtc)
+    {
+        if (progress == null)
+        {
+            return;
+        }
+
+        // 尝试从输出解析当前行数
+        var currentRows = ParseRowCountFromOutput(output);
+        if (currentRows > 0)
+        {
+            var elapsed = DateTime.UtcNow - startTimeUtc;
+            var throughput = elapsed.TotalSeconds > 0 ? currentRows / elapsed.TotalSeconds : 0;
+            var percentComplete = totalRows > 0 ? Math.Min(100.0, (double)currentRows / totalRows * 100) : 0;
+
+            progress.Report(new BulkCopyProgress
+            {
+                RowsCopied = currentRows,
+                PercentComplete = percentComplete,
+                StartTimeUtc = startTimeUtc,
+                CurrentThroughput = throughput
+            });
+        }
+    }
+
+    /// <summary>
+    /// 屏蔽密码用于日志记录
+    /// </summary>
+    private string MaskPassword(string arguments)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(
+            arguments,
+            @"-P\s+""[^""]*""",
+            "-P \"***\"",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    }
+
+    /// <summary>
+    /// 连接参数
+    /// </summary>
+    private class ConnectionParams
+    {
+        public string Server { get; set; } = string.Empty;
+        public string Database { get; set; } = string.Empty;
+        public bool UseIntegratedSecurity { get; set; }
+        public string UserId { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// BCP 命令执行结果
+    /// </summary>
+    private class BcpCommandResult
+    {
+        public bool Success { get; set; }
+        public string Output { get; set; } = string.Empty;
+        public string? ErrorMessage { get; set; }
+        public long RowCount { get; set; }
+        public TimeSpan Duration { get; set; }
+    }
+
+    /// <summary>
+    /// 进程执行结果
+    /// </summary>
+    private class ProcessResult
+    {
+        public int ExitCode { get; set; }
+        public string Output { get; set; } = string.Empty;
+    }
+}

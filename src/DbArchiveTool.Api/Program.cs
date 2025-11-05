@@ -1,8 +1,11 @@
 using System.Reflection;
 using System.Text.Json.Serialization;
 using DbArchiveTool.Application;
+using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Infrastructure;
 using DbArchiveTool.Infrastructure.Persistence;
+using Hangfire;
+using Hangfire.SqlServer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -36,6 +39,31 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddApplicationLayer();
 builder.Services.AddInfrastructureLayer(builder.Configuration);
 
+// 配置 Hangfire
+var hangfireConnectionString = builder.Configuration.GetConnectionString("ArchiveDatabase") ??
+                                "Server=localhost;Database=DbArchiveTool;Trusted_Connection=True;TrustServerCertificate=True";
+
+builder.Services.AddHangfire(configuration => configuration
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseSqlServerStorage(hangfireConnectionString, new SqlServerStorageOptions
+    {
+        CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+        SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+        QueuePollInterval = TimeSpan.Zero,
+        UseRecommendedIsolationLevel = true,
+        DisableGlobalLocks = true,
+        SchemaName = "Hangfire"
+    }));
+
+builder.Services.AddHangfireServer(options =>
+{
+    options.WorkerCount = Environment.ProcessorCount * 2;
+    options.Queues = new[] { "archive", "default" };
+    options.ServerName = $"{Environment.MachineName}-archive";
+});
+
 var app = builder.Build();
 
 await EnsureDatabaseAsync(app.Services, app.Logger);
@@ -48,6 +76,26 @@ if (app.Environment.IsDevelopment())
         options.SwaggerEndpoint("/swagger/v1/swagger.json", "DbArchiveTool API v1");
     });
 }
+
+// 配置 Hangfire Dashboard
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = new[] { new DbArchiveTool.Api.HangfireAuthorizationFilter() },
+    DisplayStorageConnectionString = false,
+    DashboardTitle = "归档任务调度中心"
+});
+
+// 配置定时任务示例(根据实际需求调整)
+// 每天凌晨2点执行所有启用的归档任务
+RecurringJob.AddOrUpdate<IArchiveJobService>(
+    "daily-archive-all",
+    "archive", // 队列名称
+    service => service.ExecuteAllEnabledArchiveJobsAsync(),
+    Cron.Daily(2), // 每天凌晨2点
+    new RecurringJobOptions
+    {
+        TimeZone = TimeZoneInfo.Local
+    });
 
 app.UseHttpsRedirection();
 

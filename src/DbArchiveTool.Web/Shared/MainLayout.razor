@@ -34,10 +34,13 @@
                 <Icon Type="file-search" />
                 日志审计
             </MenuItem>
-
-            <MenuItem Key="/tasks" Disabled>
-                <Icon Type="file-text" />
-                归档任务（规划中）
+            <MenuItem Key="/archive-jobs" OnClick="@(() => NavigateTo("/archive-jobs"))">
+                <Icon Type="clock-circle" />
+                归档任务
+            </MenuItem>
+            <MenuItem Key="/archive-configurations" OnClick="@(() => NavigateTo("/archive-configurations"))">
+                <Icon Type="setting" />
+                归档配置
             </MenuItem>
         </Menu>
     </Sider>

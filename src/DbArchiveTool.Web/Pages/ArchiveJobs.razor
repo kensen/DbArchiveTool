@@ -1,0 +1,465 @@
+﻿@page "/archive-jobs"
+@attribute [ReuseTabsPage(Title = "归档任务监控", Closable = true)]
+@using DbArchiveTool.Web.Services
+@using DbArchiveTool.Web.Models
+@inject IHangfireMonitorService HangfireMonitor
+
+<PageContainer Title="归档任务监控">
+    <Extra>
+        <Space>
+            <SpaceItem>
+                <Button Type="@ButtonType.Primary" Icon="reload" Loading="@_loading" OnClick="RefreshAsync">刷新</Button>
+            </SpaceItem>
+            <SpaceItem>
+                <Switch @bind-Checked="@_autoRefresh" CheckedChildren="自动刷新" UnCheckedChildren="手动刷新" />
+            </SpaceItem>
+        </Space>
+    </Extra>
+    <ChildContent>
+        <GridRow Gutter="16" Style="margin-bottom: 16px;">
+            <!-- 统计卡片 -->
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="已入队" Value="@_statistics.EnqueuedCount" Suffix="个" ValueStyle="color: #1890ff;" />
+                </Card>
+            </GridCol>
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="已调度" Value="@_statistics.ScheduledCount" Suffix="个" ValueStyle="color: #52c41a;" />
+                </Card>
+            </GridCol>
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="执行中" Value="@_statistics.ProcessingCount" Suffix="个" ValueStyle="color: #faad14;" />
+                </Card>
+            </GridCol>
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="已成功" Value="@_statistics.SucceededCount" Suffix="个" ValueStyle="color: #52c41a;" />
+                </Card>
+            </GridCol>
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="已失败" Value="@_statistics.FailedCount" Suffix="个" ValueStyle="color: #f5222d;" />
+                </Card>
+            </GridCol>
+            <GridCol Xs="24" Sm="12" Md="6" Lg="4">
+                <Card>
+                    <Statistic Title="定时任务" Value="@_statistics.RecurringJobCount" Suffix="个" ValueStyle="color: #722ed1;" />
+                </Card>
+            </GridCol>
+        </GridRow>
+
+        <Tabs @bind-ActiveKey="@_activeTab" OnChange="OnTabChange">
+            <!-- 任务列表 -->
+            <TabPane Key="jobs" Tab="任务列表">
+                <Card Size="@CardSize.Small" Style="margin-bottom: 16px;">
+                    <Space>
+                        <SpaceItem>
+                            <Select TItem="string"
+                                    TItemValue="string"
+                                    @bind-Value="@_selectedStatus"
+                                    Placeholder="全部状态"
+                                    AllowClear
+                                    Style="width: 150px;">
+                                <SelectOptions>
+                                    <SelectOption TItem="string" TItemValue="string" Value="@("enqueued")" Label="已入队" />
+                                    <SelectOption TItem="string" TItemValue="string" Value="@("scheduled")" Label="已调度" />
+                                    <SelectOption TItem="string" TItemValue="string" Value="@("processing")" Label="执行中" />
+                                    <SelectOption TItem="string" TItemValue="string" Value="@("succeeded")" Label="已成功" />
+                                    <SelectOption TItem="string" TItemValue="string" Value="@("failed")" Label="已失败" />
+                                </SelectOptions>
+                            </Select>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Button Type="@ButtonType.Primary" OnClick="ApplyFilterAsync">查询</Button>
+                        </SpaceItem>
+                    </Space>
+                </Card>
+
+                <Card>
+                    <Table TItem="HangfireJobModel"
+                           DataSource="@_jobs.Items"
+                           Loading="@_loading"
+                           Size="@TableSize.Small"
+                           Bordered
+                           @bind-PageIndex="_pageIndex"
+                           @bind-PageSize="_pageSize"
+                           Total="@_totalJobs"
+                           OnPageIndexChange="OnPageChangeAsync"
+                           OnPageSizeChange="OnPageChangeAsync">
+                        <PropertyColumn Property="@(j => j.JobId)" Title="任务ID" Width="200px">
+                            <Template>
+                                <Text Code>@context.JobId[..Math.Min(16, context.JobId.Length)]...</Text>
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.Status)" Title="状态" Width="100px">
+                            <Template>
+                                <Tag Color="@GetStatusColor(context.Status)">
+                                    @GetStatusText(context.Status)
+                                </Tag>
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.MethodName)" Title="方法名称" />
+                        <PropertyColumn Property="@(j => j.QueueName)" Title="队列" Width="100px">
+                            <Template>
+                                @(context.QueueName ?? "-")
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.CreatedAtUtc)" Title="创建时间" Width="180px">
+                            <Template>
+                                @context.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.ScheduledAtUtc)" Title="预计执行" Width="180px">
+                            <Template>
+                                @(context.ScheduledAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.DurationSeconds)" Title="耗时" Width="100px">
+                            <Template>
+                                @(context.DurationSeconds.HasValue ? $"{context.DurationSeconds.Value:F2}s" : "-")
+                            </Template>
+                        </PropertyColumn>
+                        <ActionColumn Title="操作" Width="200px">
+                            <Space Size="@("small")">
+                                <SpaceItem>
+                                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ShowDetailAsync(context.JobId))">详情</Button>
+                                </SpaceItem>
+                                @if (context.Status == "Failed")
+                                {
+                                    <SpaceItem>
+                                        <Popconfirm Title="确定要重新执行此任务吗?"
+                                                    OnConfirm="@(() => RequeueJobAsync(context.JobId))"
+                                                    OkText="确定"
+                                                    CancelText="取消">
+                                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small">重试</Button>
+                                        </Popconfirm>
+                                    </SpaceItem>
+                                }
+                                @if (context.Status != "Processing")
+                                {
+                                    <SpaceItem>
+                                        <Popconfirm Title="确定要删除此任务吗?"
+                                                    OnConfirm="@(() => DeleteJobAsync(context.JobId))"
+                                                    OkText="确定"
+                                                    CancelText="取消">
+                                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
+                                        </Popconfirm>
+                                    </SpaceItem>
+                                }
+                            </Space>
+                        </ActionColumn>
+                    </Table>
+                </Card>
+            </TabPane>
+
+            <!-- 定时任务 -->
+            <TabPane Key="recurring" Tab="定时任务">
+                <Card>
+                    <Table TItem="HangfireRecurringJobModel"
+                           DataSource="@_recurringJobs"
+                           Loading="@_loading"
+                           Size="@TableSize.Small"
+                           Bordered>
+                        <PropertyColumn Property="@(j => j.Id)" Title="任务ID" />
+                        <PropertyColumn Property="@(j => j.MethodName)" Title="方法名称" />
+                        <PropertyColumn Property="@(j => j.Cron)" Title="Cron表达式">
+                            <Template>
+                                <Text Code>@context.Cron</Text>
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.QueueName)" Title="队列" Width="100px">
+                            <Template>
+                                @(context.QueueName ?? "default")
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.NextExecutionUtc)" Title="下次执行" Width="180px">
+                            <Template>
+                                @(context.NextExecutionUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.LastExecutionUtc)" Title="最后执行" Width="180px">
+                            <Template>
+                                @(context.LastExecutionUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                            </Template>
+                        </PropertyColumn>
+                        <ActionColumn Title="操作" Width="200px">
+                            <Space Size="@("small")">
+                                <SpaceItem>
+                                    <Popconfirm Title="确定要立即执行此任务吗?"
+                                                OnConfirm="@(() => TriggerRecurringJobAsync(context.Id))"
+                                                OkText="确定"
+                                                CancelText="取消">
+                                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small">立即执行</Button>
+                                    </Popconfirm>
+                                </SpaceItem>
+                                <SpaceItem>
+                                    <Popconfirm Title="确定要移除此定时任务吗?"
+                                                OnConfirm="@(() => RemoveRecurringJobAsync(context.Id))"
+                                                OkText="确定"
+                                                CancelText="取消">
+                                        <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>移除</Button>
+                                    </Popconfirm>
+                                </SpaceItem>
+                            </Space>
+                        </ActionColumn>
+                    </Table>
+                </Card>
+            </TabPane>
+        </Tabs>
+    </ChildContent>
+</PageContainer>
+
+<!-- 任务详情抽屉 -->
+<Drawer Closable
+        Width="720"
+        Visible="@_detailDrawerVisible"
+        Title="@("任务详情")"
+        OnClose="@(() => _detailDrawerVisible = false)">
+    @if (_jobDetail != null)
+    {
+        <Descriptions Bordered Column="2" Size="@DescriptionsSize.Small">
+            <DescriptionsItem Title="任务ID" Span="2">
+                <Text Code>@_jobDetail.JobId</Text>
+            </DescriptionsItem>
+            <DescriptionsItem Title="状态">
+                <Tag Color="@GetStatusColor(_jobDetail.Status)">
+                    @GetStatusText(_jobDetail.Status)
+                </Tag>
+            </DescriptionsItem>
+            <DescriptionsItem Title="方法名称">@_jobDetail.MethodName</DescriptionsItem>
+            <DescriptionsItem Title="队列">@(_jobDetail.QueueName ?? "default")</DescriptionsItem>
+            <DescriptionsItem Title="重试次数">@_jobDetail.RetryCount</DescriptionsItem>
+            <DescriptionsItem Title="创建时间">@_jobDetail.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</DescriptionsItem>
+            <DescriptionsItem Title="开始时间">@(_jobDetail.StartedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</DescriptionsItem>
+            <DescriptionsItem Title="结束时间">@(_jobDetail.FinishedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</DescriptionsItem>
+            <DescriptionsItem Title="执行耗时">@(_jobDetail.DurationSeconds.HasValue ? $"{_jobDetail.DurationSeconds.Value:F2}秒" : "-")</DescriptionsItem>
+            @if (_jobDetail.ParsedArguments.Any())
+            {
+                <DescriptionsItem Title="任务参数" Span="2">
+                    @foreach (var arg in _jobDetail.ParsedArguments)
+                    {
+                        <div><strong>@arg.Key:</strong> @arg.Value</div>
+                    }
+                </DescriptionsItem>
+            }
+            @if (!string.IsNullOrWhiteSpace(_jobDetail.FailureReason))
+            {
+                <DescriptionsItem Title="失败原因" Span="2">
+                    <Alert Type="@AlertType.Error" Message="@_jobDetail.FailureReason" ShowIcon="true" />
+                </DescriptionsItem>
+            }
+        </Descriptions>
+
+        @if (_jobDetail.StateHistory.Any())
+        {
+            <Divider>状态历史</Divider>
+            <Timeline>
+                @foreach (var state in _jobDetail.StateHistory)
+                {
+                    <TimelineItem Color="@GetStatusColor(state.StateName)">
+                        <div style="margin-bottom: 8px;">
+                            <Space Size="@("small")">
+                                <SpaceItem>
+                                    <Tag Color="@GetStatusColor(state.StateName)">@state.StateName</Tag>
+                                </SpaceItem>
+                                <SpaceItem>
+                                    <Text Type="@TextElementType.Secondary">@state.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</Text>
+                                </SpaceItem>
+                            </Space>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(state.Reason))
+                        {
+                            <div>@state.Reason</div>
+                        }
+                    </TimelineItem>
+                }
+            </Timeline>
+        }
+    }
+    else
+    {
+        <div style="text-align: center; padding: 40px;">
+            <Spin />
+        </div>
+    }
+</Drawer>
+
+@code {
+    private bool _loading = false;
+    private bool _autoRefresh = true;
+    private System.Threading.Timer? _refreshTimer;
+
+    private string _activeTab = "jobs";
+    private string? _selectedStatus;
+    
+    // 任务列表
+    private PagedResult<HangfireJobModel> _jobs = new();
+    private int _pageIndex = 1;
+    private int _pageSize = 20;
+    private int _totalJobs = 0;
+
+    // 定时任务列表
+    private List<HangfireRecurringJobModel> _recurringJobs = new();
+
+    // 统计信息
+    private HangfireStatisticsModel _statistics = new();
+
+    // 任务详情
+    private bool _detailDrawerVisible = false;
+    private HangfireJobDetailModel? _jobDetail;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+        StartAutoRefresh();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            // 获取统计信息
+            _statistics = await HangfireMonitor.GetStatisticsAsync();
+
+            // 根据当前标签页加载数据
+            if (_activeTab == "jobs")
+            {
+                await LoadJobsAsync();
+            }
+            else if (_activeTab == "recurring")
+            {
+                await LoadRecurringJobsAsync();
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task LoadJobsAsync()
+    {
+        _jobs = await HangfireMonitor.GetJobsAsync(_selectedStatus, _pageIndex - 1, _pageSize);
+        _totalJobs = (int)_jobs.TotalCount;
+    }
+
+    private async Task LoadRecurringJobsAsync()
+    {
+        _recurringJobs = await HangfireMonitor.GetRecurringJobsAsync();
+    }
+
+    private async Task ApplyFilterAsync()
+    {
+        _pageIndex = 1;
+        await LoadJobsAsync();
+    }
+
+    private async Task OnPageChangeAsync()
+    {
+        await LoadJobsAsync();
+    }
+
+    private async Task OnTabChange(string activeKey)
+    {
+        _activeTab = activeKey;
+        await RefreshAsync();
+    }
+
+    private async Task ShowDetailAsync(string jobId)
+    {
+        _jobDetail = await HangfireMonitor.GetJobDetailAsync(jobId);
+        _detailDrawerVisible = true;
+    }
+
+    private async Task DeleteJobAsync(string jobId)
+    {
+        var success = await HangfireMonitor.DeleteJobAsync(jobId);
+        if (success)
+        {
+            await RefreshAsync();
+        }
+    }
+
+    private async Task RequeueJobAsync(string jobId)
+    {
+        var success = await HangfireMonitor.RequeueJobAsync(jobId);
+        if (success)
+        {
+            await RefreshAsync();
+        }
+    }
+
+    private async Task TriggerRecurringJobAsync(string recurringJobId)
+    {
+        var success = await HangfireMonitor.TriggerRecurringJobAsync(recurringJobId);
+        if (success)
+        {
+            await Task.Delay(1000); // 等待任务创建
+            await RefreshAsync();
+        }
+    }
+
+    private async Task RemoveRecurringJobAsync(string recurringJobId)
+    {
+        var success = await HangfireMonitor.RemoveRecurringJobAsync(recurringJobId);
+        if (success)
+        {
+            await RefreshAsync();
+        }
+    }
+
+    private void StartAutoRefresh()
+    {
+        _refreshTimer?.Dispose();
+        if (_autoRefresh)
+        {
+            _refreshTimer = new System.Threading.Timer(async _ =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    if (_autoRefresh)
+                    {
+                        await RefreshAsync();
+                        StateHasChanged();
+                    }
+                });
+            }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        }
+    }
+
+    private string GetStatusColor(string status)
+    {
+        return status?.ToLower() switch
+        {
+            "enqueued" => "cyan",
+            "scheduled" => "blue",
+            "processing" => "processing",
+            "succeeded" => "success",
+            "failed" => "error",
+            "deleted" => "default",
+            _ => "default"
+        };
+    }
+
+    private string GetStatusText(string status)
+    {
+        return status?.ToLower() switch
+        {
+            "enqueued" => "已入队",
+            "scheduled" => "已调度",
+            "processing" => "执行中",
+            "succeeded" => "已成功",
+            "failed" => "已失败",
+            "deleted" => "已删除",
+            _ => status ?? "未知"
+        };
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer?.Dispose();
+    }
+}

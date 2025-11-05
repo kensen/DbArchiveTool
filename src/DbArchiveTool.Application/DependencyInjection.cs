@@ -1,4 +1,5 @@
 using DbArchiveTool.Application.AdminUsers;
+using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Application.ArchiveTasks;
 using DbArchiveTool.Application.DataSources;
 using DbArchiveTool.Application.Partitions;
@@ -28,6 +29,7 @@ public static class DependencyInjection
         services.AddScoped<IPartitionSwitchAppService, PartitionSwitchAppService>();
         services.AddScoped<PartitionValueParser>();
         services.AddScoped<IPasswordHasher<AdminUser>, PasswordHasher<AdminUser>>();
+        services.AddScoped<IArchiveJobService, ArchiveJobService>();
 
         return services;
     }

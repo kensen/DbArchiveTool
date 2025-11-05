@@ -1,6 +1,8 @@
 using AntDesign;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Hangfire;
+using Hangfire.SqlServer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +25,30 @@ builder.Services.AddScoped<DbArchiveTool.Web.Core.PartitionPageState>();
 builder.Services.AddScoped<DbArchiveTool.Web.Services.AdminUserApiClient>();
 builder.Services.AddScoped<DbArchiveTool.Web.Services.ArchiveDataSourceApiClient>();
 
+// 配置 Hangfire 存储(只读模式,用于监控)
+var hangfireConnectionString = builder.Configuration.GetConnectionString("HangfireDatabase");
+if (string.IsNullOrWhiteSpace(hangfireConnectionString))
+{
+    throw new InvalidOperationException("未在配置中找到 ConnectionStrings:HangfireDatabase。");
+}
+
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseSqlServerStorage(hangfireConnectionString, new SqlServerStorageOptions
+    {
+        CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+        SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+        QueuePollInterval = TimeSpan.Zero,
+        UseRecommendedIsolationLevel = true,
+        DisableGlobalLocks = true,
+        SchemaName = "Hangfire"
+    }));
+
+// 注册 Hangfire 监控服务
+builder.Services.AddScoped<DbArchiveTool.Web.Services.IHangfireMonitorService, DbArchiveTool.Web.Services.HangfireMonitorService>();
+
 var archiveApiBaseUrl = builder.Configuration["ArchiveApi:BaseUrl"];
 if (string.IsNullOrWhiteSpace(archiveApiBaseUrl))
 {
@@ -41,8 +67,22 @@ builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfigurationApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.BackgroundTaskApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionArchiveApiClient>(configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.ArchiveConfigurationApiClient>(configureClient);
 
 var app = builder.Build();
+
+// 初始化 Hangfire JobStorage (不启动 Server,仅用于监控)
+GlobalConfiguration.Configuration.UseSqlServerStorage(
+    hangfireConnectionString,
+    new SqlServerStorageOptions
+    {
+        CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+        SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+        QueuePollInterval = TimeSpan.Zero,
+        UseRecommendedIsolationLevel = true,
+        DisableGlobalLocks = true,
+        SchemaName = "Hangfire"
+    });
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())

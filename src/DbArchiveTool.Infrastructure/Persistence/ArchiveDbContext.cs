@@ -1,4 +1,5 @@
 using DbArchiveTool.Domain.AdminUsers;
+using DbArchiveTool.Domain.ArchiveConfigurations;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
@@ -17,6 +18,7 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<ArchiveTask> ArchiveTasks => Set<ArchiveTask>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
+    public DbSet<ArchiveConfiguration> ArchiveConfigurations => Set<ArchiveConfiguration>();
     public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
     public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
     public DbSet<BackgroundTask> BackgroundTasks => Set<BackgroundTask>();
@@ -60,6 +62,33 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.TargetDatabaseName).HasMaxLength(128);
             builder.Property(x => x.TargetUserName).HasMaxLength(64);
             builder.Property(x => x.TargetPassword).HasMaxLength(256);
+        });
+
+        modelBuilder.Entity<ArchiveConfiguration>(builder =>
+        {
+            builder.ToTable("ArchiveConfiguration");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.Name).IsRequired().HasMaxLength(100);
+            builder.Property(x => x.Description).HasMaxLength(256);
+            builder.Property(x => x.DataSourceId).IsRequired();
+            builder.Property(x => x.SourceSchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.SourceTableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.IsPartitionedTable).IsRequired();
+            builder.Property(x => x.PartitionConfigurationId);
+            builder.Property(x => x.ArchiveFilterColumn).HasMaxLength(128);
+            builder.Property(x => x.ArchiveFilterCondition).HasMaxLength(512);
+            builder.Property(x => x.ArchiveMethod).IsRequired();
+            builder.Property(x => x.DeleteSourceDataAfterArchive).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.BatchSize).IsRequired().HasDefaultValue(10000);
+            builder.Property(x => x.IsEnabled).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.LastExecutionTimeUtc);
+            builder.Property(x => x.LastExecutionStatus).HasMaxLength(50);
+            builder.Property(x => x.LastArchivedRowCount);
+
+            // 唯一索引:同一数据源下同一张表只能有一个归档配置
+            builder.HasIndex(x => new { x.DataSourceId, x.SourceSchemaName, x.SourceTableName })
+                .IsUnique()
+                .HasFilter("[IsDeleted] = 0");
         });
 
         modelBuilder.Entity<PartitionCommand>(builder =>

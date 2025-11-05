@@ -1,10 +1,13 @@
 using System;
 using DbArchiveTool.Application.Abstractions;
+using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Domain.AdminUsers;
+using DbArchiveTool.Domain.ArchiveConfigurations;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Infrastructure.Archives;
 using DbArchiveTool.Infrastructure.DataSources;
 using DbArchiveTool.Infrastructure.Executors;
 using DbArchiveTool.Infrastructure.Partitions;
@@ -40,6 +43,7 @@ public static class DependencyInjection
         services.AddScoped<IArchiveTaskRepository, ArchiveTaskRepository>();
         services.AddScoped<IAdminUserRepository, AdminUserRepository>();
         services.AddScoped<IDataSourceRepository, DataSourceRepository>();
+        services.AddScoped<IArchiveConfigurationRepository, ArchiveConfigurationRepository>();
         services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
         services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
@@ -57,6 +61,12 @@ public static class DependencyInjection
         services.AddScoped<SqlPartitionQueryService>();
         services.AddScoped<SqlPartitionCommandExecutor>();
         services.AddScoped<BackgroundTaskProcessor>();
+        services.AddScoped<IPartitionMetadataService, PartitionMetadataService>();
+        services.AddScoped<SqlBulkCopyExecutor>();
+        services.AddScoped<BcpExecutor>();
+        services.AddScoped<OptimizedPartitionArchiveExecutor>();
+        services.AddScoped<IArchiveExecutor, ArchiveExecutorAdapter>();
+        services.AddScoped<ArchiveOrchestrationService>();
         services.AddScoped<IPartitionCommandExecutor, SplitPartitionCommandExecutor>();
         services.AddScoped<IPartitionCommandExecutor, MergePartitionCommandExecutor>();
         services.AddScoped<IPartitionCommandExecutor, SwitchPartitionCommandExecutor>();

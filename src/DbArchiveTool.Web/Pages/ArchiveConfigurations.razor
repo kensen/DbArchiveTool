@@ -1,0 +1,561 @@
+﻿@page "/archive-configurations"
+@attribute [ReuseTabsPage(Title = "归档配置管理", Closable = true)]
+@using DbArchiveTool.Web.Services
+@using DbArchiveTool.Shared.Archive
+@inject ArchiveConfigurationApiClient ArchiveConfigApi
+@inject ArchiveDataSourceApiClient DataSourceApi
+@inject MessageService Message
+
+<PageContainer Title="归档配置管理">
+    <Extra>
+        <Space>
+            <SpaceItem>
+                <Button Type="@ButtonType.Primary" Icon="plus" OnClick="ShowCreateModalAsync">新建配置</Button>
+            </SpaceItem>
+            <SpaceItem>
+                <Button Type="@ButtonType.Default" Icon="reload" Loading="@_loading" OnClick="RefreshAsync">刷新</Button>
+            </SpaceItem>
+        </Space>
+    </Extra>
+    <ChildContent>
+        <Card Size="@CardSize.Small" Style="margin-bottom: 16px;">
+            <Space>
+                <SpaceItem>
+                    <Select TItem="Guid?"
+                            TItemValue="Guid?"
+                            @bind-Value="@_selectedDataSourceId"
+                            Placeholder="全部数据源"
+                            AllowClear
+                            Style="width: 200px;">
+                        <SelectOptions>
+                            @if (_dataSources != null)
+                            {
+                                @foreach (var ds in _dataSources)
+                                {
+                                    <SelectOption TItem="Guid?" TItemValue="Guid?" Value="@ds.Id" Label="@ds.ServerName" />
+                                }
+                            }
+                        </SelectOptions>
+                    </Select>
+                </SpaceItem>
+                <SpaceItem>
+                    <Select TItem="bool?"
+                            TItemValue="bool?"
+                            @bind-Value="@_selectedEnabled"
+                            Placeholder="全部状态"
+                            AllowClear
+                            Style="width: 150px;">
+                        <SelectOptions>
+                            <SelectOption TItem="bool?" TItemValue="bool?" Value="@(true)" Label="已启用" />
+                            <SelectOption TItem="bool?" TItemValue="bool?" Value="@(false)" Label="已禁用" />
+                        </SelectOptions>
+                    </Select>
+                </SpaceItem>
+                <SpaceItem>
+                    <Button Type="@ButtonType.Primary" OnClick="ApplyFilterAsync">查询</Button>
+                </SpaceItem>
+            </Space>
+        </Card>
+
+        <Card>
+            <Table TItem="ArchiveConfigurationListItemModel"
+                   DataSource="@_configurations"
+                   Loading="@_loading"
+                   Size="@TableSize.Small"
+                   Bordered>
+                <PropertyColumn Property="@(c => c.Name)" Title="配置名称" Width="200px" />
+                <PropertyColumn Property="@(c => c.SourceTableName)" Title="源表" Width="200px">
+                    <Template>
+                        <Text Code>@($"{context.SourceSchemaName}.{context.SourceTableName}")</Text>
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.IsPartitionedTable)" Title="分区表" Width="80px">
+                    <Template>
+                        @if (context.IsPartitionedTable)
+                        {
+                            <Tag Color="@("blue")">是</Tag>
+                        }
+                        else
+                        {
+                            <Tag Color="@("default")">否</Tag>
+                        }
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.ArchiveMethod)" Title="归档方式" Width="120px">
+                    <Template>
+                        @GetArchiveMethodText(context.ArchiveMethod)
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.IsEnabled)" Title="状态" Width="80px">
+                    <Template>
+                        @if (context.IsEnabled)
+                        {
+                            <Tag Color="@("success")">已启用</Tag>
+                        }
+                        else
+                        {
+                            <Tag Color="@("default")">已禁用</Tag>
+                        }
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.LastExecutionTimeUtc)" Title="上次执行" Width="180px">
+                    <Template>
+                        @(context.LastExecutionTimeUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.LastArchivedRowCount)" Title="上次归档行数" Width="120px">
+                    <Template>
+                        @(context.LastArchivedRowCount?.ToString("N0") ?? "-")
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.Description)" Title="描述" Ellipsis />
+                <ActionColumn Title="操作" Width="280px">
+                    <Space Size="@("small")">
+                        <SpaceItem>
+                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ShowDetailAsync(context.Id))">详情</Button>
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" OnClick="@(() => ShowEditModalAsync(context.Id))">编辑</Button>
+                        </SpaceItem>
+                        <SpaceItem>
+                            @if (context.IsEnabled)
+                            {
+                                <Popconfirm Title="确定要禁用此配置吗?"
+                                            OnConfirm="@(() => DisableConfigAsync(context.Id))"
+                                            OkText="确定"
+                                            CancelText="取消">
+                                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small">禁用</Button>
+                                </Popconfirm>
+                            }
+                            else
+                            {
+                                <Popconfirm Title="确定要启用此配置吗?"
+                                            OnConfirm="@(() => EnableConfigAsync(context.Id))"
+                                            OkText="确定"
+                                            CancelText="取消">
+                                    <Button Type="@ButtonType.Link" Size="@ButtonSize.Small">启用</Button>
+                                </Popconfirm>
+                            }
+                        </SpaceItem>
+                        <SpaceItem>
+                            <Popconfirm Title="确定要删除此配置吗?"
+                                        OnConfirm="@(() => DeleteConfigAsync(context.Id))"
+                                        OkText="确定"
+                                        CancelText="取消">
+                                <Button Type="@ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
+                            </Popconfirm>
+                        </SpaceItem>
+                    </Space>
+                </ActionColumn>
+            </Table>
+        </Card>
+    </ChildContent>
+</PageContainer>
+
+<!-- 详情抽屉 -->
+<Drawer Closable
+        Width="720"
+        Visible="@_detailDrawerVisible"
+        Title="@("归档配置详情")"
+        OnClose="@(() => _detailDrawerVisible = false)">
+    @if (_selectedConfig != null)
+    {
+        <Descriptions Bordered Column="2" Size="@DescriptionsSize.Small">
+            <DescriptionsItem Title="配置名称" Span="2">
+                <Text Strong>@_selectedConfig.Name</Text>
+            </DescriptionsItem>
+            <DescriptionsItem Title="描述" Span="2">
+                @(_selectedConfig.Description ?? "-")
+            </DescriptionsItem>
+            <DescriptionsItem Title="源表">
+                <Text Code>@($"{_selectedConfig.SourceSchemaName}.{_selectedConfig.SourceTableName}")</Text>
+            </DescriptionsItem>
+            <DescriptionsItem Title="分区表">
+                @(_selectedConfig.IsPartitionedTable ? "是" : "否")
+            </DescriptionsItem>
+            <DescriptionsItem Title="归档方式">
+                @GetArchiveMethodText(_selectedConfig.ArchiveMethod)
+            </DescriptionsItem>
+            <DescriptionsItem Title="批次大小">
+                @_selectedConfig.BatchSize.ToString("N0")
+            </DescriptionsItem>
+            <DescriptionsItem Title="删除源数据">
+                @(_selectedConfig.DeleteSourceDataAfterArchive ? "是" : "否")
+            </DescriptionsItem>
+            <DescriptionsItem Title="状态">
+                @if (_selectedConfig.IsEnabled)
+                {
+                    <Tag Color="@("success")">已启用</Tag>
+                }
+                else
+                {
+                    <Tag Color="@("default")">已禁用</Tag>
+                }
+            </DescriptionsItem>
+            @if (!string.IsNullOrWhiteSpace(_selectedConfig.ArchiveFilterColumn))
+            {
+                <DescriptionsItem Title="过滤列" Span="2">
+                    <Text Code>@_selectedConfig.ArchiveFilterColumn</Text>
+                </DescriptionsItem>
+            }
+            @if (!string.IsNullOrWhiteSpace(_selectedConfig.ArchiveFilterCondition))
+            {
+                <DescriptionsItem Title="过滤条件" Span="2">
+                    <Text Code>@_selectedConfig.ArchiveFilterCondition</Text>
+                </DescriptionsItem>
+            }
+            <DescriptionsItem Title="上次执行时间">
+                @(_selectedConfig.LastExecutionTimeUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+            </DescriptionsItem>
+            <DescriptionsItem Title="上次执行状态">
+                @(_selectedConfig.LastExecutionStatus ?? "-")
+            </DescriptionsItem>
+            <DescriptionsItem Title="上次归档行数" Span="2">
+                @(_selectedConfig.LastArchivedRowCount?.ToString("N0") ?? "-")
+            </DescriptionsItem>
+            <DescriptionsItem Title="创建时间">
+                @_selectedConfig.CreatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            </DescriptionsItem>
+            <DescriptionsItem Title="创建人">
+                @_selectedConfig.CreatedBy
+            </DescriptionsItem>
+            <DescriptionsItem Title="更新时间">
+                @_selectedConfig.UpdatedAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            </DescriptionsItem>
+            <DescriptionsItem Title="更新人">
+                @_selectedConfig.UpdatedBy
+            </DescriptionsItem>
+        </Descriptions>
+    }
+</Drawer>
+
+<!-- 创建/编辑模态框 -->
+<Modal Title="@(_isEditMode ? "编辑归档配置" : "新建归档配置")"
+       Visible="@_modalVisible"
+       OnOk="SaveConfigAsync"
+       OnCancel="@(() => _modalVisible = false)"
+       OkText="@("保存")"
+       CancelText="@("取消")"
+       Width="800">
+    <Form Model="@_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+        <FormItem Label="配置名称" Required>
+            <Input @bind-Value="@_formModel.Name" Placeholder="请输入配置名称" />
+        </FormItem>
+        <FormItem Label="描述">
+            <TextArea @bind-Value="@_formModel.Description" Placeholder="请输入描述" Rows="3" />
+        </FormItem>
+        <FormItem Label="数据源" Required>
+            <Select TItem="Guid"
+                    TItemValue="Guid"
+                    @bind-Value="@_formModel.DataSourceId"
+                    Placeholder="请选择数据源"
+                    Style="width: 100%;">
+                <SelectOptions>
+                    @if (_dataSources != null)
+                    {
+                        @foreach (var ds in _dataSources)
+                        {
+                            <SelectOption TItem="Guid" TItemValue="Guid" Value="@ds.Id" Label="@ds.ServerName" />
+                        }
+                    }
+                </SelectOptions>
+            </Select>
+        </FormItem>
+        <FormItem Label="源架构名">
+            <Input @bind-Value="@_formModel.SourceSchemaName" Placeholder="默认: dbo" />
+        </FormItem>
+        <FormItem Label="源表名" Required>
+            <Input @bind-Value="@_formModel.SourceTableName" Placeholder="请输入源表名" />
+        </FormItem>
+        <FormItem Label="分区表">
+            <Switch @bind-Checked="@_formModel.IsPartitionedTable" />
+        </FormItem>
+        <FormItem Label="归档方式">
+            <RadioGroup @bind-Value="@_formModel.ArchiveMethod">
+                <Radio RadioButton Value="@ArchiveMethod.PartitionSwitch">分区切换</Radio>
+                <Radio RadioButton Value="@ArchiveMethod.BulkCopy">BulkCopy</Radio>
+                <Radio RadioButton Value="@ArchiveMethod.Bcp">BCP</Radio>
+            </RadioGroup>
+        </FormItem>
+        <FormItem Label="过滤列">
+            <Input @bind-Value="@_formModel.ArchiveFilterColumn" Placeholder="例如: CreateTime" />
+        </FormItem>
+        <FormItem Label="过滤条件">
+            <Input @bind-Value="@_formModel.ArchiveFilterCondition" Placeholder="例如: CreateTime < DATEADD(year, -1, GETDATE())" />
+        </FormItem>
+        <FormItem Label="批次大小">
+            <AntDesign.InputNumber @bind-Value="@_formModel.BatchSize" Min="100" Max="100000" Step="1000" Style="width: 100%;" />
+        </FormItem>
+        <FormItem Label="删除源数据">
+            <Switch @bind-Checked="@_formModel.DeleteSourceDataAfterArchive" />
+        </FormItem>
+    </Form>
+</Modal>
+
+@code {
+    private bool _loading = false;
+    private List<ArchiveConfigurationListItemModel> _configurations = new();
+    private List<DataSourceModel> _dataSources = new();
+
+    // 筛选
+    private Guid? _selectedDataSourceId;
+    private bool? _selectedEnabled;
+
+    // 详情
+    private bool _detailDrawerVisible = false;
+    private ArchiveConfigurationDetailModel? _selectedConfig;
+
+    // 创建/编辑
+    private bool _modalVisible = false;
+    private bool _isEditMode = false;
+    private Guid _editingConfigId;
+    private ConfigFormModel _formModel = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSourcesAsync();
+        await RefreshAsync();
+    }
+
+    private async Task LoadDataSourcesAsync()
+    {
+        try
+        {
+            var result = await DataSourceApi.GetAsync();
+            if (result.IsSuccess)
+            {
+                _dataSources = result.Value?.Select(ds => new DataSourceModel
+                {
+                    Id = ds.Id,
+                    ServerName = $"{ds.ServerAddress}:{ds.ServerPort}/{ds.DatabaseName}"
+                }).ToList() ?? new List<DataSourceModel>();
+            }
+            else
+            {
+                Message.Error($"加载数据源失败: {result.Error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载数据源失败: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await LoadConfigurationsAsync();
+    }
+
+    private async Task LoadConfigurationsAsync()
+    {
+        _loading = true;
+        try
+        {
+            _configurations = await ArchiveConfigApi.GetAllAsync(_selectedDataSourceId, _selectedEnabled);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载归档配置失败: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ApplyFilterAsync()
+    {
+        await LoadConfigurationsAsync();
+    }
+
+    private async Task ShowDetailAsync(Guid id)
+    {
+        try
+        {
+            _selectedConfig = await ArchiveConfigApi.GetByIdAsync(id);
+            _detailDrawerVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置详情失败: {ex.Message}");
+        }
+    }
+
+    private void ShowCreateModalAsync()
+    {
+        _isEditMode = false;
+        _formModel = new ConfigFormModel
+        {
+            SourceSchemaName = "dbo",
+            ArchiveMethod = ArchiveMethod.PartitionSwitch,
+            BatchSize = 10000,
+            DeleteSourceDataAfterArchive = true
+        };
+        _modalVisible = true;
+    }
+
+    private async Task ShowEditModalAsync(Guid id)
+    {
+        try
+        {
+            var config = await ArchiveConfigApi.GetByIdAsync(id);
+            if (config == null)
+            {
+                Message.Error("配置不存在");
+                return;
+            }
+
+            _isEditMode = true;
+            _editingConfigId = id;
+            _formModel = new ConfigFormModel
+            {
+                Name = config.Name,
+                Description = config.Description,
+                DataSourceId = config.DataSourceId,
+                SourceSchemaName = config.SourceSchemaName,
+                SourceTableName = config.SourceTableName,
+                IsPartitionedTable = config.IsPartitionedTable,
+                PartitionConfigurationId = config.PartitionConfigurationId,
+                ArchiveFilterColumn = config.ArchiveFilterColumn,
+                ArchiveFilterCondition = config.ArchiveFilterCondition,
+                ArchiveMethod = config.ArchiveMethod,
+                DeleteSourceDataAfterArchive = config.DeleteSourceDataAfterArchive,
+                BatchSize = config.BatchSize
+            };
+            _modalVisible = true;
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载配置失败: {ex.Message}");
+        }
+    }
+
+    private async Task SaveConfigAsync()
+    {
+        try
+        {
+            if (_isEditMode)
+            {
+                var updateModel = new UpdateArchiveConfigurationModel
+                {
+                    Name = _formModel.Name,
+                    Description = _formModel.Description,
+                    DataSourceId = _formModel.DataSourceId,
+                    SourceSchemaName = _formModel.SourceSchemaName,
+                    SourceTableName = _formModel.SourceTableName,
+                    IsPartitionedTable = _formModel.IsPartitionedTable,
+                    PartitionConfigurationId = _formModel.PartitionConfigurationId,
+                    ArchiveFilterColumn = _formModel.ArchiveFilterColumn,
+                    ArchiveFilterCondition = _formModel.ArchiveFilterCondition,
+                    ArchiveMethod = _formModel.ArchiveMethod,
+                    DeleteSourceDataAfterArchive = _formModel.DeleteSourceDataAfterArchive,
+                    BatchSize = _formModel.BatchSize
+                };
+                await ArchiveConfigApi.UpdateAsync(_editingConfigId, updateModel);
+                Message.Success("更新成功");
+            }
+            else
+            {
+                var createModel = new CreateArchiveConfigurationModel
+                {
+                    Name = _formModel.Name,
+                    Description = _formModel.Description,
+                    DataSourceId = _formModel.DataSourceId,
+                    SourceSchemaName = _formModel.SourceSchemaName,
+                    SourceTableName = _formModel.SourceTableName,
+                    IsPartitionedTable = _formModel.IsPartitionedTable,
+                    PartitionConfigurationId = _formModel.PartitionConfigurationId,
+                    ArchiveFilterColumn = _formModel.ArchiveFilterColumn,
+                    ArchiveFilterCondition = _formModel.ArchiveFilterCondition,
+                    ArchiveMethod = _formModel.ArchiveMethod,
+                    DeleteSourceDataAfterArchive = _formModel.DeleteSourceDataAfterArchive,
+                    BatchSize = _formModel.BatchSize
+                };
+                await ArchiveConfigApi.CreateAsync(createModel);
+                Message.Success("创建成功");
+            }
+
+            _modalVisible = false;
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"保存失败: {ex.Message}");
+        }
+    }
+
+    private async Task EnableConfigAsync(Guid id)
+    {
+        try
+        {
+            await ArchiveConfigApi.EnableAsync(id);
+            Message.Success("启用成功");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"启用失败: {ex.Message}");
+        }
+    }
+
+    private async Task DisableConfigAsync(Guid id)
+    {
+        try
+        {
+            await ArchiveConfigApi.DisableAsync(id);
+            Message.Success("禁用成功");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"禁用失败: {ex.Message}");
+        }
+    }
+
+    private async Task DeleteConfigAsync(Guid id)
+    {
+        try
+        {
+            await ArchiveConfigApi.DeleteAsync(id);
+            Message.Success("删除成功");
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"删除失败: {ex.Message}");
+        }
+    }
+
+    private string GetArchiveMethodText(ArchiveMethod method)
+    {
+        return method switch
+        {
+            ArchiveMethod.PartitionSwitch => "分区切换",
+            ArchiveMethod.BulkCopy => "BulkCopy",
+            ArchiveMethod.Bcp => "BCP",
+            _ => method.ToString()
+        };
+    }
+
+    private class ConfigFormModel
+    {
+        public string Name { get; set; } = string.Empty;
+        public string? Description { get; set; }
+        public Guid DataSourceId { get; set; }
+        public string SourceSchemaName { get; set; } = "dbo";
+        public string SourceTableName { get; set; } = string.Empty;
+        public bool IsPartitionedTable { get; set; }
+        public Guid? PartitionConfigurationId { get; set; }
+        public string? ArchiveFilterColumn { get; set; }
+        public string? ArchiveFilterCondition { get; set; }
+        public ArchiveMethod ArchiveMethod { get; set; } = ArchiveMethod.PartitionSwitch;
+        public bool DeleteSourceDataAfterArchive { get; set; } = true;
+        public int BatchSize { get; set; } = 10000;
+    }
+
+    private class DataSourceModel
+    {
+        public Guid Id { get; set; }
+        public string ServerName { get; set; } = string.Empty;
+    }
+}
