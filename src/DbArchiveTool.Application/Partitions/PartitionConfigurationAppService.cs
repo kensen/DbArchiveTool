@@ -666,8 +666,8 @@ internal sealed class PartitionConfigurationAppService : IPartitionConfiguration
             var configIds = configurations.Select(c => c.Id).ToHashSet();
             var allTasks = await executionTaskRepository.ListRecentAsync(dataSourceId, 1000, cancellationToken);
             var taskLookup = allTasks
-                .Where(t => configIds.Contains(t.PartitionConfigurationId))
-                .GroupBy(t => t.PartitionConfigurationId)
+                .Where(t => t.PartitionConfigurationId.HasValue && configIds.Contains(t.PartitionConfigurationId.Value))
+                .GroupBy(t => t.PartitionConfigurationId!.Value)
                 .ToDictionary(
                     g => g.Key,
                     g => g.OrderByDescending(t => t.CreatedAtUtc).First());

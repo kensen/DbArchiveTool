@@ -1,5 +1,7 @@
-﻿using AntDesign;
+using AntDesign;
+using DbArchiveTool.Application.DataSources;
 using DbArchiveTool.Application.Partitions;
+using DbArchiveTool.Shared.Archive;
 using DbArchiveTool.Web.Core;
 using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
@@ -43,6 +45,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	[Inject] private PartitionConfigurationApiClient PartitionConfigApi { get; set; } = default!;
 	[Inject] private PartitionArchiveApiClient PartitionArchiveApi { get; set; } = default!;
 	[Inject] private ArchiveDataSourceApiClient DataSourceApi { get; set; } = default!;
+	[Inject] private ArchiveConfigurationApiClient ArchiveConfigApi { get; set; } = default!;
 	[Inject] private MessageService Message { get; set; } = default!;
 	[Inject] private AdminSessionState AdminSession { get; set; } = default!;
 	[Inject] private ILogger<PartitionArchiveWizard> Logger { get; set; } = default!;
@@ -51,6 +54,11 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	private readonly List<PartitionConfigurationOption> _configurationOptions = new();
 	private PartitionConfigurationOption? _selectedConfiguration;
 	private PartitionConfigurationDetailModel? _selectedConfigurationDetail;
+	
+	// 归档配置相关字段
+	private ArchiveConfigurationDetailModel? _loadedArchiveConfig;
+	private ArchiveDataSourceDto? _currentDataSource;
+	private bool _loadingArchiveConfig;
 	private bool _initializing;
 	private bool _loadingConfigurations;
 	private bool _inspectionLoading;
@@ -60,6 +68,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	private int _currentStep;
 	private ArchiveMode _selectedMode = ArchiveMode.Switch;
 	private PartitionSwitchInspectionResultDto? _inspectionResult;
+	private ArchiveInspectionResultDto? _bcpInspectionResult;
+	private ArchiveInspectionResultDto? _bulkCopyInspectionResult;
 	private PartitionSwitchAutoFixResultDto? _autoFixResult;
 	private readonly List<AutoFixOptionState> _autoFixOptions = new();
 	private string? _executionPreviewMarkdown;
@@ -120,6 +130,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		_currentStep = 0;
 		_selectedMode = ArchiveMode.Switch;
 		_inspectionResult = null;
+		_bcpInspectionResult = null;
+		_bulkCopyInspectionResult = null;
 		_autoFixResult = null;
 		_autoFixOptions.Clear();
 		_executionPreviewMarkdown = null;
@@ -295,6 +307,265 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		StateHasChanged();
 	}
 
+	/// <summary>
+	/// 归档模式切换事件处理
+	/// </summary>
+	private async Task OnArchiveModeChangedAsync(ArchiveMode newMode)
+	{
+		if (_selectedMode == newMode)
+		{
+			return;
+		}
+
+		_selectedMode = newMode;
+		Logger.LogInformation("归档模式切换: {NewMode}", newMode);
+
+		// 对于BCP和BulkCopy模式,尝试加载已保存的归档配置
+		if (newMode == ArchiveMode.Bcp || newMode == ArchiveMode.BulkCopy)
+		{
+			await LoadArchiveConfigurationAsync(newMode);
+		}
+		else
+		{
+			// Switch模式清空归档配置
+			_loadedArchiveConfig = null;
+		}
+
+		StateHasChanged();
+	}
+
+	/// <summary>
+	/// 加载归档配置(自动加载已保存配置或从数据源自动填充)
+	/// </summary>
+	private async Task LoadArchiveConfigurationAsync(ArchiveMode archiveMode)
+	{
+		_loadingArchiveConfig = true;
+		_loadedArchiveConfig = null;
+		_currentDataSource = null;
+
+		try
+		{
+			Logger.LogInformation("开始加载归档配置: Mode={Mode}, DataSourceId={DataSourceId}, Schema={Schema}, Table={Table}",
+				archiveMode, DataSourceId, SchemaName, TableName);
+
+			// 同时加载 DataSource 信息以显示服务器地址
+			await LoadDataSourceInfoAsync();
+
+			// 查询已保存的归档配置
+			var configs = await ArchiveConfigApi.GetAllAsync(DataSourceId, isEnabled: true);
+			if (configs != null && configs.Any())
+			{
+				// 根据架构名、表名和归档方法查找匹配的配置
+				var targetMethod = ToArchiveMethod(archiveMode);
+				var matchingConfig = configs.FirstOrDefault(c =>
+					string.Equals(c.SourceSchemaName, SchemaName, StringComparison.OrdinalIgnoreCase) &&
+					string.Equals(c.SourceTableName, TableName, StringComparison.OrdinalIgnoreCase) &&
+					c.ArchiveMethod == targetMethod);
+
+				if (matchingConfig != null)
+				{
+					Logger.LogInformation("找到匹配的归档配置: ConfigId={ConfigId}, Name={Name}",
+						matchingConfig.Id, matchingConfig.Name);
+
+					// 加载完整配置详情
+					var detail = await ArchiveConfigApi.GetByIdAsync(matchingConfig.Id);
+					if (detail != null)
+					{
+						_loadedArchiveConfig = detail;
+						Logger.LogInformation("成功加载归档配置详情");
+
+						// 将配置填充到表单中
+						PopulateFormFromArchiveConfig(_loadedArchiveConfig, archiveMode);
+
+						Message.Success($"已自动加载归档配置: {_loadedArchiveConfig.Name}");
+					}
+					else
+					{
+						Logger.LogWarning("加载归档配置详情失败");
+					}
+				}
+				else
+				{
+					Logger.LogInformation("未找到匹配的归档配置,将从数据源自动填充默认值");
+					await AutoFillFromDataSourceAsync();
+				}
+			}
+			else
+			{
+				Logger.LogInformation("没有可用的归档配置,将从数据源自动填充默认值");
+				await AutoFillFromDataSourceAsync();
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "加载归档配置失败");
+			Message.Error($"加载归档配置失败: {ex.Message}");
+		}
+		finally
+		{
+			_loadingArchiveConfig = false;
+		}
+	}
+
+	/// <summary>
+	/// 自动保存归档配置(在执行前保存,便于下次归档时自动加载)
+	/// </summary>
+	private async Task SaveArchiveConfigurationAsync()
+	{
+		try
+		{
+			Logger.LogInformation("开始保存归档配置: Mode={Mode}, DataSourceId={DataSourceId}, Schema={Schema}, Table={Table}",
+				_selectedMode, DataSourceId, SchemaName, TableName);
+
+			// 如果已经加载了配置,则更新;否则创建新配置
+			if (_loadedArchiveConfig != null)
+			{
+				// 更新现有配置
+				var updateModel = new UpdateArchiveConfigurationModel
+				{
+					Name = _loadedArchiveConfig.Name,
+					Description = _loadedArchiveConfig.Description,
+					DataSourceId = DataSourceId,
+					SourceSchemaName = SchemaName,
+					SourceTableName = TableName,
+					IsPartitionedTable = false, // 暂不支持分区表归档
+					PartitionConfigurationId = null,
+					ArchiveFilterColumn = null,
+					ArchiveFilterCondition = null,
+					ArchiveMethod = ToArchiveMethod(_selectedMode),
+					DeleteSourceDataAfterArchive = true,
+					BatchSize = _selectedMode == ArchiveMode.Bcp ? _form.BcpBatchSize : _form.BulkCopyBatchSize
+				};
+
+				await ArchiveConfigApi.UpdateAsync(_loadedArchiveConfig.Id, updateModel);
+				Logger.LogInformation("成功更新归档配置: ConfigId={ConfigId}", _loadedArchiveConfig.Id);
+			}
+			else
+			{
+				// 创建新配置
+				var configName = $"{SchemaName}.{TableName}_{(_selectedMode == ArchiveMode.Bcp ? "BCP" : "BulkCopy")}_{DateTime.Now:yyyyMMdd_HHmmss}";
+				var createModel = new CreateArchiveConfigurationModel
+				{
+					Name = configName,
+					Description = $"自动创建的{(_selectedMode == ArchiveMode.Bcp ? "BCP" : "BulkCopy")}归档配置",
+					DataSourceId = DataSourceId,
+					SourceSchemaName = SchemaName,
+					SourceTableName = TableName,
+					IsPartitionedTable = false,
+					PartitionConfigurationId = null,
+					ArchiveFilterColumn = null,
+					ArchiveFilterCondition = null,
+					ArchiveMethod = ToArchiveMethod(_selectedMode),
+					DeleteSourceDataAfterArchive = true,
+					BatchSize = _selectedMode == ArchiveMode.Bcp ? _form.BcpBatchSize : _form.BulkCopyBatchSize
+				};
+
+				_loadedArchiveConfig = await ArchiveConfigApi.CreateAsync(createModel);
+				Logger.LogInformation("成功创建归档配置: ConfigId={ConfigId}, Name={Name}",
+					_loadedArchiveConfig.Id, _loadedArchiveConfig.Name);
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "保存归档配置失败");
+			// 保存配置失败不应阻止归档执行,只记录日志
+		}
+	}
+
+	/// <summary>
+	/// 从归档配置填充表单
+	/// </summary>
+	private void PopulateFormFromArchiveConfig(ArchiveConfigurationDetailModel config, ArchiveMode mode)
+	{
+		// 填充通用字段
+		_form.TargetDatabase = null; // 配置中无目标数据库,保持现有逻辑
+		// 目标表名使用配置的源表名,自动添加_bak后缀
+		_form.TargetTable = $"{config.SourceSchemaName}.{config.SourceTableName}_bak";
+
+		// 根据模式填充特定参数
+		if (mode == ArchiveMode.Bcp)
+		{
+			_form.BcpBatchSize = config.BatchSize;
+			// 其他BCP参数使用默认值(已在字段初始化设置)
+			Logger.LogInformation("从配置填充BCP参数: BatchSize={BatchSize}", config.BatchSize);
+		}
+		else if (mode == ArchiveMode.BulkCopy)
+		{
+			_form.BulkCopyBatchSize = config.BatchSize;
+			// 其他BulkCopy参数使用默认值(已在字段初始化设置)
+			Logger.LogInformation("从配置填充BulkCopy参数: BatchSize={BatchSize}", config.BatchSize);
+		}
+	}
+
+	/// <summary>
+	/// 加载数据源信息,用于显示服务器地址等信息
+	/// </summary>
+	private async Task LoadDataSourceInfoAsync()
+	{
+		try
+		{
+			var dataSourceResult = await DataSourceApi.GetAsync();
+			if (dataSourceResult.IsSuccess && dataSourceResult.Value != null)
+			{
+				_currentDataSource = dataSourceResult.Value.FirstOrDefault(ds => ds.Id == DataSourceId);
+				if (_currentDataSource != null)
+				{
+					Logger.LogInformation("成功加载数据源信息: Name={Name}, Server={Server}",
+						_currentDataSource.Name, _currentDataSource.ServerAddress);
+				}
+				else
+				{
+					Logger.LogWarning("未找到DataSourceId={DataSourceId}的数据源", DataSourceId);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "加载数据源信息失败");
+		}
+	}
+
+	/// <summary>
+	/// 从数据源信息自动填充默认值
+	/// </summary>
+	private async Task AutoFillFromDataSourceAsync()
+	{
+		try
+		{
+			// 如果还没加载数据源信息,则先加载
+			if (_currentDataSource == null)
+			{
+				await LoadDataSourceInfoAsync();
+			}
+
+			if (_currentDataSource != null)
+			{
+				// 自动填充目标数据库
+				var targetDatabase = _currentDataSource.UseSourceAsTarget
+					? _currentDataSource.DatabaseName
+					: (_currentDataSource.TargetDatabaseName ?? _currentDataSource.DatabaseName);
+
+				_form.TargetDatabase = targetDatabase;
+
+				// 自动填充目标表名(源表_bak)
+				_form.TargetTable = $"{SchemaName}.{TableName}_bak";
+
+				Logger.LogInformation("从数据源自动填充: TargetDatabase={TargetDatabase}, TargetTable={TargetTable}",
+					targetDatabase, _form.TargetTable);
+
+				Message.Info("已从数据源自动填充默认配置");
+			}
+			else
+			{
+				Logger.LogWarning("无法从数据源自动填充,数据源信息未加载");
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "从数据源自动填充失败");
+		}
+	}
+
 	private string FormatTableName() => string.IsNullOrWhiteSpace(SchemaName) || string.IsNullOrWhiteSpace(TableName)
 		? "(未指定)"
 		: $"{SchemaName}.{TableName}";
@@ -321,11 +592,61 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	{
 		return _currentStep switch
 		{
-			0 => _selectedMode == ArchiveMode.Switch,
-			1 => !string.IsNullOrWhiteSpace(_form.SourcePartitionKey) && !string.IsNullOrWhiteSpace(_form.TargetTable),
-			2 => _inspectionResult is not null && _inspectionResult.CanExecute,
+			// Step 0: 选择归档模式 - 现在三种模式都可以进入下一步
+			0 => true,
+			
+			// Step 1: 填写参数
+			1 => ValidateStep1Parameters(),
+			
+			// Step 2: 预检结果 - Switch模式需要预检通过,BCP/BulkCopy暂时跳过预检
+			2 => _selectedMode == ArchiveMode.Switch 
+				? (_inspectionResult is not null && _inspectionResult.CanExecute)
+				: true,
+			
 			_ => true
 		};
+	}
+
+	/// <summary>
+	/// 验证Step 1的参数是否完整
+	/// </summary>
+	private bool ValidateStep1Parameters()
+	{
+		// 通用参数验证
+		if (string.IsNullOrWhiteSpace(_form.TargetTable))
+		{
+			return false;
+		}
+
+		// Switch模式需要分区键
+		if (_selectedMode == ArchiveMode.Switch && string.IsNullOrWhiteSpace(_form.SourcePartitionKey))
+		{
+			return false;
+		}
+
+		// BCP/BulkCopy模式验证
+		if (_selectedMode == ArchiveMode.Bcp)
+		{
+			// 验证BCP参数
+			if (_form.BcpBatchSize <= 0 || _form.BcpTimeoutSeconds <= 0)
+			{
+				return false;
+			}
+			if (string.IsNullOrWhiteSpace(_form.BcpTempDirectory))
+			{
+				return false;
+			}
+		}
+		else if (_selectedMode == ArchiveMode.BulkCopy)
+		{
+			// 验证BulkCopy参数
+			if (_form.BulkCopyBatchSize <= 0 || _form.BulkCopyTimeoutSeconds <= 0)
+			{
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private void PrevStep()
@@ -345,11 +666,38 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			return;
 		}
 
+		// Step 1 → Step 2: 三种模式都执行预检
 		if (_currentStep == 1)
 		{
-			if (!await RunInspectionAsync())
+			// 确保数据源信息已加载
+			if (_currentDataSource == null)
 			{
-				return;
+				await LoadDataSourceInfoAsync();
+			}
+
+			if (_selectedMode == ArchiveMode.Switch)
+			{
+				// Switch模式执行分区切换预检
+				if (!await RunInspectionAsync())
+				{
+					return;
+				}
+			}
+			else if (_selectedMode == ArchiveMode.Bcp)
+			{
+				// BCP模式执行BCP预检
+				if (!await RunBcpInspectionAsync())
+				{
+					return;
+				}
+			}
+			else if (_selectedMode == ArchiveMode.BulkCopy)
+			{
+				// BulkCopy模式执行BulkCopy预检
+				if (!await RunBulkCopyInspectionAsync())
+				{
+					return;
+				}
 			}
 		}
 
@@ -403,6 +751,141 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			UpdateExecutionPreviewMarkdown();
 			Message.Success("预检已完成。");
 			return true;
+		}
+		finally
+		{
+			_inspectionLoading = false;
+			StateHasChanged();
+		}
+	}
+
+	/// <summary>
+	/// 执行BCP归档预检
+	/// </summary>
+	private async Task<bool> RunBcpInspectionAsync()
+	{
+		if (string.IsNullOrWhiteSpace(_form.TargetTable))
+		{
+			Message.Warning("请填写目标表名称。");
+			return false;
+		}
+
+		_inspectionLoading = true;
+		_bcpInspectionResult = null;
+
+		try
+		{
+			var request = new BcpArchiveInspectRequest(
+				DataSourceId,
+				SchemaName,
+				TableName,
+				"1", // BCP模式暂不支持分区,使用占位值
+				_form.TargetTable.Trim(),
+				string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
+				_form.BcpTempDirectory,
+				_form.RequestedBy);
+
+			var result = await PartitionArchiveApi.InspectBcpAsync(request);
+			if (!result.IsSuccess || result.Value is null)
+			{
+				Message.Error(result.Error ?? "BCP预检失败，请稍后重试。");
+				return false;
+			}
+
+			_bcpInspectionResult = result.Value;
+
+			// 显示检查结果
+			if (_bcpInspectionResult.BlockingIssues.Any())
+			{
+				var issuesText = string.Join("\n", _bcpInspectionResult.BlockingIssues.Select(i => $"• {i.Message}"));
+				Message.Error($"发现阻塞问题:\n{issuesText}");
+			}
+			
+			if (_bcpInspectionResult.Warnings.Any())
+			{
+				var warningsText = string.Join("\n", _bcpInspectionResult.Warnings.Select(w => $"• {w.Message}"));
+				Message.Warning($"警告信息:\n{warningsText}");
+			}
+
+			if (_bcpInspectionResult.CanExecute)
+			{
+				Message.Success("BCP预检通过,可以执行归档。");
+			}
+
+			return true; // 即使有阻塞问题,也返回true进入Step 2展示详情
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "BCP预检异常");
+			Message.Error($"BCP预检异常: {ex.Message}");
+			return false;
+		}
+		finally
+		{
+			_inspectionLoading = false;
+			StateHasChanged();
+		}
+	}
+
+	/// <summary>
+	/// 执行BulkCopy归档预检
+	/// </summary>
+	private async Task<bool> RunBulkCopyInspectionAsync()
+	{
+		if (string.IsNullOrWhiteSpace(_form.TargetTable))
+		{
+			Message.Warning("请填写目标表名称。");
+			return false;
+		}
+
+		_inspectionLoading = true;
+		_bulkCopyInspectionResult = null;
+
+		try
+		{
+			var request = new BulkCopyArchiveInspectRequest(
+				DataSourceId,
+				SchemaName,
+				TableName,
+				"1", // BulkCopy模式暂不支持分区,使用占位值
+				_form.TargetTable.Trim(),
+				string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
+				_form.RequestedBy);
+
+			var result = await PartitionArchiveApi.InspectBulkCopyAsync(request);
+			if (!result.IsSuccess || result.Value is null)
+			{
+				Message.Error(result.Error ?? "BulkCopy预检失败，请稍后重试。");
+				return false;
+			}
+
+			_bulkCopyInspectionResult = result.Value;
+
+			// 显示检查结果
+			if (_bulkCopyInspectionResult.BlockingIssues.Any())
+			{
+				var issuesText = string.Join("\n", _bulkCopyInspectionResult.BlockingIssues.Select(i => $"• {i.Message}"));
+				Message.Error($"发现阻塞问题:\n{issuesText}");
+			}
+			
+			if (_bulkCopyInspectionResult.Warnings.Any())
+			{
+				var warningsText = string.Join("\n", _bulkCopyInspectionResult.Warnings.Select(w => $"• {w.Message}"));
+				Message.Warning($"警告信息:\n{warningsText}");
+			}
+
+			if (_bulkCopyInspectionResult.CanExecute)
+			{
+				Message.Success("BulkCopy预检通过,可以执行归档。");
+			}
+
+			return true; // 即使有阻塞问题,也返回true进入Step 2展示详情
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "BulkCopy预检异常");
+			Message.Error($"BulkCopy预检异常: {ex.Message}");
+			return false;
 		}
 		finally
 		{
@@ -488,6 +971,69 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		}
 	}
 
+	/// <summary>
+	/// 执行 BCP/BulkCopy 归档的自动修复。
+	/// </summary>
+	private async Task OnBcpAutoFixClickedAsync()
+	{
+		if (_bcpInspectionResult?.AutoFixSteps == null || !_bcpInspectionResult.AutoFixSteps.Any())
+		{
+			Message.Warning("没有可自动修复的步骤。");
+			return;
+		}
+
+		_autoFixExecuting = true;
+
+		try
+		{
+			// 目前只支持 CREATE_TARGET_TABLE 修复
+			var createTableStep = _bcpInspectionResult.AutoFixSteps
+				.FirstOrDefault(s => s.Code == "CREATE_TARGET_TABLE");
+
+			if (createTableStep == null)
+			{
+				Message.Warning("没有找到 CREATE_TARGET_TABLE 修复步骤。");
+				return;
+			}
+
+			var request = new ArchiveAutoFixRequest(
+				DataSourceId,
+				SchemaName,
+				TableName,
+				_form.TargetTable.Trim(),
+				"CREATE_TARGET_TABLE",
+				_form.RequestedBy);
+
+			Logger.LogInformation("开始执行 BCP 自动修复: TargetTable={TargetTable}, FixCode={FixCode}", 
+				_form.TargetTable, "CREATE_TARGET_TABLE");
+
+			var result = await PartitionArchiveApi.ExecuteAutoFixAsync(request);
+			if (!result.IsSuccess || string.IsNullOrEmpty(result.Value))
+			{
+				var errorMsg = result.Error ?? "自动修复失败。请检查后台日志。";
+				Logger.LogError("自动修复失败: {Error}", errorMsg);
+				Message.Error($"自动修复失败: {errorMsg}");
+				return;
+			}
+
+			Logger.LogInformation("自动修复完成: {Message}", result.Value);
+			Message.Success("目标表已成功创建,请重新预检确认。");
+			
+			// 清空检查结果,提示用户重新预检
+			_bcpInspectionResult = null;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "执行 BCP 自动修复时发生异常");
+			Message.Error($"执行自动修复时发生异常: {ex.Message}");
+		}
+		finally
+		{
+			_autoFixExecuting = false;
+			StateHasChanged();
+		}
+	}
+
 	private async Task SubmitAsync()
 	{
 		if (!_form.BackupConfirmed)
@@ -503,6 +1049,11 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 		try
 		{
+			// 自动保存归档配置(BCP/BulkCopy模式)
+			if (_selectedMode == ArchiveMode.Bcp || _selectedMode == ArchiveMode.BulkCopy)
+			{
+				await SaveArchiveConfigurationAsync();
+			}
 			if (_isBatchMode)
 			{
 				Logger.LogInformation("开始批量执行分区切换: Count={Count}", _partitionKeys.Count);
@@ -583,29 +1134,90 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			}
 			else
 			{
-				// 单个分区执行(原有逻辑)
-				var request = new SwitchArchiveExecuteRequest(
-					_form.PartitionConfigurationId,
-					DataSourceId,
-					SchemaName,
-					TableName,
-					_form.SourcePartitionKey.Trim(),
-					_form.TargetTable.Trim(),
-					string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
-					_form.CreateStagingTable,
-					_form.BackupConfirmed,
-					_form.RequestedBy);
-
-				var result = await PartitionArchiveApi.ArchiveBySwitchAsync(request);
-				
-				if (!result.IsSuccess)
+				// 单个分区执行
+				if (_selectedMode == ArchiveMode.Bcp)
 				{
-					Message.Error(result.Error ?? "提交分区切换失败。");
-					return;
-				}
+					// BCP 模式
+					var bcpRequest = new Application.Partitions.BcpArchiveExecuteRequest(
+						DataSourceId,
+						SchemaName,
+						TableName,
+						"1", // 分区号,BCP 模式暂不支持分区切换,使用占位值
+						_form.TargetTable.Trim(),
+						string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
+						_form.BcpTempDirectory,
+						_form.BcpBatchSize,
+						_form.BcpUseNativeFormat,
+						_form.BcpMaxErrors,
+						_form.BcpTimeoutSeconds,
+						_form.BackupConfirmed,
+						_form.RequestedBy);
 
-				_lastSubmittedTaskId = result.Value;
-				Message.Success("分区切换已提交到后台任务。请前往任务中心查看进度。");
+					var result = await PartitionArchiveApi.ArchiveByBcpAsync(bcpRequest);
+					
+					if (!result.IsSuccess)
+					{
+						Message.Error(result.Error ?? "提交 BCP 归档失败。");
+						return;
+					}
+
+					_lastSubmittedTaskId = result.Value;
+					Message.Success("BCP 归档已提交到后台任务。请前往任务中心查看进度。");
+				}
+				else if (_selectedMode == ArchiveMode.BulkCopy)
+				{
+					// BulkCopy 模式
+					var bulkCopyRequest = new Application.Partitions.BulkCopyArchiveExecuteRequest(
+						DataSourceId,
+						SchemaName,
+						TableName,
+						"1", // 分区号,BulkCopy 模式暂不支持分区切换,使用占位值
+						_form.TargetTable.Trim(),
+						string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
+						_form.BulkCopyBatchSize,
+						_form.BulkCopyNotifyAfterRows,
+						_form.BulkCopyTimeoutSeconds,
+						_form.BulkCopyEnableStreaming,
+						_form.BackupConfirmed,
+						_form.RequestedBy);
+
+					var result = await PartitionArchiveApi.ArchiveByBulkCopyAsync(bulkCopyRequest);
+					
+					if (!result.IsSuccess)
+					{
+						Message.Error(result.Error ?? "提交 BulkCopy 归档失败。");
+						return;
+					}
+
+					_lastSubmittedTaskId = result.Value;
+					Message.Success("BulkCopy 归档已提交到后台任务。请前往任务中心查看进度。");
+				}
+				else
+				{
+					// Switch 模式 - 原有逻辑
+					var request = new SwitchArchiveExecuteRequest(
+						_form.PartitionConfigurationId,
+						DataSourceId,
+						SchemaName,
+						TableName,
+						_form.SourcePartitionKey.Trim(),
+						_form.TargetTable.Trim(),
+						string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
+						_form.CreateStagingTable,
+						_form.BackupConfirmed,
+						_form.RequestedBy);
+
+					var result = await PartitionArchiveApi.ArchiveBySwitchAsync(request);
+					
+					if (!result.IsSuccess)
+					{
+						Message.Error(result.Error ?? "提交分区切换失败。");
+						return;
+					}
+
+					_lastSubmittedTaskId = result.Value;
+					Message.Success("分区切换已提交到后台任务。请前往任务中心查看进度。");
+				}
 			}
 
 			if (_lastSubmittedTaskId.HasValue && OnSuccess.HasDelegate)
@@ -795,11 +1407,102 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		return $"[{trimmed.Replace("]", "]]")}]";
 	}
 
+	/// <summary>
+	/// 获取格式化的源服务器地址
+	/// </summary>
+	private string GetSourceServerDisplay()
+	{
+		if (_currentDataSource == null) return "(未知)";
+		
+		var port = _currentDataSource.ServerPort == 1433 ? "" : $":{_currentDataSource.ServerPort}";
+		return $"{_currentDataSource.ServerAddress}{port}";
+	}
+
+	/// <summary>
+	/// 获取格式化的目标服务器地址
+	/// </summary>
+	private string GetTargetServerDisplay()
+	{
+		if (_currentDataSource == null) return "(未知)";
+		
+		if (_currentDataSource.UseSourceAsTarget)
+		{
+			var port = _currentDataSource.ServerPort == 1433 ? "" : $":{_currentDataSource.ServerPort}";
+			return $"{_currentDataSource.ServerAddress}{port} (与源服务器相同)";
+		}
+		else
+		{
+			var targetServer = _currentDataSource.TargetServerAddress ?? _currentDataSource.ServerAddress;
+			var port = _currentDataSource.TargetServerPort == 1433 ? "" : $":{_currentDataSource.TargetServerPort}";
+			return $"{targetServer}{port}";
+		}
+	}
+
+	/// <summary>
+	/// 获取源数据库认证方式
+	/// </summary>
+	private string GetSourceAuthDisplay()
+	{
+		if (_currentDataSource == null) return "(未知)";
+		return _currentDataSource.UseIntegratedSecurity 
+			? "Windows 集成身份验证" 
+			: $"SQL Server 身份验证 ({_currentDataSource.UserName})";
+	}
+
+	/// <summary>
+	/// 获取目标数据库认证方式
+	/// </summary>
+	private string GetTargetAuthDisplay()
+	{
+		if (_currentDataSource == null) return "(未知)";
+		
+		if (_currentDataSource.UseSourceAsTarget)
+		{
+			return _currentDataSource.UseIntegratedSecurity 
+				? "Windows 集成身份验证" 
+				: $"SQL Server 身份验证 ({_currentDataSource.UserName})";
+		}
+		else
+		{
+			return _currentDataSource.TargetUseIntegratedSecurity 
+				? "Windows 集成身份验证" 
+				: $"SQL Server 身份验证 ({_currentDataSource.TargetUserName})";
+		}
+	}
+
 	private enum ArchiveMode
 	{
 		Switch,
 		Bcp,
 		BulkCopy
+	}
+
+	/// <summary>
+	/// 获取归档模式的显示名称
+	/// </summary>
+	private string GetArchiveModeDisplayName()
+	{
+		return _selectedMode switch
+		{
+			ArchiveMode.Bcp => "BCP 归档",
+			ArchiveMode.BulkCopy => "BulkCopy 归档",
+			ArchiveMode.Switch => "分区切换",
+			_ => "分区切换"
+		};
+	}
+
+	/// <summary>
+	/// 将UI的ArchiveMode转换为Domain的ArchiveMethod
+	/// </summary>
+	private static ArchiveMethod ToArchiveMethod(ArchiveMode mode)
+	{
+		return mode switch
+		{
+			ArchiveMode.Bcp => ArchiveMethod.Bcp,
+			ArchiveMode.BulkCopy => ArchiveMethod.BulkCopy,
+			ArchiveMode.Switch => ArchiveMethod.PartitionSwitch,
+			_ => ArchiveMethod.PartitionSwitch
+		};
 	}
 
 	private sealed class AutoFixOptionState
@@ -818,8 +1521,12 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		public bool IsSelected { get; set; }
 	}
 
+	/// <summary>
+	/// 归档表单模型(支持Switch/BCP/BulkCopy三种模式)
+	/// </summary>
 	private sealed class SwitchArchiveFormModel
 	{
+		// === 通用字段 ===
 		public Guid? PartitionConfigurationId { get; set; }
 		public string SourcePartitionKey { get; set; } = string.Empty;
 		public string? TargetDatabase { get; set; }
@@ -827,6 +1534,53 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		public bool CreateStagingTable { get; set; } = true;
 		public bool BackupConfirmed { get; set; }
 		public string RequestedBy { get; set; } = string.Empty;
+
+		// === BCP模式专用字段 ===
+		/// <summary>
+		/// 临时文件目录
+		/// </summary>
+		public string BcpTempDirectory { get; set; } = Path.GetTempPath();
+
+		/// <summary>
+		/// 使用原生格式(native format)
+		/// </summary>
+		public bool BcpUseNativeFormat { get; set; } = true;
+
+		/// <summary>
+		/// 最大错误数(超过此值则中止)
+		/// </summary>
+		public int BcpMaxErrors { get; set; } = 10;
+
+		/// <summary>
+		/// 批次大小
+		/// </summary>
+		public int BcpBatchSize { get; set; } = 10000;
+
+		/// <summary>
+		/// 超时时间(秒)
+		/// </summary>
+		public int BcpTimeoutSeconds { get; set; } = 3600;
+
+		// === BulkCopy模式专用字段 ===
+		/// <summary>
+		/// 批次大小
+		/// </summary>
+		public int BulkCopyBatchSize { get; set; } = 10000;
+
+		/// <summary>
+		/// 通知行数(每N行触发进度通知)
+		/// </summary>
+		public int BulkCopyNotifyAfterRows { get; set; } = 50000;
+
+		/// <summary>
+		/// 超时时间(秒)
+		/// </summary>
+		public int BulkCopyTimeoutSeconds { get; set; } = 3600;
+
+		/// <summary>
+		/// 启用流式读取
+		/// </summary>
+		public bool BulkCopyEnableStreaming { get; set; } = true;
 	}
 
 	private sealed class PartitionConfigurationOption

@@ -142,29 +142,42 @@ public class ArchiveDataSource : AggregateRoot
 
 ### 3.2 `ArchiveConfiguration`
 ```csharp
-public class ArchiveConfiguration : BaseEntity
+public sealed class ArchiveConfiguration : AggregateRoot
 {
-    public Guid DataSourceId { get; set; }
-    public string SourceTableName { get; set; } = string.Empty;
-    public string TargetTableName { get; set; } = string.Empty;
-    public string? PartitionColumnName { get; set; }
-    public string? PartitionValues { get; set; } // JSON 数组
-    public FileGroupMode FileGroupMode { get; set; }
-    public int FileSize { get; set; }
-    public int FileGrowth { get; set; }
-
-    public bool EnableAutoArchive { get; set; }
-    public ArchiveDataType ArchiveDataType { get; set; }
-    public string? AutoArchivePartitionValues { get; set; }
-    public int? RelativeDays { get; set; }
-    public AutoArchiveTimeType AutoArchiveTimeType { get; set; }
-    public string? AutoArchiveTimeValue { get; set; }
-
-    public string? Remark { get; set; }
-
-    public DataSource DataSource { get; set; } = default!;
+  public string Name { get; private set; } = string.Empty;
+  public string? Description { get; private set; }
+  public Guid DataSourceId { get; private set; }
+  public string SourceSchemaName { get; private set; } = "dbo";
+  public string SourceTableName { get; private set; } = string.Empty;
+  public string? TargetSchemaName { get; private set; }
+  public string? TargetTableName { get; private set; }
+  public bool IsPartitionedTable { get; private set; }
+  public Guid? PartitionConfigurationId { get; private set; }
+  public string? ArchiveFilterColumn { get; private set; }
+  public string? ArchiveFilterCondition { get; private set; }
+  public ArchiveMethod ArchiveMethod { get; private set; }
+  public bool DeleteSourceDataAfterArchive { get; private set; } = true;
+  public int BatchSize { get; private set; } = 10000;
+  public bool EnableScheduledArchive { get; private set; }
+  public string? CronExpression { get; private set; }
+  public DateTime? NextArchiveAtUtc { get; private set; }
+  public bool IsEnabled { get; private set; } = true;
+  public DateTime? LastExecutionTimeUtc { get; private set; }
+  public string? LastExecutionStatus { get; private set; }
+  public long? LastArchivedRowCount { get; private set; }
 }
 ```
+
+#### 字段重点
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `TargetSchemaName` | NVARCHAR(128) | 可选,默认继承源架构,用于将归档数据写入独立架构。 |
+| `TargetTableName` | NVARCHAR(128) | 可选,默认继承源表,用于落地到独立归档表。 |
+| `EnableScheduledArchive` | BIT | 是否启用 Hangfire 定时任务,启用时需同时提供 `CronExpression`。 |
+| `CronExpression` | NVARCHAR(120) | NCrontab 语法,支持 5/6 段表达式。系统会通过 `CronScheduleHelper` 计算下一次触发时间。 |
+| `NextArchiveAtUtc` | DATETIME2 | 最近一次计算出的归档触发时间(UTC),用于界面展示与后续调度。 |
+| `LastExecutionStatus` | NVARCHAR(32) | 最近一次归档执行的状态,取值 `Success`/`Failed`。 |
+| `LastArchivedRowCount` | BIGINT | 最近一次归档成功写入的行数。 |
 
 ### 3.3 `ArchiveTask`
 ```csharp
@@ -304,10 +317,30 @@ public class ArchivePartitionDetail : BaseEntity
 ### 4.5 归档配置 API
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/archive-configs` | 查询配置 |
-| POST | `/api/v1/archive-configs` | 新增配置 |
-| PUT | `/api/v1/archive-configs/{id}` | 修改配置 |
-| POST | `/api/v1/archive-configs/{id}/validate` | 验证分区和表结构 |
+| GET | `/api/v1/archive-configurations` | 列表查询,支持 `dataSourceId`、`isEnabled` 筛选。 |
+| GET | `/api/v1/archive-configurations/{id}` | 获取单个配置详情。 |
+| POST | `/api/v1/archive-configurations` | 创建归档配置,自动计算 `nextArchiveAtUtc` 并推送 Hangfire 周期任务。 |
+| PUT | `/api/v1/archive-configurations/{id}` | 更新归档配置,重新计算下一次执行时间并同步 Hangfire。 |
+| DELETE | `/api/v1/archive-configurations/{id}` | 软删除配置,移除关联的 Hangfire 周期任务。 |
+| POST | `/api/v1/archive-configurations/{id}/enable` | 启用配置,根据当前设置重新注册 Hangfire 周期任务。 |
+| POST | `/api/v1/archive-configurations/{id}/disable` | 禁用配置,确保 Hangfire 周期任务被移除。 |
+
+#### 4.5.1 请求体与字段
+| 字段 | 说明 |
+|------|------|
+| `sourceSchemaName` / `sourceTableName` | 必填,指定归档来源表。 |
+| `targetSchemaName` / `targetTableName` | 可选,未提供时沿用源表结构;提供后归档数据将写入独立架构/表。 |
+| `archiveMethod` | 归档策略,支持 `Bcp`、`BulkCopy`、`PartitionSwitch`。非分区表选择非 `PartitionSwitch` 时必须提供过滤条件。 |
+| `archiveFilterColumn` / `archiveFilterCondition` | 非分区表必填,用于拼接 WHERE 条件。 |
+| `enableScheduledArchive` | 是否启用定时归档。启用时必须同时提供合法的 `cronExpression`。 |
+| `cronExpression` | NCrontab 语法的 Cron 表达式,支持 6 段(含秒)。后端通过 `CronScheduleHelper` 验证并计算下一次执行时间。 |
+| `nextArchiveAtUtc` | 仅响应中返回,记录下一次计划执行时间(UTC)。 |
+
+#### 4.5.2 调度同步策略
+- 控制器在创建、更新、启用、禁用、删除配置时都会调用 `IArchiveTaskScheduler` 同步 Hangfire 周期任务。
+- 当配置未启用或未开启定时归档时,调度器会移除对应的周期任务,确保不会触发历史任务。
+- Cron 验证失败会返回 `400 BadRequest`,避免写入非法调度计划。
+- 详细调度实现见《Hangfire集成说明.md》中的“归档配置同步策略”章节。
 
 ### 4.6 归档任务 API
 | 方法 | 路径 | 说明 |

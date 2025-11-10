@@ -168,9 +168,14 @@ public class ArchiveConfigurationListItemModel
     public Guid DataSourceId { get; set; }
     public string SourceSchemaName { get; set; } = string.Empty;
     public string SourceTableName { get; set; } = string.Empty;
+    public string? TargetSchemaName { get; set; }
+    public string? TargetTableName { get; set; }
     public bool IsPartitionedTable { get; set; }
     public ArchiveMethod ArchiveMethod { get; set; }
     public bool IsEnabled { get; set; }
+    public bool EnableScheduledArchive { get; set; }
+    public string? CronExpression { get; set; }
+    public DateTime? NextArchiveAtUtc { get; set; }
     public DateTime? LastExecutionTimeUtc { get; set; }
     public string? LastExecutionStatus { get; set; }
     public long? LastArchivedRowCount { get; set; }
@@ -189,6 +194,8 @@ public class ArchiveConfigurationDetailModel
     public Guid DataSourceId { get; set; }
     public string SourceSchemaName { get; set; } = string.Empty;
     public string SourceTableName { get; set; } = string.Empty;
+    public string? TargetSchemaName { get; set; }
+    public string? TargetTableName { get; set; }
     public bool IsPartitionedTable { get; set; }
     public Guid? PartitionConfigurationId { get; set; }
     public string? ArchiveFilterColumn { get; set; }
@@ -197,6 +204,9 @@ public class ArchiveConfigurationDetailModel
     public bool DeleteSourceDataAfterArchive { get; set; }
     public int BatchSize { get; set; }
     public bool IsEnabled { get; set; }
+    public bool EnableScheduledArchive { get; set; }
+    public string? CronExpression { get; set; }
+    public DateTime? NextArchiveAtUtc { get; set; }
     public DateTime? LastExecutionTimeUtc { get; set; }
     public string? LastExecutionStatus { get; set; }
     public long? LastArchivedRowCount { get; set; }
@@ -216,6 +226,8 @@ public class CreateArchiveConfigurationModel
     public Guid DataSourceId { get; set; }
     public string SourceSchemaName { get; set; } = "dbo";
     public string SourceTableName { get; set; } = string.Empty;
+    public string? TargetSchemaName { get; set; }
+    public string? TargetTableName { get; set; }
     public bool IsPartitionedTable { get; set; }
     public Guid? PartitionConfigurationId { get; set; }
     public string? ArchiveFilterColumn { get; set; }
@@ -223,6 +235,8 @@ public class CreateArchiveConfigurationModel
     public ArchiveMethod ArchiveMethod { get; set; }
     public bool DeleteSourceDataAfterArchive { get; set; } = true;
     public int BatchSize { get; set; } = 10000;
+    public bool EnableScheduledArchive { get; set; }
+    public string? CronExpression { get; set; }
 }
 
 /// <summary>
@@ -235,6 +249,8 @@ public class UpdateArchiveConfigurationModel
     public Guid DataSourceId { get; set; }
     public string SourceSchemaName { get; set; } = "dbo";
     public string SourceTableName { get; set; } = string.Empty;
+    public string? TargetSchemaName { get; set; }
+    public string? TargetTableName { get; set; }
     public bool IsPartitionedTable { get; set; }
     public Guid? PartitionConfigurationId { get; set; }
     public string? ArchiveFilterColumn { get; set; }
@@ -242,4 +258,6 @@ public class UpdateArchiveConfigurationModel
     public ArchiveMethod ArchiveMethod { get; set; }
     public bool DeleteSourceDataAfterArchive { get; set; } = true;
     public int BatchSize { get; set; } = 10000;
+    public bool EnableScheduledArchive { get; set; }
+    public string? CronExpression { get; set; }
 }

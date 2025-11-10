@@ -121,7 +121,13 @@ internal sealed class BackgroundTaskProcessor
                 // 传统模式：从分区配置向导提交，需要加载草稿
                 await AppendLogAsync(task.Id, "Step", "加载配置", "正在加载分区配置草稿...", cancellationToken);
 
-                configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId, cancellationToken);
+                if (!task.PartitionConfigurationId.HasValue)
+                {
+                    await HandleValidationFailureAsync(task, "分区配置ID为空。", cancellationToken);
+                    return;
+                }
+
+                configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId.Value, cancellationToken);
                 if (configuration is null)
                 {
                     await HandleValidationFailureAsync(task, "未找到分区配置草稿。", cancellationToken);

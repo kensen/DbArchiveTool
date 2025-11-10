@@ -25,6 +25,12 @@ public sealed class ArchiveConfigurationListItemDto
     /// <summary>源表名</summary>
     public string SourceTableName { get; set; } = string.Empty;
 
+    /// <summary>目标架构名</summary>
+    public string? TargetSchemaName { get; set; }
+
+    /// <summary>目标表名</summary>
+    public string? TargetTableName { get; set; }
+
     /// <summary>是否分区表</summary>
     public bool IsPartitionedTable { get; set; }
 
@@ -33,6 +39,15 @@ public sealed class ArchiveConfigurationListItemDto
 
     /// <summary>是否启用</summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>是否启用定时归档</summary>
+    public bool EnableScheduledArchive { get; set; }
+
+    /// <summary>Cron 表达式</summary>
+    public string? CronExpression { get; set; }
+
+    /// <summary>下次归档时间</summary>
+    public DateTime? NextArchiveAtUtc { get; set; }
 
     /// <summary>上次执行时间</summary>
     public DateTime? LastExecutionTimeUtc { get; set; }
@@ -73,6 +88,12 @@ public sealed class ArchiveConfigurationDetailDto
     /// <summary>源表名</summary>
     public string SourceTableName { get; set; } = string.Empty;
 
+    /// <summary>目标架构名</summary>
+    public string? TargetSchemaName { get; set; }
+
+    /// <summary>目标表名</summary>
+    public string? TargetTableName { get; set; }
+
     /// <summary>是否分区表</summary>
     public bool IsPartitionedTable { get; set; }
 
@@ -96,6 +117,15 @@ public sealed class ArchiveConfigurationDetailDto
 
     /// <summary>是否启用</summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>是否启用定时归档</summary>
+    public bool EnableScheduledArchive { get; set; }
+
+    /// <summary>Cron 表达式</summary>
+    public string? CronExpression { get; set; }
+
+    /// <summary>下次归档时间</summary>
+    public DateTime? NextArchiveAtUtc { get; set; }
 
     /// <summary>上次执行时间</summary>
     public DateTime? LastExecutionTimeUtc { get; set; }
@@ -139,6 +169,12 @@ public sealed class CreateArchiveConfigurationRequest
     /// <summary>源表名</summary>
     public string SourceTableName { get; set; } = string.Empty;
 
+    /// <summary>目标架构名</summary>
+    public string? TargetSchemaName { get; set; }
+
+    /// <summary>目标表名</summary>
+    public string? TargetTableName { get; set; }
+
     /// <summary>是否分区表</summary>
     public bool IsPartitionedTable { get; set; }
 
@@ -159,6 +195,12 @@ public sealed class CreateArchiveConfigurationRequest
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; set; } = 10000;
+
+    /// <summary>是否启用定时归档</summary>
+    public bool EnableScheduledArchive { get; set; }
+
+    /// <summary>Cron 表达式</summary>
+    public string? CronExpression { get; set; }
 }
 
 /// <summary>
@@ -181,6 +223,12 @@ public sealed class UpdateArchiveConfigurationRequest
     /// <summary>源表名</summary>
     public string SourceTableName { get; set; } = string.Empty;
 
+    /// <summary>目标架构名</summary>
+    public string? TargetSchemaName { get; set; }
+
+    /// <summary>目标表名</summary>
+    public string? TargetTableName { get; set; }
+
     /// <summary>是否分区表</summary>
     public bool IsPartitionedTable { get; set; }
 
@@ -201,4 +249,10 @@ public sealed class UpdateArchiveConfigurationRequest
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; set; } = 10000;
+
+    /// <summary>是否启用定时归档</summary>
+    public bool EnableScheduledArchive { get; set; }
+
+    /// <summary>Cron 表达式</summary>
+    public string? CronExpression { get; set; }
 }

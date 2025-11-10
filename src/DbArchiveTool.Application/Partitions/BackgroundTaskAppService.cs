@@ -235,13 +235,16 @@ internal sealed class BackgroundTaskAppService : IBackgroundTaskAppService
         }
 
         var dto = MapToDetail(task);
-        var configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId, cancellationToken);
-        if (configuration is not null)
+        if (task.PartitionConfigurationId.HasValue)
         {
-            dto.SourceTable = $"{configuration.SchemaName}.{configuration.TableName}";
-            dto.TargetTable = configuration.TargetTable is not null
-                ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
-                : string.Empty;
+            var configuration = await configurationRepository.GetByIdAsync(task.PartitionConfigurationId.Value, cancellationToken);
+            if (configuration is not null)
+            {
+                dto.SourceTable = $"{configuration.SchemaName}.{configuration.TableName}";
+                dto.TargetTable = configuration.TargetTable is not null
+                    ? $"{configuration.TargetTable.SchemaName}.{configuration.TargetTable.TableName}"
+                    : string.Empty;
+            }
         }
 
         return Result<BackgroundTaskDetailDto>.Success(dto);
@@ -261,7 +264,12 @@ internal sealed class BackgroundTaskAppService : IBackgroundTaskAppService
                 var dataSource = await dataSourceRepository.GetAsync(id, cancellationToken);
                 dataSourceLookup[id] = dataSource?.DatabaseName ?? "未知数据库";
             }
-            var configurationIds = tasks.Select(t => t.PartitionConfigurationId).Distinct().ToList();
+            var configurationIds = tasks
+                .Select(t => t.PartitionConfigurationId)
+                .Where(id => id.HasValue)
+                .Select(id => id!.Value)
+                .Distinct()
+                .ToList();
             foreach (var configurationId in configurationIds)
             {
                 var configuration = await configurationRepository.GetByIdAsync(configurationId, cancellationToken);
@@ -284,7 +292,8 @@ internal sealed class BackgroundTaskAppService : IBackgroundTaskAppService
             var summary = MapToSummary(task);
             summary.TaskType = "分区执行";
             summary.DataSourceName = dataSourceLookup.TryGetValue(task.DataSourceId, out var dsName) ? dsName : "未知数据库";
-            if (configurationLookup.TryGetValue(task.PartitionConfigurationId, out var tableInfo))
+            if (task.PartitionConfigurationId.HasValue && 
+                configurationLookup.TryGetValue(task.PartitionConfigurationId.Value, out var tableInfo))
             {
                 summary.SourceTable = tableInfo.SourceTable;
                 summary.TargetTable = string.IsNullOrWhiteSpace(tableInfo.TargetTable) ? string.Empty : tableInfo.TargetTable;

@@ -39,6 +39,27 @@ builder.Services.AddSwaggerGen(options =>
 builder.Services.AddApplicationLayer();
 builder.Services.AddInfrastructureLayer(builder.Configuration);
 
+// 提前执行数据库迁移（必须在 Hangfire 初始化之前）
+using (var tempScope = builder.Services.BuildServiceProvider().CreateScope())
+{
+    var dbContext = tempScope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+    var logger = tempScope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    
+    try
+    {
+        if (dbContext.Database.IsRelational())
+        {
+            await dbContext.Database.MigrateAsync();
+            logger.LogInformation("数据库迁移成功完成");
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "数据库迁移失败，应用启动中止");
+        throw;
+    }
+}
+
 // 配置 Hangfire
 var hangfireConnectionString = builder.Configuration.GetConnectionString("ArchiveDatabase") ??
                                 "Server=localhost;Database=DbArchiveTool;Trusted_Connection=True;TrustServerCertificate=True";
@@ -65,8 +86,6 @@ builder.Services.AddHangfireServer(options =>
 });
 
 var app = builder.Build();
-
-await EnsureDatabaseAsync(app.Services, app.Logger);
 
 if (app.Environment.IsDevelopment())
 {
@@ -102,27 +121,5 @@ app.UseHttpsRedirection();
 app.MapControllers();
 
 app.Run();
-
-async Task EnsureDatabaseAsync(IServiceProvider services, ILogger logger)
-{
-    using var scope = services.CreateScope();
-    var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
-
-    try
-    {
-        if (!dbContext.Database.IsRelational())
-        {
-            await dbContext.Database.EnsureCreatedAsync();
-            return;
-        }
-
-        await dbContext.Database.MigrateAsync();
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "初始化数据库失败，请检查连接字符串和数据库权限配置。");
-        throw;
-    }
-}
 
 public partial class Program;

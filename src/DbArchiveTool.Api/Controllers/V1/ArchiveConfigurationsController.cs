@@ -1,4 +1,5 @@
 ﻿using DbArchiveTool.Api.DTOs.Archives;
+using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Domain.ArchiveConfigurations;
 using Microsoft.AspNetCore.Mvc;
 
@@ -13,13 +14,16 @@ namespace DbArchiveTool.Api.Controllers.V1;
 public sealed class ArchiveConfigurationsController : ControllerBase
 {
     private readonly IArchiveConfigurationRepository _repository;
+    private readonly IArchiveTaskScheduler _scheduler;
     private readonly ILogger<ArchiveConfigurationsController> _logger;
 
     public ArchiveConfigurationsController(
         IArchiveConfigurationRepository repository,
+        IArchiveTaskScheduler scheduler,
         ILogger<ArchiveConfigurationsController> logger)
     {
         _repository = repository;
+        _scheduler = scheduler;
         _logger = logger;
     }
 
@@ -60,9 +64,14 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DataSourceId = c.DataSourceId,
                 SourceSchemaName = c.SourceSchemaName,
                 SourceTableName = c.SourceTableName,
+                TargetSchemaName = c.TargetSchemaName,
+                TargetTableName = c.TargetTableName,
                 IsPartitionedTable = c.IsPartitionedTable,
                 ArchiveMethod = c.ArchiveMethod,
                 IsEnabled = c.IsEnabled,
+                EnableScheduledArchive = c.EnableScheduledArchive,
+                CronExpression = c.CronExpression,
+                NextArchiveAtUtc = c.NextArchiveAtUtc,
                 LastExecutionTimeUtc = c.LastExecutionTimeUtc,
                 LastExecutionStatus = c.LastExecutionStatus,
                 LastArchivedRowCount = c.LastArchivedRowCount,
@@ -106,6 +115,8 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DataSourceId = config.DataSourceId,
                 SourceSchemaName = config.SourceSchemaName,
                 SourceTableName = config.SourceTableName,
+                TargetSchemaName = config.TargetSchemaName,
+                TargetTableName = config.TargetTableName,
                 IsPartitionedTable = config.IsPartitionedTable,
                 PartitionConfigurationId = config.PartitionConfigurationId,
                 ArchiveFilterColumn = config.ArchiveFilterColumn,
@@ -114,6 +125,9 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DeleteSourceDataAfterArchive = config.DeleteSourceDataAfterArchive,
                 BatchSize = config.BatchSize,
                 IsEnabled = config.IsEnabled,
+                EnableScheduledArchive = config.EnableScheduledArchive,
+                CronExpression = config.CronExpression,
+                NextArchiveAtUtc = config.NextArchiveAtUtc,
                 LastExecutionTimeUtc = config.LastExecutionTimeUtc,
                 LastExecutionStatus = config.LastExecutionStatus,
                 LastArchivedRowCount = config.LastArchivedRowCount,
@@ -163,6 +177,24 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 return BadRequest(new { message = "源表名称不能为空" });
             }
 
+            DateTime? nextArchiveAtUtc = null;
+            if (request.EnableScheduledArchive)
+            {
+                if (string.IsNullOrWhiteSpace(request.CronExpression))
+                {
+                    return BadRequest(new { message = "启用定时归档时必须提供 Cron 表达式" });
+                }
+
+                nextArchiveAtUtc = CronScheduleHelper.GetNextOccurrenceUtc(
+                    request.CronExpression,
+                    DateTime.UtcNow);
+
+                if (nextArchiveAtUtc is null)
+                {
+                    return BadRequest(new { message = "Cron 表达式无效或无法计算下一次执行时间" });
+                }
+            }
+
             // 创建实体
             var config = new ArchiveConfiguration(
                 request.Name,
@@ -176,10 +208,17 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 request.ArchiveMethod,
                 request.DeleteSourceDataAfterArchive,
                 request.BatchSize,
-                request.PartitionConfigurationId);
+                request.PartitionConfigurationId,
+                request.TargetSchemaName,
+                request.TargetTableName,
+                request.EnableScheduledArchive,
+                request.CronExpression,
+                nextArchiveAtUtc);
 
             // 保存
             await _repository.AddAsync(config, cancellationToken);
+
+            await TrySyncSchedulerAsync(config, cancellationToken);
 
             _logger.LogInformation("创建归档配置成功: {Id} - {Name}", config.Id, config.Name);
 
@@ -192,6 +231,8 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DataSourceId = config.DataSourceId,
                 SourceSchemaName = config.SourceSchemaName,
                 SourceTableName = config.SourceTableName,
+                TargetSchemaName = config.TargetSchemaName,
+                TargetTableName = config.TargetTableName,
                 IsPartitionedTable = config.IsPartitionedTable,
                 PartitionConfigurationId = config.PartitionConfigurationId,
                 ArchiveFilterColumn = config.ArchiveFilterColumn,
@@ -200,6 +241,9 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DeleteSourceDataAfterArchive = config.DeleteSourceDataAfterArchive,
                 BatchSize = config.BatchSize,
                 IsEnabled = config.IsEnabled,
+                EnableScheduledArchive = config.EnableScheduledArchive,
+                CronExpression = config.CronExpression,
+                NextArchiveAtUtc = config.NextArchiveAtUtc,
                 LastExecutionTimeUtc = config.LastExecutionTimeUtc,
                 LastExecutionStatus = config.LastExecutionStatus,
                 LastArchivedRowCount = config.LastArchivedRowCount,
@@ -247,6 +291,24 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 return BadRequest(new { message = "配置名称不能为空" });
             }
 
+            DateTime? nextArchiveAtUtc = null;
+            if (request.EnableScheduledArchive)
+            {
+                if (string.IsNullOrWhiteSpace(request.CronExpression))
+                {
+                    return BadRequest(new { message = "启用定时归档时必须提供 Cron 表达式" });
+                }
+
+                nextArchiveAtUtc = CronScheduleHelper.GetNextOccurrenceUtc(
+                    request.CronExpression,
+                    DateTime.UtcNow);
+
+                if (nextArchiveAtUtc is null)
+                {
+                    return BadRequest(new { message = "Cron 表达式无效或无法计算下一次执行时间" });
+                }
+            }
+
             // 获取现有配置
             var config = await _repository.GetByIdAsync(id, cancellationToken);
             if (config == null)
@@ -268,11 +330,18 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 request.DeleteSourceDataAfterArchive,
                 request.BatchSize,
                 request.PartitionConfigurationId,
+                request.TargetSchemaName,
+                request.TargetTableName,
+                request.EnableScheduledArchive,
+                request.CronExpression,
+                nextArchiveAtUtc,
                 "API");
 
             await _repository.UpdateAsync(config, cancellationToken);
 
             _logger.LogInformation("更新归档配置成功: {Id} - {Name}", config.Id, config.Name);
+
+            await TrySyncSchedulerAsync(config, cancellationToken);
 
             // 返回更新后的资源
             var dto = new ArchiveConfigurationDetailDto
@@ -283,6 +352,8 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DataSourceId = config.DataSourceId,
                 SourceSchemaName = config.SourceSchemaName,
                 SourceTableName = config.SourceTableName,
+                TargetSchemaName = config.TargetSchemaName,
+                TargetTableName = config.TargetTableName,
                 IsPartitionedTable = config.IsPartitionedTable,
                 PartitionConfigurationId = config.PartitionConfigurationId,
                 ArchiveFilterColumn = config.ArchiveFilterColumn,
@@ -291,6 +362,9 @@ public sealed class ArchiveConfigurationsController : ControllerBase
                 DeleteSourceDataAfterArchive = config.DeleteSourceDataAfterArchive,
                 BatchSize = config.BatchSize,
                 IsEnabled = config.IsEnabled,
+                EnableScheduledArchive = config.EnableScheduledArchive,
+                CronExpression = config.CronExpression,
+                NextArchiveAtUtc = config.NextArchiveAtUtc,
                 LastExecutionTimeUtc = config.LastExecutionTimeUtc,
                 LastExecutionStatus = config.LastExecutionStatus,
                 LastArchivedRowCount = config.LastArchivedRowCount,
@@ -338,6 +412,8 @@ public sealed class ArchiveConfigurationsController : ControllerBase
 
             _logger.LogInformation("删除归档配置成功: {Id} - {Name}", config.Id, config.Name);
 
+            await TryRemoveSchedulerAsync(id, cancellationToken);
+
             return NoContent();
         }
         catch (Exception ex)
@@ -370,6 +446,8 @@ public sealed class ArchiveConfigurationsController : ControllerBase
             await _repository.UpdateAsync(config, cancellationToken);
 
             _logger.LogInformation("启用归档配置成功: {Id} - {Name}", config.Id, config.Name);
+
+            await TrySyncSchedulerAsync(config, cancellationToken);
 
             return Ok(new { message = "归档配置已启用" });
         }
@@ -404,12 +482,44 @@ public sealed class ArchiveConfigurationsController : ControllerBase
 
             _logger.LogInformation("禁用归档配置成功: {Id} - {Name}", config.Id, config.Name);
 
+            await TrySyncSchedulerAsync(config, cancellationToken);
+
             return Ok(new { message = "归档配置已禁用" });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "禁用归档配置失败: {Id}", id);
             return StatusCode(500, new { message = "禁用归档配置失败", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 尝试同步 Hangfire 定时任务,若失败则仅记录日志。
+    /// </summary>
+    private async Task TrySyncSchedulerAsync(ArchiveConfiguration config, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _scheduler.SyncRecurringJobAsync(config, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "同步归档配置定时任务失败: {ConfigId}", config.Id);
+        }
+    }
+
+    /// <summary>
+    /// 尝试移除 Hangfire 定时任务,若失败则仅记录日志。
+    /// </summary>
+    private async Task TryRemoveSchedulerAsync(Guid configurationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _scheduler.RemoveRecurringJobAsync(configurationId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "移除归档配置定时任务失败: {ConfigId}", configurationId);
         }
     }
 }

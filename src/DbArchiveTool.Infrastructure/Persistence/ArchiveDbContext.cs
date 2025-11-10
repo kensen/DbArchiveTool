@@ -73,6 +73,8 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.DataSourceId).IsRequired();
             builder.Property(x => x.SourceSchemaName).IsRequired().HasMaxLength(128);
             builder.Property(x => x.SourceTableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetSchemaName).HasMaxLength(128);
+            builder.Property(x => x.TargetTableName).HasMaxLength(128);
             builder.Property(x => x.IsPartitionedTable).IsRequired();
             builder.Property(x => x.PartitionConfigurationId);
             builder.Property(x => x.ArchiveFilterColumn).HasMaxLength(128);
@@ -81,6 +83,9 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.DeleteSourceDataAfterArchive).IsRequired().HasDefaultValue(true);
             builder.Property(x => x.BatchSize).IsRequired().HasDefaultValue(10000);
             builder.Property(x => x.IsEnabled).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.EnableScheduledArchive).IsRequired().HasDefaultValue(false);
+            builder.Property(x => x.CronExpression).HasMaxLength(100);
+            builder.Property(x => x.NextArchiveAtUtc);
             builder.Property(x => x.LastExecutionTimeUtc);
             builder.Property(x => x.LastExecutionStatus).HasMaxLength(50);
             builder.Property(x => x.LastArchivedRowCount);
@@ -89,6 +94,11 @@ public sealed class ArchiveDbContext : DbContext
             builder.HasIndex(x => new { x.DataSourceId, x.SourceSchemaName, x.SourceTableName })
                 .IsUnique()
                 .HasFilter("[IsDeleted] = 0");
+
+            // 调度索引:仅对启用的定时任务生效
+            builder.HasIndex(x => x.NextArchiveAtUtc)
+                .HasDatabaseName("IX_ArchiveConfiguration_NextArchive")
+                .HasFilter("[IsEnabled] = 1 AND [EnableScheduledArchive] = 1");
         });
 
         modelBuilder.Entity<PartitionCommand>(builder =>

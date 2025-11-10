@@ -1,6 +1,10 @@
-﻿using System.Net.Http.Json;
+﻿using System;
+using System.Collections.Generic;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
 using DbArchiveTool.Application.Partitions;
 using DbArchiveTool.Shared.Results;
 using Microsoft.AspNetCore.Mvc;
@@ -80,6 +84,101 @@ public sealed class PartitionArchiveApiClient
         {
             logger.LogError(ex, "调用分区切换归档接口失败");
             return Result<Guid>.Failure("提交分区切换任务失败，请稍后重试。");
+        }
+    }
+
+    /// <summary>检查 BCP 归档是否满足执行条件。</summary>
+    public async Task<Result<ArchiveInspectionResultDto>> InspectBcpAsync(BcpArchiveInspectRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync("api/v1/partition-archive/bcp/inspect", request, JsonOptions, cancellationToken);
+            return await ReadResultAsync<ArchiveInspectionResultDto>(response, "检查 BCP 归档", cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "调用 BCP 归档检查接口失败");
+            return Result<ArchiveInspectionResultDto>.Failure("请求 BCP 归档检查失败，请稍后重试。");
+        }
+    }
+
+    /// <summary>提交 BCP 归档任务。</summary>
+    public async Task<Result<Guid>> ArchiveByBcpAsync(BcpArchiveExecuteRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync("api/v1/partition-archive/bcp/execute", request, JsonOptions, cancellationToken);
+            return await ReadResultAsync<Guid>(response, "提交 BCP 归档任务", cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "调用 BCP 归档接口失败");
+            return Result<Guid>.Failure("提交 BCP 归档任务失败，请稍后重试。");
+        }
+    }
+
+    /// <summary>执行 BCP/BulkCopy 归档的自动修复。</summary>
+    public async Task<Result<string>> ExecuteAutoFixAsync(ArchiveAutoFixRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync("api/v1/partition-archive/autofix", request, JsonOptions, cancellationToken);
+            return await ReadResultAsync<string>(response, "执行自动修复", cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "调用自动修复接口失败");
+            return Result<string>.Failure("执行自动修复失败，请稍后重试。");
+        }
+    }
+
+    /// <summary>检查 BulkCopy 归档是否满足执行条件。</summary>
+    public async Task<Result<ArchiveInspectionResultDto>> InspectBulkCopyAsync(BulkCopyArchiveInspectRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync("api/v1/partition-archive/bulkcopy/inspect", request, JsonOptions, cancellationToken);
+            return await ReadResultAsync<ArchiveInspectionResultDto>(response, "检查 BulkCopy 归档", cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "调用 BulkCopy 归档检查接口失败");
+            return Result<ArchiveInspectionResultDto>.Failure("请求 BulkCopy 归档检查失败，请稍后重试。");
+        }
+    }
+
+    /// <summary>提交 BulkCopy 归档任务。</summary>
+    public async Task<Result<Guid>> ArchiveByBulkCopyAsync(BulkCopyArchiveExecuteRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await httpClient.PostAsJsonAsync("api/v1/partition-archive/bulkcopy/execute", request, JsonOptions, cancellationToken);
+            return await ReadResultAsync<Guid>(response, "提交 BulkCopy 归档任务", cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "调用 BulkCopy 归档接口失败");
+            return Result<Guid>.Failure("提交 BulkCopy 归档任务失败，请稍后重试。");
         }
     }
 

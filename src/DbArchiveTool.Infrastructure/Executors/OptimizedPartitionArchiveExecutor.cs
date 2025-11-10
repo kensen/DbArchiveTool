@@ -53,13 +53,21 @@ public sealed class OptimizedPartitionArchiveExecutor
     {
         var startTime = DateTime.UtcNow;
         var stagingTableName = $"{config.SourceTableName}_Archive_Staging_{Guid.NewGuid():N}";
+        var targetSchemaName = string.IsNullOrWhiteSpace(config.TargetSchemaName)
+            ? config.SourceSchemaName
+            : config.TargetSchemaName;
+        var targetTableName = string.IsNullOrWhiteSpace(config.TargetTableName)
+            ? config.SourceTableName
+            : config.TargetTableName;
 
         try
         {
             _logger.LogInformation(
-                "开始优化分区归档: {Schema}.{Table} 分区 {Partition}",
+                "开始优化分区归档: {Schema}.{Table} -> {TargetSchema}.{TargetTable}, 分区 {Partition}",
                 config.SourceSchemaName,
                 config.SourceTableName,
+                targetSchemaName,
+                targetTableName,
                 partitionNumber);
 
             // 步骤 1: 验证分区表结构
@@ -72,7 +80,7 @@ public sealed class OptimizedPartitionArchiveExecutor
                 config.SourceTableName,
                 cancellationToken);
 
-            if (string.IsNullOrEmpty(partitionInfo.PartitionFunction))
+            if (partitionInfo == null || string.IsNullOrEmpty(partitionInfo.PartitionFunction))
             {
                 throw new InvalidOperationException(
                     $"表 {config.SourceSchemaName}.{config.SourceTableName} 不是分区表");
@@ -86,7 +94,12 @@ public sealed class OptimizedPartitionArchiveExecutor
                 partitionNumber,
                 cancellationToken);
 
-            _logger.LogInformation("分区 {Partition} 包含 {RowCount} 行数据", partitionNumber, rowCount);
+            _logger.LogInformation(
+                "分区 {Partition} 包含 {RowCount} 行数据, 目标表 {TargetSchema}.{TargetTable}",
+                partitionNumber,
+                rowCount,
+                targetSchemaName,
+                targetTableName);
 
             // 步骤 2: 创建临时归档表(与源表结构相同)
             ReportProgress(progressCallback, "创建临时归档表", 10, rowCount);
@@ -125,7 +138,8 @@ public sealed class OptimizedPartitionArchiveExecutor
                     targetConnectionString,
                     config.SourceSchemaName,
                     stagingTableName,
-                    config.SourceTableName,
+                    targetSchemaName,
+                    targetTableName,
                     progressCallback,
                     rowCount,
                     cancellationToken);
@@ -137,7 +151,8 @@ public sealed class OptimizedPartitionArchiveExecutor
                     targetConnectionString,
                     config.SourceSchemaName,
                     stagingTableName,
-                    config.SourceTableName,
+                    targetSchemaName,
+                    targetTableName,
                     progressCallback,
                     rowCount,
                     cancellationToken);
@@ -296,8 +311,9 @@ public sealed class OptimizedPartitionArchiveExecutor
     private async Task<long> TransferViaBcpAsync(
         string sourceConnectionString,
         string targetConnectionString,
-        string schemaName,
+        string sourceSchemaName,
         string stagingTableName,
+        string targetSchemaName,
         string targetTableName,
         Action<ArchiveProgress>? progressCallback,
         long totalRows,
@@ -309,8 +325,8 @@ public sealed class OptimizedPartitionArchiveExecutor
             UseNativeFormat = true
         };
 
-        var sourceQuery = $"SELECT * FROM [{schemaName}].[{stagingTableName}]";
-        var targetTable = $"[{schemaName}].[{targetTableName}]";
+        var sourceQuery = $"SELECT * FROM [{sourceSchemaName}].[{stagingTableName}]";
+        var targetTable = $"[{targetSchemaName}].[{targetTableName}]";
 
         var result = await _bcpExecutor.ExecuteAsync(
             sourceConnectionString,
@@ -340,8 +356,9 @@ public sealed class OptimizedPartitionArchiveExecutor
     private async Task<long> TransferViaBulkCopyAsync(
         string sourceConnectionString,
         string targetConnectionString,
-        string schemaName,
+        string sourceSchemaName,
         string stagingTableName,
+        string targetSchemaName,
         string targetTableName,
         Action<ArchiveProgress>? progressCallback,
         long totalRows,
@@ -355,8 +372,8 @@ public sealed class OptimizedPartitionArchiveExecutor
             TimeoutSeconds = 3600
         };
 
-        var sourceQuery = $"SELECT * FROM [{schemaName}].[{stagingTableName}]";
-        var targetTable = $"[{schemaName}].[{targetTableName}]";
+        var sourceQuery = $"SELECT * FROM [{sourceSchemaName}].[{stagingTableName}]";
+        var targetTable = $"[{targetSchemaName}].[{targetTableName}]";
 
         var result = await _bulkCopyExecutor.ExecuteAsync(
             sourceConnectionString,

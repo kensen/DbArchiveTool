@@ -59,3 +59,96 @@ public sealed record SwitchArchiveAutoFixDto(
     public SwitchPartitionAutoFixRequest ToApplicationRequest()
         => new(PartitionConfigurationId, DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, CreateStagingTable, RequestedBy, AutoFixStepCodes);
 }
+
+/// <summary>
+/// BCP 归档预检请求 DTO。
+/// </summary>
+public sealed record BcpArchiveInspectDto(
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
+    string SourcePartitionKey,
+    string TargetTable,
+    string? TargetDatabase,
+    string TempDirectory,
+    string RequestedBy)
+{
+    public BcpArchiveInspectRequest ToApplicationRequest()
+        => new(DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, TempDirectory, RequestedBy);
+}
+
+/// <summary>
+/// BCP/BulkCopy 归档自动修复请求 DTO。
+/// </summary>
+public sealed record ArchiveAutoFixDto(
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
+    string TargetTable,
+    string FixCode,
+    string RequestedBy)
+{
+    public ArchiveAutoFixRequest ToApplicationRequest()
+        => new(DataSourceId, SchemaName, TableName, TargetTable, FixCode, RequestedBy);
+}
+
+/// <summary>
+/// BCP 归档执行请求 DTO。
+/// </summary>
+public sealed record BcpArchiveExecuteDto(
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
+    string SourcePartitionKey,
+    string TargetTable,
+    string? TargetDatabase,
+    string TempDirectory,
+    int BatchSize,
+    bool UseNativeFormat,
+    int MaxErrors,
+    int TimeoutSeconds,
+    bool BackupConfirmed,
+    string RequestedBy)
+{
+    public BcpArchiveExecuteRequest ToApplicationRequest()
+        => new(DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, 
+               TempDirectory, BatchSize, UseNativeFormat, MaxErrors, TimeoutSeconds, BackupConfirmed, RequestedBy);
+}
+
+/// <summary>
+/// BulkCopy 归档预检请求 DTO。
+/// </summary>
+public sealed record BulkCopyArchiveInspectDto(
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
+    string SourcePartitionKey,
+    string TargetTable,
+    string? TargetDatabase,
+    string RequestedBy)
+{
+    public BulkCopyArchiveInspectRequest ToApplicationRequest()
+        => new(DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase, RequestedBy);
+}
+
+/// <summary>
+/// BulkCopy 归档执行请求 DTO。
+/// </summary>
+public sealed record BulkCopyArchiveExecuteDto(
+    Guid DataSourceId,
+    string SchemaName,
+    string TableName,
+    string SourcePartitionKey,
+    string TargetTable,
+    string? TargetDatabase,
+    int BatchSize,
+    int NotifyAfterRows,
+    int TimeoutSeconds,
+    bool EnableStreaming,
+    bool BackupConfirmed,
+    string RequestedBy)
+{
+    public BulkCopyArchiveExecuteRequest ToApplicationRequest()
+        => new(DataSourceId, SchemaName, TableName, SourcePartitionKey, TargetTable, TargetDatabase,
+               BatchSize, NotifyAfterRows, TimeoutSeconds, EnableStreaming, BackupConfirmed, RequestedBy);
+}

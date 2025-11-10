@@ -84,4 +84,68 @@ public sealed class PartitionArchiveController : ControllerBase
         var result = await archiveAppService.PlanArchiveWithBulkCopyAsync(request, cancellationToken);
         return result.IsSuccess ? Ok(result) : BadRequest(result);
     }
+
+    /// <summary>
+    /// 预检 BCP 归档条件。
+    /// </summary>
+    [HttpPost("bcp/inspect")]
+    [ProducesResponseType(typeof(Result<ArchiveInspectionResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<ArchiveInspectionResultDto>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> InspectBcpAsync([FromBody] BcpArchiveInspectDto request, CancellationToken cancellationToken)
+    {
+        var result = await archiveAppService.InspectBcpAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
+    /// 提交 BCP 归档任务。
+    /// </summary>
+    [HttpPost("bcp/execute")]
+    [ProducesResponseType(typeof(Result<Guid>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<Guid>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ExecuteBcpAsync([FromBody] BcpArchiveExecuteDto request, CancellationToken cancellationToken)
+    {
+        var result = await archiveAppService.ExecuteWithBcpAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(Result<Guid>.Success(result.Value))
+            : BadRequest(Result<Guid>.Failure(result.Error!));
+    }
+
+    /// <summary>
+    /// 执行 BCP/BulkCopy 归档自动修复步骤。
+    /// </summary>
+    [HttpPost("autofix")]
+    [ProducesResponseType(typeof(Result<string>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<string>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ExecuteAutoFixAsync([FromBody] ArchiveAutoFixDto request, CancellationToken cancellationToken)
+    {
+        var result = await archiveAppService.ExecuteAutoFixAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
+    /// 预检 BulkCopy 归档条件。
+    /// </summary>
+    [HttpPost("bulkcopy/inspect")]
+    [ProducesResponseType(typeof(Result<ArchiveInspectionResultDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<ArchiveInspectionResultDto>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> InspectBulkCopyAsync([FromBody] BulkCopyArchiveInspectDto request, CancellationToken cancellationToken)
+    {
+        var result = await archiveAppService.InspectBulkCopyAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
+    /// 提交 BulkCopy 归档任务。
+    /// </summary>
+    [HttpPost("bulkcopy/execute")]
+    [ProducesResponseType(typeof(Result<Guid>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(Result<Guid>), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ExecuteBulkCopyAsync([FromBody] BulkCopyArchiveExecuteDto request, CancellationToken cancellationToken)
+    {
+        var result = await archiveAppService.ExecuteWithBulkCopyAsync(request.ToApplicationRequest(), cancellationToken);
+        return result.IsSuccess
+            ? Ok(Result<Guid>.Success(result.Value))
+            : BadRequest(Result<Guid>.Failure(result.Error!));
+    }
 }

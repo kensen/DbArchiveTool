@@ -13,6 +13,7 @@
     <PackageReference Include="Moq" Version="4.20.70" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Hangfire.Core" Version="1.8.21" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +24,8 @@
     <ProjectReference Include="..\..\src\DbArchiveTool.Domain\DbArchiveTool.Domain.csproj" />
     <ProjectReference Include="..\..\src\DbArchiveTool.Application\DbArchiveTool.Application.csproj" />
     <ProjectReference Include="..\..\src\DbArchiveTool.Shared\DbArchiveTool.Shared.csproj" />
+    <ProjectReference Include="..\..\src\DbArchiveTool.Infrastructure\DbArchiveTool.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\DbArchiveTool.Api\DbArchiveTool.Api.csproj" />
   </ItemGroup>
 
 </Project>

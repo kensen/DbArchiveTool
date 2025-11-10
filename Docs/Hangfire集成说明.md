@@ -42,6 +42,14 @@ Hangfire 归档调度系统 (新增)
    - Dashboard 访问授权过滤器
    - 目前允许所有访问(开发环境)
 
+5. **ArchiveTaskScheduler** (`Infrastructure/Scheduling/ArchiveTaskScheduler.cs`)
+    - 归档配置与 Hangfire 周期任务同步器
+    - 在配置启用、禁用、删除时自动注册或移除定时任务
+
+6. **CronScheduleHelper** (`Application/Archives/CronScheduleHelper.cs`)
+    - 基于 NCrontab 的 Cron 解析工具
+    - 创建/更新配置时计算 `NextArchiveAtUtc` 并校验表达式
+
 ## 配置详情
 
 ### Hangfire 配置 (Program.cs)
@@ -65,6 +73,14 @@ Hangfire 归档调度系统 (新增)
 ### 预配置的定时任务
 
 - **daily-archive-all**: 每天凌晨 2:00 执行所有启用的归档配置
+
+## 归档配置同步策略
+
+- `ArchiveConfigurationsController` 在创建、更新、启用、禁用、删除配置时会调用 `IArchiveTaskScheduler`。
+- `ArchiveTaskScheduler` 根据配置状态决定调用 `IRecurringJobManager.AddOrUpdate` 或 `RemoveIfExists`,实现与 Hangfire 的自动对齐。
+- `CronScheduleHelper` 基于 NCrontab 校验 Cron 表达式,并计算 `NextArchiveAtUtc` 用于界面展示和后续触发。
+- 若配置被禁用或未启用定时归档,调度器会移除对应的周期任务,避免残留的历史计划继续执行。
+- 调度失败会记录错误日志,但不会阻断配置的 CRUD 操作,便于后续人工排查。
 
 ## API 端点
 

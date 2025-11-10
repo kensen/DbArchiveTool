@@ -20,7 +20,7 @@ public sealed class BackgroundTask : AggregateRoot
     }
 
     private BackgroundTask(
-        Guid partitionConfigurationId,
+        Guid? partitionConfigurationId,
         Guid dataSourceId,
         string requestedBy,
         string? backupReference,
@@ -28,7 +28,7 @@ public sealed class BackgroundTask : AggregateRoot
         int priority)
         : this()
     {
-        PartitionConfigurationId = EnsureGuid(partitionConfigurationId, nameof(partitionConfigurationId));
+        PartitionConfigurationId = partitionConfigurationId == Guid.Empty ? null : partitionConfigurationId;
         DataSourceId = EnsureGuid(dataSourceId, nameof(dataSourceId));
         RequestedBy = EnsureNotEmpty(requestedBy, nameof(requestedBy));
         BackupReference = NormalizeOptional(backupReference);
@@ -36,8 +36,8 @@ public sealed class BackgroundTask : AggregateRoot
         Priority = priority;
     }
 
-    /// <summary>关联的分区配置草稿标识。</summary>
-    public Guid PartitionConfigurationId { get; private set; }
+    /// <summary>关联的分区配置草稿标识（可空,用于 BCP/BulkCopy 等非分区归档场景）。</summary>
+    public Guid? PartitionConfigurationId { get; private set; }
 
     /// <summary>分区所在的归档数据源标识。</summary>
     public Guid DataSourceId { get; private set; }
@@ -107,7 +107,7 @@ public sealed class BackgroundTask : AggregateRoot
     /// 创建新的分区执行任务。
     /// </summary>
     public static BackgroundTask Create(
-        Guid partitionConfigurationId,
+        Guid? partitionConfigurationId,
         Guid dataSourceId,
         string requestedBy,
         string createdBy,

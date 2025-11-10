@@ -69,6 +69,18 @@
                         <Text Code>@($"{context.SourceSchemaName}.{context.SourceTableName}")</Text>
                     </Template>
                 </PropertyColumn>
+                <PropertyColumn Property="@(c => c.TargetTableName)" Title="目标表" Width="200px">
+                    <Template>
+                        @if (!string.IsNullOrWhiteSpace(context.TargetTableName))
+                        {
+                            <span class="ant-typography ant-typography-code">@GetTargetTableDisplay(context)</span>
+                        }
+                        else
+                        {
+                            <Tag Color="@("default")">同源表</Tag>
+                        }
+                    </Template>
+                </PropertyColumn>
                 <PropertyColumn Property="@(c => c.IsPartitionedTable)" Title="分区表" Width="80px">
                     <Template>
                         @if (context.IsPartitionedTable)
@@ -101,6 +113,11 @@
                 <PropertyColumn Property="@(c => c.LastExecutionTimeUtc)" Title="上次执行" Width="180px">
                     <Template>
                         @(context.LastExecutionTimeUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
+                    </Template>
+                </PropertyColumn>
+                <PropertyColumn Property="@(c => c.NextArchiveAtUtc)" Title="下次执行" Width="180px">
+                    <Template>
+                        @(context.NextArchiveAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? (context.EnableScheduledArchive ? "待计算" : "-"))
                     </Template>
                 </PropertyColumn>
                 <PropertyColumn Property="@(c => c.LastArchivedRowCount)" Title="上次归档行数" Width="120px">
@@ -170,6 +187,16 @@
             <DescriptionsItem Title="源表">
                 <Text Code>@($"{_selectedConfig.SourceSchemaName}.{_selectedConfig.SourceTableName}")</Text>
             </DescriptionsItem>
+            <DescriptionsItem Title="目标表">
+                @if (!string.IsNullOrWhiteSpace(_selectedConfig.TargetTableName))
+                {
+                    <span class="ant-typography ant-typography-code">@GetTargetTableDisplay(_selectedConfig)</span>
+                }
+                else
+                {
+                    <Text>同源表</Text>
+                }
+            </DescriptionsItem>
             <DescriptionsItem Title="分区表">
                 @(_selectedConfig.IsPartitionedTable ? "是" : "否")
             </DescriptionsItem>
@@ -204,6 +231,15 @@
                     <Text Code>@_selectedConfig.ArchiveFilterCondition</Text>
                 </DescriptionsItem>
             }
+            <DescriptionsItem Title="定时归档">
+                @(_selectedConfig.EnableScheduledArchive ? "启用" : "未启用")
+            </DescriptionsItem>
+            <DescriptionsItem Title="Cron 表达式">
+                @(_selectedConfig.EnableScheduledArchive ? (_selectedConfig.CronExpression ?? "-") : "-")
+            </DescriptionsItem>
+            <DescriptionsItem Title="下次执行时间" Span="2">
+                @(_selectedConfig.NextArchiveAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? (_selectedConfig.EnableScheduledArchive ? "待计算" : "-"))
+            </DescriptionsItem>
             <DescriptionsItem Title="上次执行时间">
                 @(_selectedConfig.LastExecutionTimeUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-")
             </DescriptionsItem>
@@ -267,6 +303,12 @@
         <FormItem Label="源表名" Required>
             <Input @bind-Value="@_formModel.SourceTableName" Placeholder="请输入源表名" />
         </FormItem>
+        <FormItem Label="目标架构名">
+            <Input @bind-Value="_formModel.TargetSchemaName" Placeholder="留空表示与源架构一致" />
+        </FormItem>
+        <FormItem Label="目标表名">
+            <Input @bind-Value="_formModel.TargetTableName" Placeholder="留空表示与源表一致" />
+        </FormItem>
         <FormItem Label="分区表">
             <Switch @bind-Checked="@_formModel.IsPartitionedTable" />
         </FormItem>
@@ -289,6 +331,16 @@
         <FormItem Label="删除源数据">
             <Switch @bind-Checked="@_formModel.DeleteSourceDataAfterArchive" />
         </FormItem>
+        <FormItem Label="定时归档">
+            <Switch @bind-Checked="_formModel.EnableScheduledArchive" />
+        </FormItem>
+        @if (_formModel.EnableScheduledArchive)
+        {
+            <FormItem Label="Cron 表达式" Required>
+                <Input @bind-Value="_formModel.CronExpression" Placeholder="例如: 0 0 2 * * ?" />
+            </FormItem>
+            <Alert Message="Cron 表达式需符合 NCrontab 语法, 支持带秒的 6 段格式" Type="@AlertType.Info" ShowIcon="true" />
+        }
     </Form>
 </Modal>
 
@@ -414,13 +466,17 @@
                 DataSourceId = config.DataSourceId,
                 SourceSchemaName = config.SourceSchemaName,
                 SourceTableName = config.SourceTableName,
+                TargetSchemaName = config.TargetSchemaName,
+                TargetTableName = config.TargetTableName,
                 IsPartitionedTable = config.IsPartitionedTable,
                 PartitionConfigurationId = config.PartitionConfigurationId,
                 ArchiveFilterColumn = config.ArchiveFilterColumn,
                 ArchiveFilterCondition = config.ArchiveFilterCondition,
                 ArchiveMethod = config.ArchiveMethod,
                 DeleteSourceDataAfterArchive = config.DeleteSourceDataAfterArchive,
-                BatchSize = config.BatchSize
+                BatchSize = config.BatchSize,
+                EnableScheduledArchive = config.EnableScheduledArchive,
+                CronExpression = config.CronExpression
             };
             _modalVisible = true;
         }
@@ -434,6 +490,12 @@
     {
         try
         {
+            if (_formModel.EnableScheduledArchive && string.IsNullOrWhiteSpace(_formModel.CronExpression))
+            {
+                Message.Warning("启用定时归档时必须填写 Cron 表达式");
+                return;
+            }
+
             if (_isEditMode)
             {
                 var updateModel = new UpdateArchiveConfigurationModel
@@ -443,13 +505,17 @@
                     DataSourceId = _formModel.DataSourceId,
                     SourceSchemaName = _formModel.SourceSchemaName,
                     SourceTableName = _formModel.SourceTableName,
+                    TargetSchemaName = _formModel.TargetSchemaName,
+                    TargetTableName = _formModel.TargetTableName,
                     IsPartitionedTable = _formModel.IsPartitionedTable,
                     PartitionConfigurationId = _formModel.PartitionConfigurationId,
                     ArchiveFilterColumn = _formModel.ArchiveFilterColumn,
                     ArchiveFilterCondition = _formModel.ArchiveFilterCondition,
                     ArchiveMethod = _formModel.ArchiveMethod,
                     DeleteSourceDataAfterArchive = _formModel.DeleteSourceDataAfterArchive,
-                    BatchSize = _formModel.BatchSize
+                    BatchSize = _formModel.BatchSize,
+                    EnableScheduledArchive = _formModel.EnableScheduledArchive,
+                    CronExpression = _formModel.CronExpression
                 };
                 await ArchiveConfigApi.UpdateAsync(_editingConfigId, updateModel);
                 Message.Success("更新成功");
@@ -463,13 +529,17 @@
                     DataSourceId = _formModel.DataSourceId,
                     SourceSchemaName = _formModel.SourceSchemaName,
                     SourceTableName = _formModel.SourceTableName,
+                    TargetSchemaName = _formModel.TargetSchemaName,
+                    TargetTableName = _formModel.TargetTableName,
                     IsPartitionedTable = _formModel.IsPartitionedTable,
                     PartitionConfigurationId = _formModel.PartitionConfigurationId,
                     ArchiveFilterColumn = _formModel.ArchiveFilterColumn,
                     ArchiveFilterCondition = _formModel.ArchiveFilterCondition,
                     ArchiveMethod = _formModel.ArchiveMethod,
                     DeleteSourceDataAfterArchive = _formModel.DeleteSourceDataAfterArchive,
-                    BatchSize = _formModel.BatchSize
+                    BatchSize = _formModel.BatchSize,
+                    EnableScheduledArchive = _formModel.EnableScheduledArchive,
+                    CronExpression = _formModel.CronExpression
                 };
                 await ArchiveConfigApi.CreateAsync(createModel);
                 Message.Success("创建成功");
@@ -544,6 +614,8 @@
         public Guid DataSourceId { get; set; }
         public string SourceSchemaName { get; set; } = "dbo";
         public string SourceTableName { get; set; } = string.Empty;
+        public string? TargetSchemaName { get; set; }
+        public string? TargetTableName { get; set; }
         public bool IsPartitionedTable { get; set; }
         public Guid? PartitionConfigurationId { get; set; }
         public string? ArchiveFilterColumn { get; set; }
@@ -551,11 +623,29 @@
         public ArchiveMethod ArchiveMethod { get; set; } = ArchiveMethod.PartitionSwitch;
         public bool DeleteSourceDataAfterArchive { get; set; } = true;
         public int BatchSize { get; set; } = 10000;
+        public bool EnableScheduledArchive { get; set; }
+        public string? CronExpression { get; set; }
     }
 
     private class DataSourceModel
     {
         public Guid Id { get; set; }
         public string ServerName { get; set; } = string.Empty;
+    }
+
+    private static string GetTargetTableDisplay(ArchiveConfigurationListItemModel item)
+    {
+        var schema = string.IsNullOrWhiteSpace(item.TargetSchemaName)
+            ? item.SourceSchemaName
+            : item.TargetSchemaName!;
+        return $"{schema}.{item.TargetTableName!}";
+    }
+
+    private static string GetTargetTableDisplay(ArchiveConfigurationDetailModel item)
+    {
+        var schema = string.IsNullOrWhiteSpace(item.TargetSchemaName)
+            ? item.SourceSchemaName
+            : item.TargetSchemaName!;
+        return $"{schema}.{item.TargetTableName!}";
     }
 }

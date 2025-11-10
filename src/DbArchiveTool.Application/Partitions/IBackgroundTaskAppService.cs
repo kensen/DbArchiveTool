@@ -51,7 +51,7 @@ public sealed record StartBackgroundTaskRequest(
 public class BackgroundTaskSummaryDto
 {
     public Guid Id { get; set; }
-    public Guid PartitionConfigurationId { get; set; }
+    public Guid? PartitionConfigurationId { get; set; }
     public Guid DataSourceId { get; set; }
     public string TaskType { get; set; } = string.Empty;
     public string DataSourceName { get; set; } = string.Empty;

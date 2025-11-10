@@ -126,11 +126,20 @@ public sealed class ArchiveOrchestrationService
             // 步骤 5: 更新配置的最后执行信息
             if (result.Success)
             {
+                DateTime? nextArchiveAtUtc = null;
+                if (config.EnableScheduledArchive && !string.IsNullOrWhiteSpace(config.CronExpression))
+                {
+                    nextArchiveAtUtc = CronScheduleHelper.GetNextOccurrenceUtc(
+                        config.CronExpression,
+                        DateTime.UtcNow);
+                }
+
                 config.UpdateLastExecution(
                     DateTime.UtcNow,
                     "Success",
                     result.RowsArchived,
-                    "SYSTEM");
+                    "SYSTEM",
+                    nextArchiveAtUtc);
 
                 await _configRepository.UpdateAsync(config, cancellationToken);
             }

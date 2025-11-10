@@ -12,8 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DbArchiveTool.Infrastructure.Migrations
 {
     [DbContext(typeof(ArchiveDbContext))]
-    [Migration("20251104085629_AddArchiveConfiguration")]
-    partial class AddArchiveConfiguration
+    [Migration("20251110032258_MakePartitionConfigurationIdNullable")]
+    partial class MakePartitionConfigurationIdNullable
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -95,6 +95,10 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<string>("CronExpression")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<Guid>("DataSourceId")
                         .HasColumnType("uniqueidentifier");
 
@@ -106,6 +110,11 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.Property<string>("Description")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
+
+                    b.Property<bool>("EnableScheduledArchive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("bit");
@@ -133,6 +142,9 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<DateTime?>("NextArchiveAtUtc")
+                        .HasColumnType("datetime2");
+
                     b.Property<Guid?>("PartitionConfigurationId")
                         .HasColumnType("uniqueidentifier");
 
@@ -146,6 +158,14 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("nvarchar(128)");
 
+                    b.Property<string>("TargetSchemaName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("TargetTableName")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
                     b.Property<DateTime>("UpdatedAtUtc")
                         .HasColumnType("datetime2");
 
@@ -154,6 +174,10 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("NextArchiveAtUtc")
+                        .HasDatabaseName("IX_ArchiveConfiguration_NextArchive")
+                        .HasFilter("[IsEnabled] = 1 AND [EnableScheduledArchive] = 1");
 
                     b.HasIndex("DataSourceId", "SourceSchemaName", "SourceTableName")
                         .IsUnique()
@@ -380,7 +404,8 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .HasColumnType("int")
                         .HasDefaultValue(0);
 
-                    b.Property<Guid>("PartitionConfigurationId")
+                    b.Property<Guid?>("PartitionConfigurationId")
+                        .IsRequired()
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<string>("Phase")

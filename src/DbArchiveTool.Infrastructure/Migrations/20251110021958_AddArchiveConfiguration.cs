@@ -21,6 +21,8 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     DataSourceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     SourceSchemaName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
                     SourceTableName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    TargetSchemaName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    TargetTableName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
                     IsPartitionedTable = table.Column<bool>(type: "bit", nullable: false),
                     PartitionConfigurationId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
                     ArchiveFilterColumn = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
@@ -28,6 +30,9 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     ArchiveMethod = table.Column<int>(type: "int", nullable: false),
                     DeleteSourceDataAfterArchive = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
                     BatchSize = table.Column<int>(type: "int", nullable: false, defaultValue: 10000),
+                    EnableScheduledArchive = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
+                    CronExpression = table.Column<string>(type: "nvarchar(100)", maxLength: 100, nullable: true),
+                    NextArchiveAtUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
                     IsEnabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
                     LastExecutionTimeUtc = table.Column<DateTime>(type: "datetime2", nullable: true),
                     LastExecutionStatus = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: true),
@@ -49,6 +54,12 @@ namespace DbArchiveTool.Infrastructure.Migrations
                 columns: new[] { "DataSourceId", "SourceSchemaName", "SourceTableName" },
                 unique: true,
                 filter: "[IsDeleted] = 0");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ArchiveConfiguration_NextArchive",
+                table: "ArchiveConfiguration",
+                column: "NextArchiveAtUtc",
+                filter: "[IsEnabled] = 1 AND [EnableScheduledArchive] = 1");
         }
 
         /// <inheritdoc />
