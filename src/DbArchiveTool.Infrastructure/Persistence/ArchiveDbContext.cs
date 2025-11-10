@@ -187,7 +187,7 @@ public sealed class ArchiveDbContext : DbContext
         {
             builder.ToTable("BackgroundTask");
             builder.HasKey(x => x.Id);
-            builder.Property(x => x.PartitionConfigurationId).IsRequired();
+            builder.Property(x => x.PartitionConfigurationId).IsRequired(false); // 可空,用于 BCP/BulkCopy 等非分区归档场景
             builder.Property(x => x.DataSourceId).IsRequired();
             builder.Property(x => x.OperationType)
                 .HasConversion<int>()

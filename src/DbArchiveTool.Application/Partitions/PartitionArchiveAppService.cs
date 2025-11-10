@@ -189,11 +189,37 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                     false, false, false, null, blockingIssues, warnings, autoFixSteps));
             }
 
-            // TODO: 检查目标表是否存在
-            bool targetTableExists = false; // 简化实现
+            // 构建源连接字符串
+            var sourceConnectionString = BuildConnectionString(dataSource);
 
-            // TODO: 检查 INSERT 权限
-            bool hasInsertPermission = true; // 简化实现
+            // 解析目标表的 Schema 和 TableName
+            var (targetSchema, targetTable) = ParseTableName(request.TargetTable);
+
+            // 检查目标表是否存在
+            bool targetTableExists = false;
+            try
+            {
+                // 这里假设目标数据库和源数据库相同,如果不同需要从请求中获取目标连接字符串
+                targetTableExists = await tableManagementService.CheckTableExistsAsync(
+                    sourceConnectionString,
+                    targetSchema,
+                    targetTable,
+                    cancellationToken);
+
+                logger.LogDebug("目标表存在性检查: {Schema}.{Table} = {Exists}",
+                    targetSchema, targetTable, targetTableExists);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "检查目标表存在性时发生异常");
+                warnings.Add(new ArchiveInspectionIssue(
+                    "CHK001",
+                    "无法检查目标表存在性",
+                    ex.Message));
+            }
+
+            // 检查 INSERT 权限（简化实现，假设有权限）
+            bool hasInsertPermission = true;
 
             // 如果目标表不存在,添加自动补齐步骤
             if (!targetTableExists)
@@ -211,8 +237,8 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
 
             bool canExecute = blockingIssues.Count == 0;
             
-            logger.LogInformation("BulkCopy 预检完成: CanExecute={CanExecute}, Issues={IssueCount}", 
-                canExecute, blockingIssues.Count);
+            logger.LogInformation("BulkCopy 预检完成: CanExecute={CanExecute}, TargetExists={TargetExists}, Issues={IssueCount}", 
+                canExecute, targetTableExists, blockingIssues.Count);
 
             return Result<ArchiveInspectionResultDto>.Success(new ArchiveInspectionResultDto(
                 canExecute,
