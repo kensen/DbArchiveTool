@@ -1,5 +1,6 @@
 ﻿using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DbArchiveTool.Shared.Archive;
 
 namespace DbArchiveTool.Web.Services;
@@ -11,6 +12,14 @@ public class ArchiveConfigurationApiClient
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<ArchiveConfigurationApiClient> _logger;
+    
+    /// <summary>JSON 序列化选项(支持字符串枚举)</summary>
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+    };
 
     public ArchiveConfigurationApiClient(
         HttpClient httpClient,
@@ -36,10 +45,15 @@ public class ArchiveConfigurationApiClient
                 queryParams.Add($"isEnabled={isEnabled.Value}");
 
             var query = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
-            var response = await _httpClient.GetFromJsonAsync<List<ArchiveConfigurationListItemModel>>(
-                $"/api/v1/archive-configurations{query}");
-
-            return response ?? new List<ArchiveConfigurationListItemModel>();
+            var requestUri = $"/api/v1/archive-configurations{query}";
+            
+            var response = await _httpClient.GetAsync(requestUri);
+            response.EnsureSuccessStatusCode();
+            
+            var content = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<List<ArchiveConfigurationListItemModel>>(content, JsonOptions);
+            
+            return result ?? new List<ArchiveConfigurationListItemModel>();
         }
         catch (Exception ex)
         {
@@ -55,8 +69,15 @@ public class ArchiveConfigurationApiClient
     {
         try
         {
-            return await _httpClient.GetFromJsonAsync<ArchiveConfigurationDetailModel>(
-                $"/api/v1/archive-configurations/{id}");
+            var response = await _httpClient.GetAsync($"/api/v1/archive-configurations/{id}");
+            
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                return null;
+                
+            response.EnsureSuccessStatusCode();
+            
+            var content = await response.Content.ReadAsStringAsync();
+            return JsonSerializer.Deserialize<ArchiveConfigurationDetailModel>(content, JsonOptions);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
@@ -77,7 +98,15 @@ public class ArchiveConfigurationApiClient
         try
         {
             var response = await _httpClient.PostAsJsonAsync("/api/v1/archive-configurations", model);
-            response.EnsureSuccessStatusCode();
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError("创建归档配置失败: StatusCode={StatusCode}, Response={Response}", 
+                    response.StatusCode, errorContent);
+                throw new HttpRequestException($"创建归档配置失败: {response.StatusCode} - {errorContent}");
+            }
+            
             return await response.Content.ReadFromJsonAsync<ArchiveConfigurationDetailModel>()
                 ?? throw new Exception("返回数据为空");
         }

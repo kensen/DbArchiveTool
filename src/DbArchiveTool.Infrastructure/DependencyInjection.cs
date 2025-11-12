@@ -67,6 +67,7 @@ public static class DependencyInjection
         services.AddScoped<ITableManagementService, TableManagementService>();
         services.AddScoped<SqlBulkCopyExecutor>();
         services.AddScoped<BcpExecutor>();
+        services.AddScoped<PartitionSwitchHelper>();
         services.AddScoped<OptimizedPartitionArchiveExecutor>();
         services.AddScoped<IArchiveExecutor, ArchiveExecutorAdapter>();
         services.AddScoped<ArchiveOrchestrationService>();

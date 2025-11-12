@@ -202,16 +202,23 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
 
         try
         {
-            using var scope = serviceProvider.CreateScope();
-            var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
-
             var taskIds = runningTasks.Keys.ToList();
+            
+            if (taskIds.Count == 0)
+            {
+                return;
+            }
+            
             var updated = 0;
 
+            // 为每个任务使用独立的 scope 和 repository
             foreach (var taskId in taskIds)
             {
                 try
                 {
+                    using var scope = serviceProvider.CreateScope();
+                    var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
+                    
                     var task = await taskRepository.GetByIdAsync(taskId, cancellationToken);
                     if (task is not null && !task.IsCompleted)
                     {
@@ -222,13 +229,14 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "更新任务 {TaskId} 心跳失败。", taskId);
+                    // 心跳更新失败不应该影响主流程，只记录警告
+                    logger.LogWarning(ex, "更新任务 {TaskId} 心跳失败，将在下次心跳周期重试。", taskId);
                 }
             }
 
             if (updated > 0)
             {
-                logger.LogDebug("心跳更新完成，更新了 {Count} 个任务。", updated);
+                logger.LogDebug("心跳更新完成，更新了 {Count}/{Total} 个任务。", updated, taskIds.Count);
             }
         }
         catch (Exception ex)

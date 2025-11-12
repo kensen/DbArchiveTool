@@ -430,8 +430,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 					SourceTableName = TableName,
 					IsPartitionedTable = false, // 暂不支持分区表归档
 					PartitionConfigurationId = null,
-					ArchiveFilterColumn = null,
-					ArchiveFilterCondition = null,
+					// 提供占位符过滤条件以满足实体验证规则
+					// 实际的分区筛选逻辑由 BackgroundTask 的 Metadata 控制
+					ArchiveFilterColumn = "Id",
+					ArchiveFilterCondition = "> 0",
 					ArchiveMethod = ToArchiveMethod(_selectedMode),
 					DeleteSourceDataAfterArchive = true,
 					BatchSize = _selectedMode == ArchiveMode.Bcp ? _form.BcpBatchSize : _form.BulkCopyBatchSize
@@ -453,8 +455,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 					SourceTableName = TableName,
 					IsPartitionedTable = false,
 					PartitionConfigurationId = null,
-					ArchiveFilterColumn = null,
-					ArchiveFilterCondition = null,
+					// 提供占位符过滤条件以满足实体验证规则
+					// 实际的分区筛选逻辑由 BackgroundTask 的 Metadata 控制
+					ArchiveFilterColumn = "Id",
+					ArchiveFilterCondition = "> 0",
 					ArchiveMethod = ToArchiveMethod(_selectedMode),
 					DeleteSourceDataAfterArchive = true,
 					BatchSize = _selectedMode == ArchiveMode.Bcp ? _form.BcpBatchSize : _form.BulkCopyBatchSize
@@ -1142,7 +1146,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 						DataSourceId,
 						SchemaName,
 						TableName,
-						"1", // 分区号,BCP 模式暂不支持分区切换,使用占位值
+						_form.SourcePartitionKey.Trim(), // 使用用户选择的分区号
 						_form.TargetTable.Trim(),
 						string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
 						_form.BcpTempDirectory,
@@ -1171,7 +1175,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 						DataSourceId,
 						SchemaName,
 						TableName,
-						"1", // 分区号,BulkCopy 模式暂不支持分区切换,使用占位值
+						_form.SourcePartitionKey.Trim(), // 使用用户选择的分区号
 						_form.TargetTable.Trim(),
 						string.IsNullOrWhiteSpace(_form.TargetDatabase) ? null : _form.TargetDatabase?.Trim(),
 						_form.BulkCopyBatchSize,

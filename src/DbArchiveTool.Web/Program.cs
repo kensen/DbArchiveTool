@@ -61,6 +61,14 @@ Action<IServiceProvider, HttpClient> configureClient = (sp, client) =>
     client.BaseAddress = new Uri(archiveApiBaseUrl, UriKind.Absolute);
 };
 
+// 配置 HttpClient 的 JSON 序列化选项（支持字符串枚举）
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.PropertyNameCaseInsensitive = true;
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
+
 builder.Services.AddHttpClient("ArchiveApi", configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionManagementApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionInfoApiClient>(configureClient);

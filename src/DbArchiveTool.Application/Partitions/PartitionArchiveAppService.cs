@@ -22,6 +22,7 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly ITableManagementService tableManagementService;
     private readonly IPasswordEncryptionService passwordEncryptionService;
+    private readonly IBackgroundTaskDispatcher dispatcher;
     private readonly ILogger<PartitionArchiveAppService> logger;
 
     public PartitionArchiveAppService(
@@ -29,12 +30,14 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
         IDataSourceRepository dataSourceRepository,
         ITableManagementService tableManagementService,
         IPasswordEncryptionService passwordEncryptionService,
+        IBackgroundTaskDispatcher dispatcher,
         ILogger<PartitionArchiveAppService> logger)
     {
         this.taskRepository = taskRepository;
         this.dataSourceRepository = dataSourceRepository;
         this.tableManagementService = tableManagementService;
         this.passwordEncryptionService = passwordEncryptionService;
+        this.dispatcher = dispatcher;
         this.logger = logger;
     }
 
@@ -301,12 +304,15 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                 archiveTargetTable: request.TargetTable);
 
             task.SaveConfigurationSnapshot(configSnapshot, request.RequestedBy);
-            task.MarkQueued(request.RequestedBy);
+            // 注意：不要提前调用 MarkQueued()，让 BackgroundTaskProcessor 按正确流程处理状态转换
 
             await taskRepository.AddAsync(task, cancellationToken);
             await dataSourceRepository.SaveChangesAsync(cancellationToken);
 
-            logger.LogInformation("BCP 归档任务已创建: TaskId={TaskId}", task.Id);
+            // 将任务加入执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
+            logger.LogInformation("BCP 归档任务已创建并入队: TaskId={TaskId}", task.Id);
             return Result<Guid>.Success(task.Id);
         }
         catch (Exception ex)
@@ -360,12 +366,15 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                 archiveTargetTable: request.TargetTable);
 
             task.SaveConfigurationSnapshot(configSnapshot, request.RequestedBy);
-            task.MarkQueued(request.RequestedBy);
+            // 注意：不要提前调用 MarkQueued()，让 BackgroundTaskProcessor 按正确流程处理状态转换
 
             await taskRepository.AddAsync(task, cancellationToken);
             await dataSourceRepository.SaveChangesAsync(cancellationToken);
 
-            logger.LogInformation("BulkCopy 归档任务已创建: TaskId={TaskId}", task.Id);
+            // 将任务加入执行队列
+            await dispatcher.DispatchAsync(task.Id, request.DataSourceId, cancellationToken);
+
+            logger.LogInformation("BulkCopy 归档任务已创建并入队: TaskId={TaskId}", task.Id);
             return Result<Guid>.Success(task.Id);
         }
         catch (Exception ex)

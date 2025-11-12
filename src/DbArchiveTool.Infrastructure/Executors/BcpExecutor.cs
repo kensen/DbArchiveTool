@@ -71,11 +71,18 @@ public class BcpExecutor
                 ? Path.GetTempPath()
                 : options.TempDirectory;
 
+            // 确保临时目录存在
+            if (!Directory.Exists(tempDir))
+            {
+                _logger.LogWarning("临时目录不存在，正在创建: {TempDir}", tempDir);
+                Directory.CreateDirectory(tempDir);
+            }
+
             tempFilePath = Path.Combine(tempDir, $"bcp_export_{Guid.NewGuid():N}.dat");
 
             _logger.LogInformation(
-                "开始 BCP 归档: 目标表={TargetTable}, 临时文件={TempFile}",
-                targetTable, tempFilePath);
+                "开始 BCP 归档: 目标表={TargetTable}, 临时目录={TempDir}, 临时文件={TempFile}",
+                targetTable, tempDir, tempFilePath);
 
             // 2. 执行 BCP 导出
             var exportResult = await ExportDataAsync(
@@ -101,9 +108,20 @@ public class BcpExecutor
 
             totalRowsCopied = exportResult.RowCount;
 
-            _logger.LogInformation(
-                "BCP 导出完成: {RowCount:N0} 行, 耗时={Duration}",
-                totalRowsCopied, exportResult.Duration);
+            // 检查导出文件
+            if (File.Exists(tempFilePath))
+            {
+                var fileInfo = new FileInfo(tempFilePath);
+                _logger.LogInformation(
+                    "BCP 导出完成: {RowCount:N0} 行, 耗时={Duration}, 文件大小={FileSize:N0} 字节, 文件路径={FilePath}",
+                    totalRowsCopied, exportResult.Duration, fileInfo.Length, tempFilePath);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "BCP 导出完成但文件不存在: {RowCount:N0} 行, 耗时={Duration}, 预期路径={FilePath}",
+                    totalRowsCopied, exportResult.Duration, tempFilePath);
+            }
 
             // 3. 执行 BCP 导入
             var importResult = await ImportDataAsync(
@@ -346,8 +364,9 @@ public class BcpExecutor
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
+                // BCP 在中文 Windows 上通常输出 GBK 编码
+                StandardOutputEncoding = Encoding.GetEncoding("GB2312"),
+                StandardErrorEncoding = Encoding.GetEncoding("GB2312")
             }
         };
 
@@ -523,14 +542,41 @@ public class BcpExecutor
     /// </summary>
     private long ParseRowCountFromOutput(string output)
     {
-        // BCP 输出格式: "1000 rows copied."
-        // 或: "Clock Time (ms.) Total     : 1234  Average : (123.45 rows per sec.)"
-        var match = System.Text.RegularExpressions.Regex.Match(output, @"(\d+)\s+rows?\s+copied", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        if (match.Success && long.TryParse(match.Groups[1].Value, out var rowCount))
+        if (string.IsNullOrWhiteSpace(output))
         {
-            return rowCount;
+            return 0;
         }
 
+        // BCP 中文输出: "已复制 1000 行"
+        var matchChinese = System.Text.RegularExpressions.Regex.Match(output, @"已复制\s+(\d+)\s+行", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (matchChinese.Success && long.TryParse(matchChinese.Groups[1].Value, out var rowCountChinese))
+        {
+            _logger.LogDebug("从 BCP 中文输出解析到行数: {RowCount}", rowCountChinese);
+            return rowCountChinese;
+        }
+
+        // BCP 英文输出: "1000 rows copied."
+        var matchEnglish = System.Text.RegularExpressions.Regex.Match(output, @"(\d+)\s+rows?\s+copied", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (matchEnglish.Success && long.TryParse(matchEnglish.Groups[1].Value, out var rowCountEnglish))
+        {
+            _logger.LogDebug("从 BCP 英文输出解析到行数: {RowCount}", rowCountEnglish);
+            return rowCountEnglish;
+        }
+
+        // 备用：从最后一行提取数字（"Clock Time (ms.) Total: 1234"）
+        var lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var line in lines.Reverse())
+        {
+            // 尝试匹配任何包含大数字的行
+            var matchNumber = System.Text.RegularExpressions.Regex.Match(line, @"(\d{1,})");
+            if (matchNumber.Success && long.TryParse(matchNumber.Groups[1].Value, out var possibleCount) && possibleCount > 0)
+            {
+                _logger.LogDebug("从 BCP 输出备用解析到可能的行数: {RowCount} (行: {Line})", possibleCount, line.Trim());
+                return possibleCount;
+            }
+        }
+
+        _logger.LogWarning("无法从 BCP 输出解析行数，输出内容:\n{Output}", output);
         return 0;
     }
 
