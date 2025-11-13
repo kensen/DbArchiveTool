@@ -4,6 +4,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -139,6 +141,15 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
             {
                 try
                 {
+                    // 关键修复: 为每个僵尸任务创建独立的 scope,避免跨 scope 更新
+                    using var zombieScope = serviceProvider.CreateScope();
+                    var zombieTaskRepo = zombieScope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
+                    var zombieLogRepo = zombieScope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
+                    var zombieDbContext = zombieScope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+
+                    // 关键修复: 先分离从外部传入的实体,避免跟踪冲突
+                    zombieDbContext.Entry(zombie).State = EntityState.Detached;
+                    
                     // 记录恢复日志
                     var logEntry = BackgroundTaskLogEntry.Create(
                         zombie.Id,
@@ -146,14 +157,14 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                         "僵尸任务恢复",
                         $"检测到任务在 {zombie.LastHeartbeatUtc:yyyy-MM-dd HH:mm:ss} UTC 之后无心跳，标记为失败并重新入队。");
 
-                    await logRepository.AddAsync(logEntry, cancellationToken);
+                    await zombieLogRepo.AddAsync(logEntry, cancellationToken);
 
                     // 标记任务失败
                     zombie.MarkFailed(
                         "SYSTEM",
                         $"任务超时无响应（最后心跳：{zombie.LastHeartbeatUtc:yyyy-MM-dd HH:mm:ss} UTC），已自动标记失败。");
 
-                    await taskRepository.UpdateAsync(zombie, cancellationToken);
+                    await zombieTaskRepo.UpdateAsync(zombie, cancellationToken);
 
                     logger.LogWarning(
                         "僵尸任务 {TaskId} 已标记为失败（最后心跳：{LastHeartbeat}）。",
@@ -219,9 +230,14 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                     using var scope = serviceProvider.CreateScope();
                     var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                     
+                    // 关键修复: 使用 AsNoTracking 加载,避免跟踪状态冲突
                     var task = await taskRepository.GetByIdAsync(taskId, cancellationToken);
                     if (task is not null && !task.IsCompleted)
                     {
+                        // 关键修复: 先分离实体,确保是 Detached 状态
+                        var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+                        dbContext.Entry(task).State = EntityState.Detached;
+                        
                         task.UpdateHeartbeat("SYSTEM");
                         await taskRepository.UpdateAsync(task, cancellationToken);
                         updated++;
@@ -277,10 +293,15 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
             {
                 using var scope = serviceProvider.CreateScope();
                 var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+                
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
                 {
+                    // 关键修复: 先分离实体,确保是 Detached 状态
+                    dbContext.Entry(task).State = EntityState.Detached;
+                    
                     task.Cancel("SYSTEM", "服务停止，任务被取消。");
                     await taskRepository.UpdateAsync(task, CancellationToken.None);
                 }
@@ -300,11 +321,15 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                 using var scope = serviceProvider.CreateScope();
                 var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                 var logRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
 
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
                 {
+                    // 关键修复: 先分离实体,确保是 Detached 状态
+                    dbContext.Entry(task).State = EntityState.Detached;
+                    
                     // 记录错误日志
                     var logEntry = BackgroundTaskLogEntry.Create(
                         taskId,

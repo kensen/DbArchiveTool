@@ -308,11 +308,29 @@ public class BcpExecutor
 
             if (result.ExitCode != 0)
             {
+                // 检查是否为字符串截断错误
+                var isTruncationError = result.Output.Contains("SQLState = 22001") ||
+                                       result.Output.Contains("String data, right truncation") ||
+                                       result.Output.Contains("字符串数据，右截断");
+
+                var errorMessage = isTruncationError
+                    ? $"BCP 导入失败: 字符串截断错误 (SQLState=22001)。\n" +
+                      $"可能原因:\n" +
+                      $"1. 源表和目标表的列长度定义不匹配\n" +
+                      $"2. 源数据包含超长字段值\n" +
+                      $"3. 字符编码转换问题 (如 varchar vs nvarchar)\n" +
+                      $"建议:\n" +
+                      $"- 检查源表和目标表的列定义 (特别是 varchar/nvarchar 长度)\n" +
+                      $"- 使用 SSMS 对比两个表的架构\n" +
+                      $"- 如果目标表列长度不足，请先调整列定义\n" +
+                      $"BCP 退出码: {result.ExitCode}"
+                    : $"BCP 进程退出码 {result.ExitCode}";
+
                 return new BcpCommandResult
                 {
                     Success = false,
                     Output = result.Output,
-                    ErrorMessage = $"BCP 进程退出码 {result.ExitCode}",
+                    ErrorMessage = errorMessage,
                     Duration = stopwatch.Elapsed
                 };
             }
@@ -502,6 +520,10 @@ public class BcpExecutor
 
         // 其他选项
         args.Append($" -m {options.MaxErrors}");
+        
+        // 增加网络数据包大小,避免字符串截断错误 (默认 4096 太小)
+        // 设置为 32KB 以支持包含大字段的表
+        args.Append(" -a 32768");
 
         return args.ToString();
     }
