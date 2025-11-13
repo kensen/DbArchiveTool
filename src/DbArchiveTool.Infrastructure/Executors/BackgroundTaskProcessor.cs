@@ -2194,7 +2194,11 @@ WHERE s.name = @SchemaName
 
             // ============== 阶段 3: 构建连接字符串 ==============
             var sourceConnectionString = BuildConnectionString(dataSource);
-            var targetConnectionString = sourceConnectionString; // 目前假设同实例
+            var targetConnectionString = BuildTargetConnectionString(dataSource, snapshot.TargetDatabase);
+
+            await AppendLogAsync(task.Id, "Info", "BCP执行连接信息", 
+                $"UseSourceAsTarget={dataSource.UseSourceAsTarget}, TargetDatabase={snapshot.TargetDatabase}", 
+                cancellationToken);
 
             await AppendLogAsync(task.Id, "Step", "准备归档", 
                 $"准备执行 BCP 归档,目标数据库: {snapshot.TargetDatabase},批次大小: {snapshot.BatchSize}", 
@@ -2387,7 +2391,8 @@ WHERE s.name = @SchemaName
                 cancellationToken);
 
             // ⚠️ 关键修复: 检查目标表是否已有临时表的数据(处理重复导入)
-            if (!string.IsNullOrWhiteSpace(tempTableName))
+            // 注意: 跨服务器场景下无法执行此检查,因为目标服务器无法访问源服务器的临时表
+            if (!string.IsNullOrWhiteSpace(tempTableName) && dataSource.UseSourceAsTarget)
             {
                 try
                 {
@@ -2445,12 +2450,21 @@ WHERE s.name = @SchemaName
                         cancellationToken);
                 }
             }
+            else if (!string.IsNullOrWhiteSpace(tempTableName) && !dataSource.UseSourceAsTarget)
+            {
+                // 跨服务器场景:无法检查重复数据
+                await AppendLogAsync(task.Id, "Info", "跨服务器归档", 
+                    "跨服务器归档模式:目标服务器无法访问源服务器的临时表,跳过重复数据检查", 
+                    cancellationToken);
+            }
 
             // 执行 BCP 归档
+            // 注意: Progress 回调中不能访问 DbContext,会导致并发问题
+            // 进度更新已通过心跳机制处理,这里只更新内存状态
             var progress = new Progress<BulkCopyProgress>(p =>
             {
                 task.UpdateProgress(0.4 + p.PercentComplete * 0.5 / 100, "SYSTEM");
-                _ = taskRepository.UpdateAsync(task, CancellationToken.None);
+                // 移除数据库更新: _ = taskRepository.UpdateAsync(task, CancellationToken.None);
             });
 
             var bcpOptions = new BcpOptions
@@ -2653,7 +2667,11 @@ WHERE s.name = @SchemaName
 
             // ============== 阶段 3: 构建连接字符串 ==============
             var sourceConnectionString = BuildConnectionString(dataSource);
-            var targetConnectionString = sourceConnectionString; // 目前假设同实例
+            var targetConnectionString = BuildTargetConnectionString(dataSource, snapshot.TargetDatabase);
+
+            await AppendLogAsync(task.Id, "Info", "BulkCopy执行连接信息", 
+                $"UseSourceAsTarget={dataSource.UseSourceAsTarget}, TargetDatabase={snapshot.TargetDatabase}", 
+                cancellationToken);
 
             await AppendLogAsync(task.Id, "Step", "准备归档", 
                 $"准备执行 BulkCopy 归档,目标数据库: {snapshot.TargetDatabase},批次大小: {snapshot.BatchSize}", 
@@ -2698,10 +2716,12 @@ WHERE s.name = @SchemaName
             }
 
             // 执行 BulkCopy 归档
+            // 注意: Progress 回调中不能访问 DbContext,会导致并发问题
+            // 进度更新已通过心跳机制处理,这里只更新内存状态
             var progress = new Progress<BulkCopyProgress>(p =>
             {
                 task.UpdateProgress(0.4 + p.PercentComplete * 0.5 / 100, "SYSTEM");
-                _ = taskRepository.UpdateAsync(task, CancellationToken.None);
+                // 移除数据库更新: _ = taskRepository.UpdateAsync(task, CancellationToken.None);
             });
 
             var bulkCopyOptions = new BulkCopyOptions
@@ -2892,5 +2912,55 @@ WHERE s.name = @SchemaName
         }
 
         return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// 构建目标服务器连接字符串(支持自定义目标服务器)
+    /// </summary>
+    /// <param name="dataSource">数据源配置</param>
+    /// <param name="targetDatabase">目标数据库名(可选,用于覆盖默认目标数据库)</param>
+    /// <returns>目标服务器连接字符串</returns>
+    private string BuildTargetConnectionString(ArchiveDataSource dataSource, string? targetDatabase = null)
+    {
+        // 如果使用源服务器作为目标服务器
+        if (dataSource.UseSourceAsTarget)
+        {
+            // 如果指定了目标数据库,则使用源连接字符串但切换数据库
+            if (!string.IsNullOrWhiteSpace(targetDatabase))
+            {
+                var builder = new SqlConnectionStringBuilder(BuildConnectionString(dataSource))
+                {
+                    InitialCatalog = targetDatabase
+                };
+                return builder.ConnectionString;
+            }
+            // 否则直接使用源连接字符串
+            return BuildConnectionString(dataSource);
+        }
+
+        // 使用自定义目标服务器配置
+        var targetBuilder = new SqlConnectionStringBuilder
+        {
+            DataSource = dataSource.TargetServerPort == 1433
+                ? dataSource.TargetServerAddress
+                : $"{dataSource.TargetServerAddress},{dataSource.TargetServerPort}",
+            // 优先使用传入的目标数据库,其次使用配置的目标数据库,最后使用源数据库名
+            InitialCatalog = targetDatabase ?? dataSource.TargetDatabaseName ?? dataSource.DatabaseName,
+            IntegratedSecurity = dataSource.TargetUseIntegratedSecurity,
+            TrustServerCertificate = true,
+            ConnectTimeout = 30
+        };
+
+        if (!dataSource.TargetUseIntegratedSecurity)
+        {
+            targetBuilder.UserID = dataSource.TargetUserName;
+            // 解密密码
+            if (!string.IsNullOrEmpty(dataSource.TargetPassword))
+            {
+                targetBuilder.Password = passwordEncryptionService.Decrypt(dataSource.TargetPassword);
+            }
+        }
+
+        return targetBuilder.ConnectionString;
     }
 }

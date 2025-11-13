@@ -85,6 +85,12 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
 
             // 构建源连接字符串
             var sourceConnectionString = BuildConnectionString(dataSource);
+            // 构建目标连接字符串(支持自定义目标服务器)
+            var targetConnectionString = BuildTargetConnectionString(dataSource, request.TargetDatabase);
+
+            logger.LogInformation(
+                "BCP预检连接信息: UseSourceAsTarget={UseSourceAsTarget}, TargetDatabase={TargetDatabase}",
+                dataSource.UseSourceAsTarget, request.TargetDatabase ?? "(使用源数据库)");
 
             // 解析目标表的 Schema 和 TableName
             var (targetSchema, targetTable) = ParseTableName(request.TargetTable);
@@ -93,9 +99,9 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
             bool targetTableExists = false;
             try
             {
-                // 这里假设目标数据库和源数据库相同,如果不同需要从请求中获取目标连接字符串
+                // 使用目标连接字符串检查表是否存在
                 targetTableExists = await tableManagementService.CheckTableExistsAsync(
-                    sourceConnectionString,
+                    targetConnectionString,
                     targetSchema,
                     targetTable,
                     cancellationToken);
@@ -121,8 +127,8 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                         sourceConnectionString,
                         request.SchemaName,
                         request.TableName,
-                        null, // 目标连接字符串(null = 与源相同)
-                        request.TargetDatabase, // 目标数据库名称
+                        targetConnectionString, // 使用正确的目标连接字符串
+                        null, // 目标数据库名称已在连接字符串中
                         targetSchema,
                         targetTable,
                         cancellationToken);
@@ -258,6 +264,12 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
 
             // 构建源连接字符串
             var sourceConnectionString = BuildConnectionString(dataSource);
+            // 构建目标连接字符串(支持自定义目标服务器)
+            var targetConnectionString = BuildTargetConnectionString(dataSource, request.TargetDatabase);
+
+            logger.LogInformation(
+                "BulkCopy预检连接信息: UseSourceAsTarget={UseSourceAsTarget}, TargetDatabase={TargetDatabase}",
+                dataSource.UseSourceAsTarget, request.TargetDatabase ?? "(使用源数据库)");
 
             // 解析目标表的 Schema 和 TableName
             var (targetSchema, targetTable) = ParseTableName(request.TargetTable);
@@ -266,9 +278,9 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
             bool targetTableExists = false;
             try
             {
-                // 这里假设目标数据库和源数据库相同,如果不同需要从请求中获取目标连接字符串
+                // 使用目标连接字符串检查表是否存在
                 targetTableExists = await tableManagementService.CheckTableExistsAsync(
-                    sourceConnectionString,
+                    targetConnectionString,
                     targetSchema,
                     targetTable,
                     cancellationToken);
@@ -294,8 +306,8 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                         sourceConnectionString,
                         request.SchemaName,
                         request.TableName,
-                        null, // 目标连接字符串(null = 与源相同)
-                        request.TargetDatabase, // 目标数据库名称
+                        targetConnectionString, // 使用正确的目标连接字符串
+                        null, // 目标数据库名称已在连接字符串中
                         targetSchema,
                         targetTable,
                         cancellationToken);

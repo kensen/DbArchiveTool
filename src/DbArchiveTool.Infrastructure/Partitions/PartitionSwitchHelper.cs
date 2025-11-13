@@ -186,16 +186,68 @@ public class PartitionSwitchHelper
     {
         var tempTableName = $"{tableName}_Temp_{DateTime.Now:yyyyMMddHHmmss}";
         
-        // 1. 复制表结构（仅复制列定义，不复制索引）
-        var createTableSql = $@"
-            SELECT TOP 0 *
-            INTO [{schemaName}].[{tempTableName}]
-            FROM [{schemaName}].[{tableName}]";
+        // 1. 获取表结构并在指定文件组上创建临时表
+        // 注意：不能使用 SELECT INTO ... ON 语法（SQL Server 不支持）
+        // 必须先获取表结构，然后使用 CREATE TABLE ... ON 语法
+        
+        // 1.1 获取列定义
+        var getColumnsSql = $@"
+            SELECT 
+                c.name AS ColumnName,
+                t.name AS DataType,
+                c.max_length AS MaxLength,
+                c.precision AS Precision,
+                c.scale AS Scale,
+                c.is_nullable AS IsNullable,
+                c.is_identity AS IsIdentity
+            FROM sys.columns c
+            INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+            INNER JOIN sys.tables tbl ON c.object_id = tbl.object_id
+            WHERE tbl.schema_id = SCHEMA_ID(@SchemaName)
+              AND tbl.name = @TableName
+            ORDER BY c.column_id";
 
-        await _sqlExecutor.ExecuteAsync(
-            connectionString,
-            createTableSql,
-            timeoutSeconds: 300);
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync(cancellationToken);
+
+        using var cmd = new SqlCommand(getColumnsSql, conn);
+        cmd.Parameters.AddWithValue("@SchemaName", schemaName);
+        cmd.Parameters.AddWithValue("@TableName", tableName);
+
+        var columns = new List<string>();
+        using (var reader = await cmd.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var columnName = reader.GetString(0);
+                var dataType = reader.GetString(1);
+                var maxLength = reader.GetInt16(2);
+                var precision = reader.GetByte(3);
+                var scale = reader.GetByte(4);
+                var isNullable = reader.GetBoolean(5);
+                var isIdentity = reader.GetBoolean(6);
+
+                // 构建列定义
+                var columnDef = $"[{columnName}] {FormatDataType(dataType, maxLength, precision, scale)}";
+                
+                // 临时表不需要 IDENTITY 属性，因为会通过 SWITCH 填充数据
+                // if (isIdentity) columnDef += " IDENTITY(1,1)";
+                
+                if (!isNullable) columnDef += " NOT NULL";
+                
+                columns.Add(columnDef);
+            }
+        }
+
+        // 1.2 在指定文件组上创建临时表
+        var createTableSql = $@"
+            CREATE TABLE [{schemaName}].[{tempTableName}] (
+                {string.Join(",\n                ", columns)}
+            ) ON [{partitionInfo.FileGroupName}]";
+
+        using var createCmd = new SqlCommand(createTableSql, conn);
+        createCmd.CommandTimeout = 300;
+        await createCmd.ExecuteNonQueryAsync(cancellationToken);
 
         _logger.LogInformation(
             "创建临时表成功: [{Schema}].[{TempTable}] on {FileGroup}",
@@ -566,6 +618,65 @@ public class PartitionSwitchHelper
 
         sb.Append(';');
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 格式化数据类型字符串（用于 CREATE TABLE）
+    /// </summary>
+    private string FormatDataType(string dataType, short maxLength, byte precision, byte scale)
+    {
+        // 处理特殊类型
+        switch (dataType.ToLowerInvariant())
+        {
+            case "nvarchar":
+            case "nchar":
+                if (maxLength == -1)
+                    return $"{dataType}(max)";
+                return $"{dataType}({maxLength / 2})"; // Unicode 字符占 2 字节
+            
+            case "varchar":
+            case "char":
+            case "binary":
+            case "varbinary":
+                if (maxLength == -1)
+                    return $"{dataType}(max)";
+                return $"{dataType}({maxLength})";
+            
+            case "decimal":
+            case "numeric":
+                return $"{dataType}({precision},{scale})";
+            
+            case "datetime2":
+            case "time":
+            case "datetimeoffset":
+                if (scale > 0)
+                    return $"{dataType}({scale})";
+                return dataType;
+            
+            // 固定长度类型，不需要参数
+            case "int":
+            case "bigint":
+            case "smallint":
+            case "tinyint":
+            case "bit":
+            case "float":
+            case "real":
+            case "datetime":
+            case "smalldatetime":
+            case "date":
+            case "money":
+            case "smallmoney":
+            case "uniqueidentifier":
+            case "xml":
+            case "text":
+            case "ntext":
+            case "image":
+                return dataType;
+            
+            default:
+                _logger.LogWarning("未识别的数据类型: {DataType}, 使用默认格式", dataType);
+                return dataType;
+        }
     }
 }
 

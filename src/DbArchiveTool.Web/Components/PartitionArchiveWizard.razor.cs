@@ -1136,10 +1136,10 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			}
 
 			Logger.LogInformation("自动修复完成: {Message}", result.Value);
-			Message.Success("目标表已成功创建,请重新预检确认。");
+			Message.Success("目标表已成功创建,正在重新预检...");
 			
-			// 清空检查结果,提示用户重新预检
-			_bcpInspectionResult = null;
+			// 自动重新预检
+			await RunBcpInspectionAsync();
 		}
 		catch (Exception ex)
 		{

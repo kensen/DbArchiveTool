@@ -4,8 +4,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using DbArchiveTool.Domain.Partitions;
-using DbArchiveTool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -145,10 +143,9 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                     using var zombieScope = serviceProvider.CreateScope();
                     var zombieTaskRepo = zombieScope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                     var zombieLogRepo = zombieScope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
-                    var zombieDbContext = zombieScope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
-
-                    // 关键修复: 先分离从外部传入的实体,避免跟踪冲突
-                    zombieDbContext.Entry(zombie).State = EntityState.Detached;
+                    
+                    // Repository 的 GetByIdAsync 已使用 AsNoTracking,返回的实体是 Detached 状态
+                    // 不需要手动 Detach
                     
                     // 记录恢复日志
                     var logEntry = BackgroundTaskLogEntry.Create(
@@ -230,14 +227,10 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                     using var scope = serviceProvider.CreateScope();
                     var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                     
-                    // 关键修复: 使用 AsNoTracking 加载,避免跟踪状态冲突
+                    // Repository 的 GetByIdAsync 已使用 AsNoTracking,返回的实体是 Detached 状态
                     var task = await taskRepository.GetByIdAsync(taskId, cancellationToken);
                     if (task is not null && !task.IsCompleted)
                     {
-                        // 关键修复: 先分离实体,确保是 Detached 状态
-                        var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
-                        dbContext.Entry(task).State = EntityState.Detached;
-                        
                         task.UpdateHeartbeat("SYSTEM");
                         await taskRepository.UpdateAsync(task, cancellationToken);
                         updated++;
@@ -293,15 +286,12 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
             {
                 using var scope = serviceProvider.CreateScope();
                 var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
-                var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
                 
+                // Repository 的 GetByIdAsync 已使用 AsNoTracking,返回的实体是 Detached 状态
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
                 {
-                    // 关键修复: 先分离实体,确保是 Detached 状态
-                    dbContext.Entry(task).State = EntityState.Detached;
-                    
                     task.Cancel("SYSTEM", "服务停止，任务被取消。");
                     await taskRepository.UpdateAsync(task, CancellationToken.None);
                 }
@@ -321,15 +311,12 @@ internal sealed class BackgroundTaskHostedService : BackgroundService
                 using var scope = serviceProvider.CreateScope();
                 var taskRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskRepository>();
                 var logRepository = scope.ServiceProvider.GetRequiredService<IBackgroundTaskLogRepository>();
-                var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
 
+                // Repository 的 GetByIdAsync 已使用 AsNoTracking,返回的实体是 Detached 状态
                 var task = await taskRepository.GetByIdAsync(taskId, CancellationToken.None);
 
                 if (task is not null && !task.IsCompleted)
                 {
-                    // 关键修复: 先分离实体,确保是 Detached 状态
-                    dbContext.Entry(task).State = EntityState.Detached;
-                    
                     // 记录错误日志
                     var logEntry = BackgroundTaskLogEntry.Create(
                         taskId,

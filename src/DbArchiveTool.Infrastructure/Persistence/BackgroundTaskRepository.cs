@@ -49,7 +49,9 @@ internal sealed class BackgroundTaskRepository : IBackgroundTaskRepository
 
     public async Task<BackgroundTask?> GetByIdAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        // 关键修复: 使用 AsNoTracking() 避免实体被跟踪,防止多个 scope 同时更新同一实体时的并发冲突
         return await context.BackgroundTasks
+            .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == id && !x.IsDeleted, cancellationToken);
     }
 
@@ -92,7 +94,9 @@ internal sealed class BackgroundTaskRepository : IBackgroundTaskRepository
         }
 
         var threshold = DateTime.UtcNow - heartbeatTimeout;
+        // 关键修复: 使用 AsNoTracking() 避免实体被跟踪
         return await context.BackgroundTasks
+            .AsNoTracking()
             .Where(x => !x.IsDeleted &&
                         MonitorStatuses.Contains(x.Status) &&
                         x.LastHeartbeatUtc < threshold)
