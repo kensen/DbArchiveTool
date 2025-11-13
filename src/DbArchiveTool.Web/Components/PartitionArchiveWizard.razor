@@ -33,10 +33,19 @@
                             <RadioGroup Value="_selectedMode" 
                                         ValueChanged="@(async (ArchiveMode value) => await OnArchiveModeChangedAsync(value))"
                                         ButtonStyle="@RadioButtonStyle.Solid">
-                                <Radio RadioButton Value="@ArchiveMode.Switch">分区切换</Radio>
+                                <Radio RadioButton Value="@ArchiveMode.Switch" Disabled="@IsSwitchModeDisabled()">分区切换</Radio>
                                 <Radio RadioButton Value="@ArchiveMode.Bcp">BCP</Radio>
                                 <Radio RadioButton Value="@ArchiveMode.BulkCopy">BulkCopy</Radio>
                             </RadioGroup>
+                            
+                            @if (IsSwitchModeDisabled())
+                            {
+                                <Alert Type="@AlertType.Warning" ShowIcon="true" Style="margin-top:12px;">
+                                    <MessageTemplate>
+                                        @GetSwitchDisabledReason()
+                                    </MessageTemplate>
+                                </Alert>
+                            }
                             
                             @if (_loadingArchiveConfig)
                             {
@@ -257,6 +266,23 @@
                         break;
                     case 2:
                         <div class="step-pane">
+                            @* 显示当前归档模式和目标服务器信息 *@
+                            <Alert Type="@AlertType.Info" ShowIcon="true" Style="margin-bottom:16px;">
+                                <MessageTemplate>
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div>
+                                            <strong>当前归档模式:</strong><span style="color:#1890ff; font-weight:600; margin-left:8px;">@GetArchiveModeDisplayText()</span>
+                                        </div>
+                                        @if (_currentDataSource != null)
+                                        {
+                                            <div>
+                                                <strong>目标服务器:</strong><span style="margin-left:8px;">@GetTargetServerDisplay()</span>
+                                            </div>
+                                        }
+                                    </div>
+                                </MessageTemplate>
+                            </Alert>
+                            
                             @* BCP/BulkCopy模式的预检结果 *@
                             @if (_selectedMode == ArchiveMode.Bcp || _selectedMode == ArchiveMode.BulkCopy)
                             {
@@ -284,7 +310,10 @@
                                                                 <strong>@issue.Code</strong> - @issue.Message
                                                                 @if (!string.IsNullOrWhiteSpace(issue.Recommendation))
                                                                 {
-                                                                    <div class="issue-recommendation">建议：@issue.Recommendation</div>
+                                                                    <div class="issue-recommendation">
+                                                                        <div style="margin-top: 8px; font-weight: 500;">建议：</div>
+                                                                        <pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 4px 0 0 0;">@issue.Recommendation</pre>
+                                                                    </div>
                                                                 }
                                                             </li>
                                                         }
@@ -308,7 +337,10 @@
                                                                 <strong>@warning.Code</strong> - @warning.Message
                                                                 @if (!string.IsNullOrWhiteSpace(warning.Recommendation))
                                                                 {
-                                                                    <div class="issue-recommendation">建议：@warning.Recommendation</div>
+                                                                    <div class="issue-recommendation">
+                                                                        <div style="margin-top: 8px; font-weight: 500;">建议：</div>
+                                                                        <pre style="white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 4px 0 0 0;">@warning.Recommendation</pre>
+                                                                    </div>
                                                                 }
                                                             </li>
                                                         }
@@ -338,13 +370,17 @@
                                                             </li>
                                                         }
                                                     </ul>
-                                                    <p style="margin-top:8px;">
-                                                        <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" 
-                                                                OnClick="@OnBcpAutoFixClickedAsync"
-                                                                Loading="_autoFixExecuting">
-                                                            一键修复
-                                                        </Button>
-                                                    </p>
+                                                    @* 只有当修复步骤是 CREATE_TARGET_TABLE 时才显示一键修复按钮 *@
+                                                    @if (currentInspection.AutoFixSteps.Any(s => s.Code == "CREATE_TARGET_TABLE"))
+                                                    {
+                                                        <p style="margin-top:8px;">
+                                                            <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" 
+                                                                    OnClick="@OnBcpAutoFixClickedAsync"
+                                                                    Loading="_autoFixExecuting">
+                                                                一键修复
+                                                            </Button>
+                                                        </p>
+                                                    }
                                                 </MessageTemplate>
                                             </Alert>
                                         </div>

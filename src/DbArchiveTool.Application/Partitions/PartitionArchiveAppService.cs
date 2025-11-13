@@ -111,27 +111,91 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                     "无法检查目标表存在性",
                     ex.Message));
             }
-            
+
+            // 如果目标表存在，对比表结构
+            if (targetTableExists)
+            {
+                try
+                {
+                    var comparisonResult = await tableManagementService.CompareTableSchemasAsync(
+                        sourceConnectionString,
+                        request.SchemaName,
+                        request.TableName,
+                        null, // 目标连接字符串(null = 与源相同)
+                        request.TargetDatabase, // 目标数据库名称
+                        targetSchema,
+                        targetTable,
+                        cancellationToken);
+
+                    if (!comparisonResult.IsCompatible)
+                    {
+                        // 表结构不一致，添加为阻塞性问题，禁止执行
+                        blockingIssues.Add(new ArchiveInspectionIssue(
+                            "SCH001",
+                            "表结构不一致",
+                            comparisonResult.DifferenceDescription));
+
+                        // 如果有缺失的列或类型不匹配，可以提供自动修复建议
+                        if (comparisonResult.MissingColumns.Count > 0 || 
+                            comparisonResult.TypeMismatchColumns.Count > 0 ||
+                            comparisonResult.LengthInsufficientColumns.Count > 0 ||
+                            comparisonResult.PrecisionInsufficientColumns.Count > 0)
+                        {
+                            var alterScript = GenerateAlterTableScript(
+                                targetSchema,
+                                targetTable,
+                                comparisonResult);
+
+                            autoFixSteps.Add(new ArchiveInspectionAutoFixStep(
+                                "ALTER_TARGET_TABLE",
+                                "调整目标表结构",
+                                alterScript));
+                        }
+
+                        logger.LogError(
+                            "表结构不一致(阻塞): {SourceTable} vs {TargetTable}, 差异: {Differences}",
+                            $"{request.SchemaName}.{request.TableName}",
+                            request.TargetTable,
+                            comparisonResult.DifferenceDescription);
+                    }
+                    else
+                    {
+                        logger.LogDebug(
+                            "表结构一致: 源={SourceTable}, 目标={TargetTable}, 共 {ColCount} 列",
+                            $"{request.SchemaName}.{request.TableName}",
+                            request.TargetTable,
+                            comparisonResult.SourceColumnCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "对比表结构时发生异常");
+                    blockingIssues.Add(new ArchiveInspectionIssue(
+                        "SCH002",
+                        "无法对比表结构",
+                        ex.Message));
+                }
+            }
+            else
+            {
+                // 如果目标表不存在，添加自动补齐步骤
+                autoFixSteps.Add(new ArchiveInspectionAutoFixStep(
+                    "CREATE_TARGET_TABLE",
+                    "创建目标表",
+                    $"CREATE TABLE {request.TargetTable} AS (SELECT TOP 0 * FROM {request.SchemaName}.{request.TableName})"));
+
+                warnings.Add(new ArchiveInspectionIssue(
+                    "TBL001",
+                    "目标表不存在",
+                    "系统可以自动创建与源表结构相同的普通表"));
+            }
+
             // 检查 BCP 命令是否可用
             string? bcpCommandPath = null;
             bool hasBcpCommand = await CheckBcpAvailabilityAsync();
 
             // TODO: 检查权限 - 需要查询数据库权限
             bool hasRequiredPermissions = true; // 简化实现,假设有权限
-
-            // 如果目标表不存在,添加自动补齐步骤
-            if (!targetTableExists)
-            {
-                autoFixSteps.Add(new ArchiveInspectionAutoFixStep(
-                    "CREATE_TARGET_TABLE",
-                    "创建目标表",
-                    $"CREATE TABLE {request.TargetTable} AS (SELECT TOP 0 * FROM {request.SchemaName}.{request.TableName})"));
-                
-                warnings.Add(new ArchiveInspectionIssue(
-                    "TBL001",
-                    "目标表不存在",
-                    "系统可以自动创建与源表结构相同的普通表"));
-            }
 
             // 检查 BCP 命令
             if (!hasBcpCommand)
@@ -221,22 +285,86 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
                     ex.Message));
             }
 
-            // 检查 INSERT 权限（简化实现，假设有权限）
-            bool hasInsertPermission = true;
-
-            // 如果目标表不存在,添加自动补齐步骤
-            if (!targetTableExists)
+            // 如果目标表存在，对比表结构
+            if (targetTableExists)
             {
+                try
+                {
+                    var comparisonResult = await tableManagementService.CompareTableSchemasAsync(
+                        sourceConnectionString,
+                        request.SchemaName,
+                        request.TableName,
+                        null, // 目标连接字符串(null = 与源相同)
+                        request.TargetDatabase, // 目标数据库名称
+                        targetSchema,
+                        targetTable,
+                        cancellationToken);
+
+                    if (!comparisonResult.IsCompatible)
+                    {
+                        // 表结构不一致，添加为阻塞性问题，禁止执行
+                        blockingIssues.Add(new ArchiveInspectionIssue(
+                            "SCH001",
+                            "表结构不一致",
+                            comparisonResult.DifferenceDescription));
+
+                        // 如果有缺失的列或类型不匹配，可以提供自动修复建议
+                        if (comparisonResult.MissingColumns.Count > 0 || 
+                            comparisonResult.TypeMismatchColumns.Count > 0 ||
+                            comparisonResult.LengthInsufficientColumns.Count > 0 ||
+                            comparisonResult.PrecisionInsufficientColumns.Count > 0)
+                        {
+                            var alterScript = GenerateAlterTableScript(
+                                targetSchema,
+                                targetTable,
+                                comparisonResult);
+
+                            autoFixSteps.Add(new ArchiveInspectionAutoFixStep(
+                                "ALTER_TARGET_TABLE",
+                                "调整目标表结构",
+                                alterScript));
+                        }
+
+                        logger.LogError(
+                            "表结构不一致(阻塞): {SourceTable} vs {TargetTable}, 差异: {Differences}",
+                            $"{request.SchemaName}.{request.TableName}",
+                            request.TargetTable,
+                            comparisonResult.DifferenceDescription);
+                    }
+                    else
+                    {
+                        logger.LogDebug(
+                            "表结构一致: 源={SourceTable}, 目标={TargetTable}, 共 {ColCount} 列",
+                            $"{request.SchemaName}.{request.TableName}",
+                            request.TargetTable,
+                            comparisonResult.SourceColumnCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "对比表结构时发生异常");
+                    blockingIssues.Add(new ArchiveInspectionIssue(
+                        "SCH002",
+                        "无法对比表结构",
+                        ex.Message));
+                }
+            }
+            else
+            {
+                // 如果目标表不存在,添加自动补齐步骤
                 autoFixSteps.Add(new ArchiveInspectionAutoFixStep(
                     "CREATE_TARGET_TABLE",
                     "创建目标表",
                     $"CREATE TABLE {request.TargetTable} AS (SELECT TOP 0 * FROM {request.SchemaName}.{request.TableName})"));
-                
+
                 warnings.Add(new ArchiveInspectionIssue(
                     "TBL001",
                     "目标表不存在",
                     "系统可以自动创建与源表结构相同的普通表"));
             }
+
+            // 检查 INSERT 权限（简化实现，假设有权限）
+            bool hasInsertPermission = true;
 
             bool canExecute = blockingIssues.Count == 0;
             
@@ -401,7 +529,12 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
 
             // 构建连接字符串
             var sourceConnectionString = BuildConnectionString(dataSource);
-            var targetConnectionString = sourceConnectionString; // 目前假设目标和源在同一数据库
+            // 构建目标连接字符串(支持自定义目标服务器)
+            var targetConnectionString = BuildTargetConnectionString(dataSource, request.TargetDatabase);
+
+            logger.LogInformation(
+                "自动修复连接信息: UseSourceAsTarget={UseSourceAsTarget}, TargetDatabase={TargetDatabase}",
+                dataSource.UseSourceAsTarget, request.TargetDatabase ?? "(使用源数据库)");
 
             // 解析表名
             var (sourceSchema, sourceTable) = (request.SchemaName, request.TableName);
@@ -598,6 +731,110 @@ internal sealed class PartitionArchiveAppService : IPartitionArchiveAppService
         }
 
         return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// 构建目标服务器连接字符串
+    /// </summary>
+    private string BuildTargetConnectionString(ArchiveDataSource dataSource, string? targetDatabase = null)
+    {
+        // 如果使用源服务器作为目标服务器
+        if (dataSource.UseSourceAsTarget)
+        {
+            // 如果指定了目标数据库,修改连接字符串的数据库
+            if (!string.IsNullOrWhiteSpace(targetDatabase))
+            {
+                var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(BuildConnectionString(dataSource))
+                {
+                    InitialCatalog = targetDatabase
+                };
+                return builder.ConnectionString;
+            }
+            
+            return BuildConnectionString(dataSource);
+        }
+
+        // 使用自定义目标服务器
+        var targetBuilder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
+        {
+            DataSource = dataSource.TargetServerPort == 1433
+                ? dataSource.TargetServerAddress
+                : $"{dataSource.TargetServerAddress},{dataSource.TargetServerPort}",
+            InitialCatalog = targetDatabase ?? dataSource.TargetDatabaseName ?? dataSource.DatabaseName,
+            IntegratedSecurity = dataSource.TargetUseIntegratedSecurity,
+            TrustServerCertificate = true,
+            ConnectTimeout = 30
+        };
+
+        if (!dataSource.TargetUseIntegratedSecurity)
+        {
+            targetBuilder.UserID = dataSource.TargetUserName;
+            // 解密密码
+            if (!string.IsNullOrEmpty(dataSource.TargetPassword))
+            {
+                targetBuilder.Password = passwordEncryptionService.Decrypt(dataSource.TargetPassword);
+            }
+        }
+
+        return targetBuilder.ConnectionString;
+    }
+
+    /// <summary>
+    /// 生成 ALTER TABLE 脚本(用于修复表结构差异)
+    /// </summary>
+    private static string GenerateAlterTableScript(
+        string targetSchema,
+        string targetTable,
+        TableSchemaComparisonResult comparisonResult)
+    {
+        var script = new System.Text.StringBuilder();
+        script.AppendLine($"-- 调整目标表结构: [{targetSchema}].[{targetTable}]");
+        script.AppendLine($"-- 注意: 以下脚本仅为参考，请根据实际情况调整");
+        script.AppendLine();
+
+        if (comparisonResult.MissingColumns.Count > 0)
+        {
+            script.AppendLine("-- 添加缺失的列:");
+            foreach (var col in comparisonResult.MissingColumns)
+            {
+                script.AppendLine($"-- ALTER TABLE [{targetSchema}].[{targetTable}] ADD [{col}] <数据类型> NULL;");
+            }
+            script.AppendLine();
+        }
+
+        if (comparisonResult.TypeMismatchColumns.Count > 0)
+        {
+            script.AppendLine("-- 修改类型不匹配的列:");
+            foreach (var col in comparisonResult.TypeMismatchColumns)
+            {
+                script.AppendLine($"-- ALTER TABLE [{targetSchema}].[{targetTable}] ALTER COLUMN [{col}] <新数据类型>;");
+            }
+            script.AppendLine();
+        }
+
+        if (comparisonResult.LengthInsufficientColumns.Count > 0)
+        {
+            script.AppendLine("-- 调整长度不足的列:");
+            foreach (var col in comparisonResult.LengthInsufficientColumns)
+            {
+                script.AppendLine($"-- ALTER TABLE [{targetSchema}].[{targetTable}] ALTER COLUMN [{col}] <数据类型>(<新长度>);");
+            }
+            script.AppendLine();
+        }
+
+        if (comparisonResult.PrecisionInsufficientColumns.Count > 0)
+        {
+            script.AppendLine("-- 调整精度不足的列:");
+            foreach (var col in comparisonResult.PrecisionInsufficientColumns)
+            {
+                script.AppendLine($"-- ALTER TABLE [{targetSchema}].[{targetTable}] ALTER COLUMN [{col}] DECIMAL(<新精度>, <新小数位>);");
+            }
+            script.AppendLine();
+        }
+
+        script.AppendLine("-- 请使用 SSMS 对比两个表的架构，生成准确的修改脚本");
+
+        return script.ToString();
     }
 }
 

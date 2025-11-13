@@ -146,5 +146,6 @@ public sealed record ArchiveAutoFixRequest(
     string SchemaName,
     string TableName,
     string TargetTable,
+    string? TargetDatabase,
     string FixCode,
     string RequestedBy);

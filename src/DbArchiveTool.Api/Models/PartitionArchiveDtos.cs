@@ -85,11 +85,12 @@ public sealed record ArchiveAutoFixDto(
     string SchemaName,
     string TableName,
     string TargetTable,
+    string? TargetDatabase,
     string FixCode,
     string RequestedBy)
 {
     public ArchiveAutoFixRequest ToApplicationRequest()
-        => new(DataSourceId, SchemaName, TableName, TargetTable, FixCode, RequestedBy);
+        => new(DataSourceId, SchemaName, TableName, TargetTable, TargetDatabase, FixCode, RequestedBy);
 }
 
 /// <summary>

@@ -6,6 +6,7 @@ using DbArchiveTool.Web.Core;
 using DbArchiveTool.Web.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Logging;
+using Microsoft.JSInterop;
 using System.Linq;
 using System.Text;
 
@@ -49,6 +50,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	[Inject] private MessageService Message { get; set; } = default!;
 	[Inject] private AdminSessionState AdminSession { get; set; } = default!;
 	[Inject] private ILogger<PartitionArchiveWizard> Logger { get; set; } = default!;
+	[Inject] private IJSRuntime JSRuntime { get; set; } = default!;
 
 	private readonly SwitchArchiveFormModel _form = new();
 	private readonly List<PartitionConfigurationOption> _configurationOptions = new();
@@ -162,6 +164,16 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 		try
 		{
+			// 先加载数据源信息,用于判断分区切换是否可用
+			await LoadDataSourceInfoAsync();
+			
+			// 如果分区切换被禁用,自动切换到 BCP 模式
+			if (IsSwitchModeDisabled() && _selectedMode == ArchiveMode.Switch)
+			{
+				_selectedMode = ArchiveMode.Bcp;
+				Logger.LogInformation("分区切换模式被禁用(自定义目标服务器),自动切换到 BCP 模式");
+			}
+			
 			await LoadConfigurationsAsync();
 			if (_configurationOptions.Any())
 			{
@@ -175,19 +187,14 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				_selectedConfigurationDetail = null;
 				
 				// 无配置时从数据源获取目标数据库并设置默认值
-				var dataSourceResult = await DataSourceApi.GetAsync();
-				if (dataSourceResult.IsSuccess && dataSourceResult.Value != null)
+				if (_currentDataSource != null)
 				{
-					var dataSource = dataSourceResult.Value.FirstOrDefault(ds => ds.Id == DataSourceId);
-					if (dataSource != null)
-					{
-						var targetDatabase = dataSource.UseSourceAsTarget
-							? dataSource.DatabaseName
-							: (dataSource.TargetDatabaseName ?? dataSource.DatabaseName);
-						
-						_form.TargetDatabase = targetDatabase;
-						Logger.LogInformation("无配置场景: 设置目标数据库={TargetDatabase}", targetDatabase);
-					}
+					var targetDatabase = _currentDataSource.UseSourceAsTarget
+						? _currentDataSource.DatabaseName
+						: (_currentDataSource.TargetDatabaseName ?? _currentDataSource.DatabaseName);
+					
+					_form.TargetDatabase = targetDatabase;
+					Logger.LogInformation("无配置场景: 设置目标数据库={TargetDatabase}", targetDatabase);
 				}
 				
 				// 设置默认目标表名为 源表_bak
@@ -196,10 +203,59 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 			_form.RequestedBy = ResolveOperator();
 			_form.BackupConfirmed = false;
+			
+			// 从 localStorage 加载 BCP 临时目录配置
+			await LoadBcpTempDirectoryAsync();
 		}
 		finally
 		{
 			_initializing = false;
+		}
+	}
+
+	/// <summary>
+	/// 从 localStorage 加载 BCP 临时目录配置
+	/// </summary>
+	private async Task LoadBcpTempDirectoryAsync()
+	{
+		try
+		{
+			var savedTempDir = await JSRuntime.InvokeAsync<string?>("localStorage.getItem", "bcpTempDirectory");
+			if (!string.IsNullOrWhiteSpace(savedTempDir))
+			{
+				_form.BcpTempDirectory = savedTempDir;
+				Logger.LogDebug("从 localStorage 加载 BCP 临时目录: {TempDir}", savedTempDir);
+			}
+			else
+			{
+				// 如果没有保存的值，使用系统默认临时目录
+				_form.BcpTempDirectory = Path.GetTempPath();
+				Logger.LogDebug("使用默认 BCP 临时目录: {TempDir}", _form.BcpTempDirectory);
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning(ex, "加载 BCP 临时目录配置失败，使用默认值");
+			_form.BcpTempDirectory = Path.GetTempPath();
+		}
+	}
+
+	/// <summary>
+	/// 保存 BCP 临时目录到 localStorage
+	/// </summary>
+	private async Task SaveBcpTempDirectoryAsync()
+	{
+		try
+		{
+			if (!string.IsNullOrWhiteSpace(_form.BcpTempDirectory))
+			{
+				await JSRuntime.InvokeVoidAsync("localStorage.setItem", "bcpTempDirectory", _form.BcpTempDirectory);
+				Logger.LogDebug("保存 BCP 临时目录到 localStorage: {TempDir}", _form.BcpTempDirectory);
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning(ex, "保存 BCP 临时目录配置失败");
 		}
 	}
 
@@ -574,6 +630,57 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		? "(未指定)"
 		: $"{SchemaName}.{TableName}";
 
+	/// <summary>
+	/// 判断分区切换模式是否可用(需要同源同实例)
+	/// </summary>
+	private bool IsSwitchModeDisabled()
+	{
+		if (_currentDataSource == null)
+		{
+			return false;
+		}
+
+		// 如果配置了自定义目标服务器(UseSourceAsTarget=false),则禁用分区切换
+		if (!_currentDataSource.UseSourceAsTarget)
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// 获取分区切换禁用的提示文字
+	/// </summary>
+	private string GetSwitchDisabledReason()
+	{
+		if (_currentDataSource == null)
+		{
+			return string.Empty;
+		}
+
+		if (!_currentDataSource.UseSourceAsTarget)
+		{
+			return "分区切换要求源服务器和目标服务器为同一实例,当前配置了自定义目标服务器,无法使用分区切换模式";
+		}
+
+		return string.Empty;
+	}
+
+	/// <summary>
+	/// 获取当前归档模式的显示文本
+	/// </summary>
+	private string GetArchiveModeDisplayText()
+	{
+		return _selectedMode switch
+		{
+			ArchiveMode.Switch => "分区切换",
+			ArchiveMode.Bcp => "BCP 归档",
+			ArchiveMode.BulkCopy => "BulkCopy 归档",
+			_ => "未知模式"
+		};
+	}
+
 	private string DisplayPartitionKey()
 	{
 		if (!_partitionKeys.Any())
@@ -602,10 +709,14 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			// Step 1: 填写参数
 			1 => ValidateStep1Parameters(),
 			
-			// Step 2: 预检结果 - Switch模式需要预检通过,BCP/BulkCopy暂时跳过预检
-			2 => _selectedMode == ArchiveMode.Switch 
-				? (_inspectionResult is not null && _inspectionResult.CanExecute)
-				: true,
+			// Step 2: 预检结果 - 所有模式都需要预检通过
+			2 => _selectedMode switch
+			{
+				ArchiveMode.Switch => _inspectionResult is not null && _inspectionResult.CanExecute,
+				ArchiveMode.Bcp => _bcpInspectionResult is not null && _bcpInspectionResult.CanExecute,
+				ArchiveMode.BulkCopy => _bulkCopyInspectionResult is not null && _bulkCopyInspectionResult.CanExecute,
+				_ => false
+			},
 			
 			_ => true
 		};
@@ -773,6 +884,9 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			Message.Warning("请填写目标表名称。");
 			return false;
 		}
+
+		// 保存 BCP 临时目录配置到 localStorage
+		await SaveBcpTempDirectoryAsync();
 
 		_inspectionLoading = true;
 		_bcpInspectionResult = null;
@@ -1005,11 +1119,12 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				SchemaName,
 				TableName,
 				_form.TargetTable.Trim(),
+				_form.TargetDatabase, // 传递目标数据库
 				"CREATE_TARGET_TABLE",
 				_form.RequestedBy);
 
-			Logger.LogInformation("开始执行 BCP 自动修复: TargetTable={TargetTable}, FixCode={FixCode}", 
-				_form.TargetTable, "CREATE_TARGET_TABLE");
+			Logger.LogInformation("开始执行 BCP 自动修复: TargetTable={TargetTable}, TargetDatabase={TargetDatabase}, FixCode={FixCode}", 
+				_form.TargetTable, _form.TargetDatabase, "CREATE_TARGET_TABLE");
 
 			var result = await PartitionArchiveApi.ExecuteAutoFixAsync(request);
 			if (!result.IsSuccess || string.IsNullOrEmpty(result.Value))
@@ -1541,9 +1656,9 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 
 		// === BCP模式专用字段 ===
 		/// <summary>
-		/// 临时文件目录
+		/// 临时文件目录（初始化时从 localStorage 加载）
 		/// </summary>
-		public string BcpTempDirectory { get; set; } = Path.GetTempPath();
+		public string BcpTempDirectory { get; set; } = string.Empty;
 
 		/// <summary>
 		/// 使用原生格式(native format)

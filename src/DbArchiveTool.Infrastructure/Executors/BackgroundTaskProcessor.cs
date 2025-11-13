@@ -2203,64 +2203,18 @@ WHERE s.name = @SchemaName
             task.UpdateProgress(0.25, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            // ============== 阶段 3.5: 表结构一致性校验 ==============
-            var stepWatch = Stopwatch.StartNew();
-            await AppendLogAsync(task.Id, "Step", "表结构校验", 
-                $"正在对比源表和目标表的结构...", 
-                cancellationToken);
-
-            var schemaComparison = await CompareTableSchemasAsync(
-                sourceConnectionString,
-                snapshot.SchemaName,
-                snapshot.TableName,
-                targetConnectionString,
-                snapshot.TargetDatabase,
-                snapshot.SchemaName, // 假设目标表使用相同的 schema
-                snapshot.TargetTable,
-                cancellationToken);
-
-            stepWatch.Stop();
-
-            if (!schemaComparison.IsCompatible)
-            {
-                await AppendLogAsync(
-                    task.Id,
-                    "Error",
-                    "表结构不一致",
-                    schemaComparison.ErrorMessage ?? "源表和目标表结构不兼容",
-                    cancellationToken,
-                    durationMs: stepWatch.ElapsedMilliseconds);
-
-                await HandleValidationFailureAsync(
-                    task,
-                    schemaComparison.ErrorMessage ?? "表结构校验失败：源表和目标表结构不一致",
-                    cancellationToken);
-                return;
-            }
-
-            await AppendLogAsync(
-                task.Id,
-                "Info",
-                "表结构校验通过",
-                $"源表和目标表结构一致，共 {schemaComparison.SourceColumnCount} 列，可以安全执行 BCP 归档。",
-                cancellationToken,
-                durationMs: stepWatch.ElapsedMilliseconds);
-
-            task.UpdateProgress(0.3, "SYSTEM");
-            await taskRepository.UpdateAsync(task, cancellationToken);
-
             // ============== 阶段 4: 进入执行队列 ==============
             task.MarkQueued("SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
-            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成,任务进入执行队列。", cancellationToken);
+            await AppendLogAsync(task.Id, "Step", "进入队列", "准备工作完成,任务进入执行队列。", cancellationToken);
 
             // ============== 阶段 5: 开始执行 BCP 归档 ==============
             task.MarkRunning("SYSTEM");
             task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
-            task.UpdateProgress(0.4, "SYSTEM");
+            task.UpdateProgress(0.3, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            stepWatch = Stopwatch.StartNew();
+            var stepWatch = Stopwatch.StartNew();
             await AppendLogAsync(task.Id, "Step", "执行 BCP 归档", 
                 $"正在通过 BCP 工具导出并导入数据...", 
                 cancellationToken);
@@ -2708,64 +2662,18 @@ WHERE s.name = @SchemaName
             task.UpdateProgress(0.25, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            // ============== 阶段 3.5: 表结构一致性校验 ==============
-            var stepWatch = Stopwatch.StartNew();
-            await AppendLogAsync(task.Id, "Step", "表结构校验", 
-                $"正在对比源表和目标表的结构...", 
-                cancellationToken);
-
-            var schemaComparison = await CompareTableSchemasAsync(
-                sourceConnectionString,
-                snapshot.SchemaName,
-                snapshot.TableName,
-                targetConnectionString,
-                snapshot.TargetDatabase,
-                snapshot.SchemaName, // 假设目标表使用相同的 schema
-                snapshot.TargetTable,
-                cancellationToken);
-
-            stepWatch.Stop();
-
-            if (!schemaComparison.IsCompatible)
-            {
-                await AppendLogAsync(
-                    task.Id,
-                    "Error",
-                    "表结构不一致",
-                    schemaComparison.ErrorMessage ?? "源表和目标表结构不兼容",
-                    cancellationToken,
-                    durationMs: stepWatch.ElapsedMilliseconds);
-
-                await HandleValidationFailureAsync(
-                    task,
-                    schemaComparison.ErrorMessage ?? "表结构校验失败：源表和目标表结构不一致",
-                    cancellationToken);
-                return;
-            }
-
-            await AppendLogAsync(
-                task.Id,
-                "Info",
-                "表结构校验通过",
-                $"源表和目标表结构一致，共 {schemaComparison.SourceColumnCount} 列，可以安全执行 BulkCopy 归档。",
-                cancellationToken,
-                durationMs: stepWatch.ElapsedMilliseconds);
-
-            task.UpdateProgress(0.3, "SYSTEM");
-            await taskRepository.UpdateAsync(task, cancellationToken);
-
             // ============== 阶段 4: 进入执行队列 ==============
             task.MarkQueued("SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
-            await AppendLogAsync(task.Id, "Step", "进入队列", "校验完成,任务进入执行队列。", cancellationToken);
+            await AppendLogAsync(task.Id, "Step", "进入队列", "准备工作完成,任务进入执行队列。", cancellationToken);
 
             // ============== 阶段 5: 开始执行 BulkCopy 归档 ==============
             task.MarkRunning("SYSTEM");
             task.UpdatePhase(BackgroundTaskPhases.Executing, "SYSTEM");
-            task.UpdateProgress(0.4, "SYSTEM");
+            task.UpdateProgress(0.3, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);
 
-            stepWatch = Stopwatch.StartNew();
+            var stepWatch = Stopwatch.StartNew();
             await AppendLogAsync(task.Id, "Step", "执行 BulkCopy 归档", 
                 $"正在通过 SqlBulkCopy 流式传输数据...", 
                 cancellationToken);
@@ -2985,238 +2893,4 @@ WHERE s.name = @SchemaName
 
         return builder.ConnectionString;
     }
-
-    /// <summary>
-    /// 对比源表和目标表的结构是否一致（用于 BCP/BulkCopy 归档前的预检查）
-    /// </summary>
-    /// <returns>如果结构一致返回 null，否则返回差异描述信息</returns>
-    private static async Task<TableSchemaComparisonResult> CompareTableSchemasAsync(
-        string sourceConnectionString,
-        string sourceSchema,
-        string sourceTable,
-        string targetConnectionString,
-        string targetDatabase,
-        string targetSchema,
-        string targetTable,
-        CancellationToken cancellationToken)
-    {
-        const string columnQuery = @"
-            SELECT 
-                COLUMN_NAME,
-                ORDINAL_POSITION,
-                DATA_TYPE,
-                CHARACTER_MAXIMUM_LENGTH,
-                NUMERIC_PRECISION,
-                NUMERIC_SCALE,
-                IS_NULLABLE,
-                COLUMN_DEFAULT
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = @Schema
-              AND TABLE_NAME = @Table
-            ORDER BY ORDINAL_POSITION";
-
-        // 查询源表结构
-        var sourceColumns = new List<ColumnInfo>();
-        using (var sourceConn = new SqlConnection(sourceConnectionString))
-        {
-            await sourceConn.OpenAsync(cancellationToken);
-            using var cmd = new SqlCommand(columnQuery, sourceConn);
-            cmd.Parameters.AddWithValue("@Schema", sourceSchema);
-            cmd.Parameters.AddWithValue("@Table", sourceTable);
-
-            using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                sourceColumns.Add(new ColumnInfo
-                {
-                    Name = reader.GetString(0),
-                    Position = reader.GetInt32(1),
-                    DataType = reader.GetString(2),
-                    MaxLength = reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                    NumericPrecision = reader.IsDBNull(4) ? null : (byte?)reader.GetByte(4),
-                    NumericScale = reader.IsDBNull(5) ? null : reader.GetInt32(5),
-                    IsNullable = reader.GetString(6) == "YES",
-                    DefaultValue = reader.IsDBNull(7) ? null : reader.GetString(7)
-                });
-            }
-        }
-
-        // 查询目标表结构
-        var targetColumns = new List<ColumnInfo>();
-        
-        // 切换到目标数据库
-        var targetConnBuilder = new SqlConnectionStringBuilder(targetConnectionString)
-        {
-            InitialCatalog = targetDatabase
-        };
-        
-        using (var targetConn = new SqlConnection(targetConnBuilder.ConnectionString))
-        {
-            await targetConn.OpenAsync(cancellationToken);
-            
-            // 检查目标表是否存在
-            const string checkTableSql = @"
-                SELECT COUNT(*)
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = @Schema
-                  AND TABLE_NAME = @Table";
-            
-            using (var checkCmd = new SqlCommand(checkTableSql, targetConn))
-            {
-                checkCmd.Parameters.AddWithValue("@Schema", targetSchema);
-                checkCmd.Parameters.AddWithValue("@Table", targetTable);
-                
-                var exists = (int)(await checkCmd.ExecuteScalarAsync(cancellationToken))! > 0;
-                if (!exists)
-                {
-                    return new TableSchemaComparisonResult
-                    {
-                        IsCompatible = false,
-                        TargetTableExists = false,
-                        ErrorMessage = $"目标表 [{targetDatabase}].[{targetSchema}].[{targetTable}] 不存在"
-                    };
-                }
-            }
-
-            // 查询目标表列信息
-            using var cmd = new SqlCommand(columnQuery, targetConn);
-            cmd.Parameters.AddWithValue("@Schema", targetSchema);
-            cmd.Parameters.AddWithValue("@Table", targetTable);
-
-            using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                targetColumns.Add(new ColumnInfo
-                {
-                    Name = reader.GetString(0),
-                    Position = reader.GetInt32(1),
-                    DataType = reader.GetString(2),
-                    MaxLength = reader.IsDBNull(3) ? null : reader.GetInt32(3),
-                    NumericPrecision = reader.IsDBNull(4) ? null : (byte?)reader.GetByte(4),
-                    NumericScale = reader.IsDBNull(5) ? null : reader.GetInt32(5),
-                    IsNullable = reader.GetString(6) == "YES",
-                    DefaultValue = reader.IsDBNull(7) ? null : reader.GetString(7)
-                });
-            }
-        }
-
-        // 对比列结构
-        var differences = new List<string>();
-        var sourceColDict = sourceColumns.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
-        var targetColDict = targetColumns.ToDictionary(c => c.Name, StringComparer.OrdinalIgnoreCase);
-
-        // 检查源表中有但目标表中没有的列（新增的列）
-        foreach (var srcCol in sourceColumns)
-        {
-            if (!targetColDict.ContainsKey(srcCol.Name))
-            {
-                differences.Add($"❌ 源表新增列: [{srcCol.Name}] {srcCol.DataType}" +
-                    (srcCol.MaxLength.HasValue ? $"({srcCol.MaxLength})" : "") +
-                    " - 目标表缺少此列");
-            }
-            else
-            {
-                var tgtCol = targetColDict[srcCol.Name];
-                
-                // 检查数据类型
-                if (!string.Equals(srcCol.DataType, tgtCol.DataType, StringComparison.OrdinalIgnoreCase))
-                {
-                    differences.Add($"❌ 列 [{srcCol.Name}] 类型不匹配: " +
-                        $"源表={srcCol.DataType}, 目标表={tgtCol.DataType}");
-                }
-                // 检查字符类型的长度
-                else if (srcCol.MaxLength.HasValue && tgtCol.MaxLength.HasValue)
-                {
-                    // varchar/nvarchar: 源表长度 > 目标表长度 = 可能截断
-                    if (srcCol.MaxLength.Value > tgtCol.MaxLength.Value)
-                    {
-                        differences.Add($"⚠️ 列 [{srcCol.Name}] {srcCol.DataType} 长度不足: " +
-                            $"源表={srcCol.MaxLength}, 目标表={tgtCol.MaxLength} (可能导致字符串截断)");
-                    }
-                }
-                // 检查数值类型的精度
-                else if (srcCol.NumericPrecision.HasValue && tgtCol.NumericPrecision.HasValue)
-                {
-                    if (srcCol.NumericPrecision.Value > tgtCol.NumericPrecision.Value ||
-                        srcCol.NumericScale.GetValueOrDefault() > tgtCol.NumericScale.GetValueOrDefault())
-                    {
-                        differences.Add($"⚠️ 列 [{srcCol.Name}] {srcCol.DataType} 精度不足: " +
-                            $"源表=({srcCol.NumericPrecision},{srcCol.NumericScale}), " +
-                            $"目标表=({tgtCol.NumericPrecision},{tgtCol.NumericScale})");
-                    }
-                }
-            }
-        }
-
-        // 检查目标表中有但源表中没有的列（已删除的列）
-        foreach (var tgtCol in targetColumns)
-        {
-            if (!sourceColDict.ContainsKey(tgtCol.Name))
-            {
-                differences.Add($"ℹ️ 目标表旧列: [{tgtCol.Name}] {tgtCol.DataType}" +
-                    (tgtCol.MaxLength.HasValue ? $"({tgtCol.MaxLength})" : "") +
-                    " - 源表已删除此列（BCP 导入时会忽略）");
-            }
-        }
-
-        if (differences.Count > 0)
-        {
-            var errorMessage = $"源表和目标表结构不一致，发现 {differences.Count} 处差异:\n\n" +
-                string.Join("\n", differences) +
-                $"\n\n源表: [{sourceSchema}].[{sourceTable}] ({sourceColumns.Count} 列)" +
-                $"\n目标表: [{targetDatabase}].[{targetSchema}].[{targetTable}] ({targetColumns.Count} 列)" +
-                "\n\n建议:\n" +
-                "1. 使用 SSMS 对比两个表的架构 (右键 → 生成脚本)\n" +
-                "2. 如果源表新增了列，请在目标表中添加对应列\n" +
-                "3. 如果源表字段长度增加，请调整目标表对应列的长度\n" +
-                "4. 确保目标表结构与源表完全一致后重新提交任务";
-
-            return new TableSchemaComparisonResult
-            {
-                IsCompatible = false,
-                TargetTableExists = true,
-                ErrorMessage = errorMessage,
-                Differences = differences,
-                SourceColumnCount = sourceColumns.Count,
-                TargetColumnCount = targetColumns.Count
-            };
-        }
-
-        return new TableSchemaComparisonResult
-        {
-            IsCompatible = true,
-            TargetTableExists = true,
-            SourceColumnCount = sourceColumns.Count,
-            TargetColumnCount = targetColumns.Count
-        };
-    }
-
-    /// <summary>
-    /// 列信息（用于表结构对比）
-    /// </summary>
-    private class ColumnInfo
-    {
-        public string Name { get; set; } = string.Empty;
-        public int Position { get; set; }
-        public string DataType { get; set; } = string.Empty;
-        public int? MaxLength { get; set; }
-        public byte? NumericPrecision { get; set; }
-        public int? NumericScale { get; set; }
-        public bool IsNullable { get; set; }
-        public string? DefaultValue { get; set; }
-    }
-
-    /// <summary>
-    /// 表结构对比结果
-    /// </summary>
-    private class TableSchemaComparisonResult
-    {
-        public bool IsCompatible { get; set; }
-        public bool TargetTableExists { get; set; }
-        public string? ErrorMessage { get; set; }
-        public List<string>? Differences { get; set; }
-        public int SourceColumnCount { get; set; }
-        public int TargetColumnCount { get; set; }
-    }
 }
-

@@ -38,6 +38,28 @@ public interface ITableManagementService
         string targetSchemaName,
         string targetTableName,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 对比源表和目标表的结构是否一致(用于归档前的预检查)
+    /// </summary>
+    /// <param name="sourceConnectionString">源数据库连接字符串</param>
+    /// <param name="sourceSchemaName">源架构名称</param>
+    /// <param name="sourceTableName">源表名</param>
+    /// <param name="targetConnectionString">目标数据库连接字符串(可为 null,表示与源相同)</param>
+    /// <param name="targetDatabaseName">目标数据库名称(可为 null,表示与源相同)</param>
+    /// <param name="targetSchemaName">目标架构名称</param>
+    /// <param name="targetTableName">目标表名</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>表结构对比结果</returns>
+    Task<TableSchemaComparisonResult> CompareTableSchemasAsync(
+        string sourceConnectionString,
+        string sourceSchemaName,
+        string sourceTableName,
+        string? targetConnectionString,
+        string? targetDatabaseName,
+        string targetSchemaName,
+        string targetTableName,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -83,4 +105,55 @@ public sealed class TableCreationResult
             ErrorMessage = errorMessage
         };
     }
+}
+
+/// <summary>
+/// 表结构对比结果
+/// </summary>
+public sealed class TableSchemaComparisonResult
+{
+    /// <summary>
+    /// 目标表是否存在
+    /// </summary>
+    public bool TargetTableExists { get; init; }
+
+    /// <summary>
+    /// 表结构是否一致(仅在目标表存在时有意义)
+    /// </summary>
+    public bool IsCompatible { get; init; }
+
+    /// <summary>
+    /// 差异描述(如果不一致)
+    /// </summary>
+    public string? DifferenceDescription { get; init; }
+
+    /// <summary>
+    /// 源表列数
+    /// </summary>
+    public int SourceColumnCount { get; init; }
+
+    /// <summary>
+    /// 目标表列数(如果目标表存在)
+    /// </summary>
+    public int? TargetColumnCount { get; init; }
+
+    /// <summary>
+    /// 缺失的列(在源表中存在但目标表中不存在)
+    /// </summary>
+    public List<string> MissingColumns { get; init; } = new();
+
+    /// <summary>
+    /// 类型不匹配的列
+    /// </summary>
+    public List<string> TypeMismatchColumns { get; init; } = new();
+
+    /// <summary>
+    /// 长度不足的列
+    /// </summary>
+    public List<string> LengthInsufficientColumns { get; init; } = new();
+
+    /// <summary>
+    /// 精度不足的列
+    /// </summary>
+    public List<string> PrecisionInsufficientColumns { get; init; } = new();
 }
