@@ -1039,23 +1039,291 @@ WHERE s.name = @SchemaName
                 $"正在通过 SqlBulkCopy 流式传输数据...", 
                 cancellationToken);
 
-            // 构建源查询 SQL
-            // 注意：SourcePartitionKey 在 BCP/BulkCopy 场景下可能是分区键值或其他筛选条件
-            // 这里简化实现，直接导出整个表（实际应该根据业务需求添加 WHERE 条件）
+            // ============== 分区优化方案: 检测分区表并 SWITCH ==============
             string sourceQuery;
-            if (!string.IsNullOrWhiteSpace(snapshot.SourcePartitionKey))
+            string? tempTableName = null;
+            long expectedRowCount = 0;
+            bool usedPartitionSwitch = false;
+
+            // 1. 检查是否为分区表
+            var isPartitionedTable = await partitionSwitchHelper.IsPartitionedTableAsync(
+                sourceConnectionString,
+                snapshot.SchemaName,
+                snapshot.TableName,
+                cancellationToken);
+
+            if (isPartitionedTable && !string.IsNullOrWhiteSpace(snapshot.SourcePartitionKey))
             {
-                // 如果提供了分区键，尝试作为筛选条件（需要根据实际表结构调整）
-                // TODO: 这里需要根据实际的分区列名动态构建 WHERE 条件
-                sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{snapshot.TableName}]";
-                
-                await AppendLogAsync(task.Id, "Warning", "分区键筛选", 
-                    $"当前实现暂不支持按分区键筛选，将导出整个表。分区键: {snapshot.SourcePartitionKey}", 
+                await AppendLogAsync(task.Id, "Info", "分区优化", 
+                    $"检测到分区表，将使用优化方案：SWITCH 分区到临时表 → 归档临时表 → 删除临时表", 
                     cancellationToken);
+
+                // 2. 获取分区信息
+                var partitionInfo = await partitionSwitchHelper.GetPartitionInfoAsync(
+                    sourceConnectionString,
+                    snapshot.SchemaName,
+                    snapshot.TableName,
+                    snapshot.SourcePartitionKey,
+                    cancellationToken);
+
+                if (partitionInfo is null)
+                {
+                    await AppendLogAsync(task.Id, "Warning", "分区未找到", 
+                        $"未找到分区: {snapshot.SourcePartitionKey}，将尝试使用 $PARTITION 函数查询", 
+                        cancellationToken);
+                    
+                    // 尝试获取分区函数信息，使用 $PARTITION 函数查询
+                    var partitionFuncInfo = await partitionSwitchHelper.GetPartitionFunctionInfoAsync(
+                        sourceConnectionString,
+                        snapshot.SchemaName,
+                        snapshot.TableName,
+                        cancellationToken);
+                    
+                    if (partitionFuncInfo != null && int.TryParse(snapshot.SourcePartitionKey, out var partNum))
+                    {
+                        // 使用 $PARTITION 函数精确查询分区数据
+                        sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{snapshot.TableName}] " +
+                                     $"WHERE $PARTITION.[{partitionFuncInfo.PartitionFunctionName}]([{partitionFuncInfo.PartitionColumnName}]) = {partNum}";
+                        
+                        await AppendLogAsync(task.Id, "Info", "使用 $PARTITION 函数", 
+                            $"使用分区函数查询: {partitionFuncInfo.PartitionFunctionName}({partitionFuncInfo.PartitionColumnName}) = {partNum}", 
+                            cancellationToken);
+                    }
+                    else
+                    {
+                        // 降级为全表查询
+                        sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{snapshot.TableName}]";
+                    }
+                }
+                else
+                {
+                    await AppendLogAsync(task.Id, "Info", "分区信息", 
+                        $"分区号: {partitionInfo.PartitionNumber}, 边界值: {partitionInfo.BoundaryValue}, " +
+                        $"行数: {partitionInfo.RowCount:N0}, 文件组: {partitionInfo.FileGroupName}", 
+                        cancellationToken);
+
+                    expectedRowCount = partitionInfo.RowCount;
+
+                    // 2.5 检测是否存在未完成归档的临时表（恢复机制）
+                    try
+                    {
+                        var existingTempTables = await GetExistingTempTablesAsync(
+                            sourceConnectionString,
+                            snapshot.SchemaName,
+                            snapshot.TableName,
+                            cancellationToken);
+                        
+                        if (existingTempTables.Count > 0)
+                        {
+                            // ⚠️ 关键修复: 发现旧临时表，尝试恢复而不是删除
+                            var recoveryTempTable = existingTempTables[0]; // 使用最新的临时表
+                            
+                            await AppendLogAsync(task.Id, "Warning", "发现未完成归档", 
+                                $"检测到 {existingTempTables.Count} 个历史临时表。尝试恢复归档: [{snapshot.SchemaName}].[{recoveryTempTable}]", 
+                                cancellationToken);
+                            
+                            // 检查临时表的行数
+                            var tempTableRowCount = await GetTableRowCountAsync(
+                                sourceConnectionString,
+                                snapshot.SchemaName,
+                                recoveryTempTable,
+                                cancellationToken);
+                            
+                            await AppendLogAsync(task.Id, "Info", "临时表状态", 
+                                $"临时表 [{recoveryTempTable}] 包含 {tempTableRowCount:N0} 行数据，将继续归档这些数据", 
+                                cancellationToken);
+                            
+                            // 使用已有的临时表，跳过 SWITCH 步骤
+                            tempTableName = recoveryTempTable;
+                            sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{tempTableName}]";
+                            usedPartitionSwitch = true;
+                            expectedRowCount = tempTableRowCount;
+                            
+                            // 跳到 BulkCopy 执行阶段
+                            goto ExecuteBulkCopy;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "检查旧临时表时出错，继续正常流程");
+                    }
+
+                    // 3. 创建临时表
+                    tempTableName = await partitionSwitchHelper.CreateTempTableForSwitchAsync(
+                        sourceConnectionString,
+                        snapshot.SchemaName,
+                        snapshot.TableName,
+                        partitionInfo,
+                        cancellationToken);
+
+                    await AppendLogAsync(task.Id, "Step", "创建临时表", 
+                        $"临时表创建成功: [{snapshot.SchemaName}].[{tempTableName}]", 
+                        cancellationToken);
+
+                    // 4. SWITCH 分区到临时表
+                    await partitionSwitchHelper.SwitchPartitionAsync(
+                        sourceConnectionString,
+                        snapshot.SchemaName,
+                        snapshot.TableName,
+                        partitionInfo.PartitionNumber,
+                        snapshot.SchemaName,
+                        tempTableName,
+                        cancellationToken);
+
+                    await AppendLogAsync(task.Id, "Step", "分区切换完成", 
+                        $"分区 {partitionInfo.PartitionNumber} 已 SWITCH 到临时表，生产表影响时间 < 1秒", 
+                        cancellationToken);
+
+                    sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{tempTableName}]";
+                    usedPartitionSwitch = true;
+                }
             }
             else
             {
+                // 非分区表或未指定分区键，直接对源表执行 BulkCopy
                 sourceQuery = $"SELECT * FROM [{snapshot.SchemaName}].[{snapshot.TableName}]";
+                
+                if (!string.IsNullOrWhiteSpace(snapshot.SourcePartitionKey))
+                {
+                    await AppendLogAsync(task.Id, "Warning", "分区键筛选", 
+                        $"表不是分区表，无法使用 SWITCH 优化。将直接对源表执行 BulkCopy（可能长时间锁定）。分区键: {snapshot.SourcePartitionKey}", 
+                        cancellationToken);
+                }
+            }
+
+            // ============== 执行 BulkCopy 归档 ==============
+            BulkCopyResult? result = null; // 初始化结果变量,支持恢复和增量导入路径
+            
+            ExecuteBulkCopy: // 恢复流程的跳转点
+            
+            await AppendLogAsync(task.Id, "Step", "开始 BulkCopy", 
+                $"源查询: {sourceQuery}\n目标表: {snapshot.TargetTable}\n预期行数: {(expectedRowCount > 0 ? expectedRowCount.ToString("N0") : "未知")}", 
+                cancellationToken);
+
+            // 预先记录配置信息
+            await AppendLogAsync(task.Id, "Debug", "BulkCopy 配置", 
+                $"批次大小: {snapshot.BatchSize}, 超时: {snapshot.TimeoutSeconds}秒, " +
+                $"每批通知行数: {snapshot.NotifyAfterRows}", 
+                cancellationToken);
+
+            // ⚠️ 关键优化: 检查目标表是否已有数据,启用增量导入模式
+            // 注意: 跨服务器场景下无法执行此检查,因为目标服务器无法访问源服务器的临时表/源表
+            long existingRowsInTarget = 0;
+            List<string> primaryKeyColumns = new();
+            
+            if (dataSource.UseSourceAsTarget) // 仅同服务器场景支持增量导入
+            {
+                try
+                {
+                    var targetParts = snapshot.TargetTable.Split('.');
+                    var targetSchema = targetParts.Length > 1 ? targetParts[0].Trim('[', ']') : "dbo";
+                    var targetTable = targetParts.Length > 1 ? targetParts[1].Trim('[', ']') : targetParts[0].Trim('[', ']');
+                    
+                    // 1. 获取主键列信息
+                    var primaryKeySql = $@"
+                        SELECT COLUMN_NAME
+                        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                        WHERE OBJECTPROPERTY(OBJECT_ID(CONSTRAINT_SCHEMA + '.' + CONSTRAINT_NAME), 'IsPrimaryKey') = 1
+                        AND TABLE_SCHEMA = @Schema AND TABLE_NAME = @Table
+                        ORDER BY ORDINAL_POSITION";
+                    
+                    using var pkConn = new SqlConnection(targetConnectionString);
+                    await pkConn.OpenAsync(cancellationToken);
+                    using var pkCmd = new SqlCommand(primaryKeySql, pkConn);
+                    pkCmd.Parameters.AddWithValue("@Schema", targetSchema);
+                    pkCmd.Parameters.AddWithValue("@Table", targetTable);
+                    
+                    using var pkReader = await pkCmd.ExecuteReaderAsync(cancellationToken);
+                    while (await pkReader.ReadAsync(cancellationToken))
+                    {
+                        primaryKeyColumns.Add(pkReader.GetString(0));
+                    }
+                    
+                    if (primaryKeyColumns.Count == 0)
+                    {
+                        await AppendLogAsync(task.Id, "Warning", "增量导入检查", 
+                            $"目标表 [{targetSchema}].[{targetTable}] 没有定义主键，无法启用增量导入模式。将导入所有数据（可能产生重复）。", 
+                            cancellationToken);
+                    }
+                    else
+                    {
+                        // 2. 检查目标表中是否已有源表/临时表的数据
+                        var sourceTableRef = !string.IsNullOrWhiteSpace(tempTableName) 
+                            ? $"[{snapshot.SchemaName}].[{tempTableName}]" 
+                            : $"[{snapshot.SchemaName}].[{snapshot.TableName}]";
+                        
+                        var pkJoinCondition = string.Join(" AND ", 
+                            primaryKeyColumns.Select(col => $"s.[{col}] = t.[{col}]"));
+                        
+                        var duplicateCheckSql = $@"
+                            SELECT COUNT_BIG(*)
+                            FROM [{targetSchema}].[{targetTable}] t
+                            WHERE EXISTS (
+                                SELECT 1 FROM {sourceTableRef} s
+                                WHERE {pkJoinCondition}
+                            )";
+                        
+                        using var checkConn = new SqlConnection(targetConnectionString);
+                        await checkConn.OpenAsync(cancellationToken);
+                        using var checkCmd = new SqlCommand(duplicateCheckSql, checkConn);
+                        existingRowsInTarget = (long)(await checkCmd.ExecuteScalarAsync(cancellationToken) ?? 0L);
+                        
+                        if (existingRowsInTarget > 0)
+                        {
+                            await AppendLogAsync(task.Id, "Info", "增量导入模式", 
+                                $"目标表已存在 {existingRowsInTarget:N0} 行数据，将启用增量导入模式（只导入目标表不存在的数据）。\n" +
+                                $"主键列: {string.Join(", ", primaryKeyColumns)}", 
+                                cancellationToken);
+                            
+                            // 3. 修改源查询SQL,只查询目标表不存在的数据
+                            var pkColumns = string.Join(", ", primaryKeyColumns.Select(col => $"[{col}]"));
+                            var pkJoinConditionInQuery = string.Join(" AND ", 
+                                primaryKeyColumns.Select(col => $"t.[{col}] = s.[{col}]"));
+                            
+                            // 从原始查询中提取表名
+                            var fromClause = sourceQuery.Contains("WHERE") 
+                                ? sourceQuery.Substring(0, sourceQuery.IndexOf("WHERE")).Trim()
+                                : sourceQuery;
+                            
+                            var whereClause = sourceQuery.Contains("WHERE")
+                                ? sourceQuery.Substring(sourceQuery.IndexOf("WHERE"))
+                                : "";
+                            
+                            // 构建增量查询SQL
+                            sourceQuery = $@"
+                                SELECT s.* 
+                                FROM ({sourceQuery}) s
+                                WHERE NOT EXISTS (
+                                    SELECT 1 FROM [{targetSchema}].[{targetTable}] t
+                                    WHERE {pkJoinConditionInQuery}
+                                )";
+                            
+                            await AppendLogAsync(task.Id, "Debug", "增量查询SQL", 
+                                $"已修改源查询为增量模式:\n{sourceQuery}", 
+                                cancellationToken);
+                        }
+                        else
+                        {
+                            await AppendLogAsync(task.Id, "Info", "目标表状态", 
+                                "目标表为空，将执行全量导入。", 
+                                cancellationToken);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "检查目标表状态时出错，将使用全量导入模式");
+                    await AppendLogAsync(task.Id, "Warning", "增量导入检查失败", 
+                        $"无法检查目标表状态: {ex.Message}，将使用全量导入模式（可能产生重复数据）", 
+                        cancellationToken);
+                }
+            }
+            else
+            {
+                // 跨服务器场景:无法检查重复数据
+                await AppendLogAsync(task.Id, "Info", "跨服务器归档", 
+                    "跨服务器归档模式:目标服务器无法访问源服务器数据,无法启用增量导入,将执行全量导入", 
+                    cancellationToken);
             }
 
             // 执行 BulkCopy 归档
@@ -1074,7 +1342,7 @@ WHERE s.name = @SchemaName
                 TimeoutSeconds = snapshot.TimeoutSeconds
             };
 
-            var result = await bulkCopyExecutor.ExecuteAsync(
+            result = await bulkCopyExecutor.ExecuteAsync(
                 sourceConnectionString,
                 targetConnectionString,
                 sourceQuery,
@@ -1092,6 +1360,15 @@ WHERE s.name = @SchemaName
                     cancellationToken,
                     durationMs: stepWatch.ElapsedMilliseconds);
 
+                // 如果使用了临时表，保留它以便恢复
+                if (!string.IsNullOrWhiteSpace(tempTableName))
+                {
+                    await AppendLogAsync(task.Id, "Warning", "临时表保留", 
+                        $"临时表 [{snapshot.SchemaName}].[{tempTableName}] 已保留，包含 {expectedRowCount:N0} 行数据。\n" +
+                        $"请修复错误后，重新提交此任务将自动从临时表继续归档。", 
+                        cancellationToken);
+                }
+
                 task.UpdateProgress(1.0, "SYSTEM");
                 task.UpdatePhase(BackgroundTaskPhases.Finalizing, "SYSTEM");
                 task.MarkFailed("SYSTEM", result.ErrorMessage ?? "BulkCopy 执行失败");
@@ -1103,6 +1380,71 @@ WHERE s.name = @SchemaName
                 $"成功归档 {result.RowsCopied:N0} 行数据,耗时: {result.Duration:g},吞吐量: {result.ThroughputRowsPerSecond:N0} 行/秒", 
                 cancellationToken,
                 durationMs: stepWatch.ElapsedMilliseconds);
+
+            // ============== 行数验证 ==============
+            if (existingRowsInTarget > 0)
+            {
+                // 增量导入模式: 实际导入数 = 预期总数 - 已存在数
+                var expectedNewRows = expectedRowCount - existingRowsInTarget;
+                
+                if (result.RowsCopied != expectedNewRows && expectedNewRows > 0)
+                {
+                    await AppendLogAsync(task.Id, "Warning", "行数不一致", 
+                        $"增量导入模式 - 预期导入: {expectedNewRows:N0} 行 (总数 {expectedRowCount:N0} - 已存在 {existingRowsInTarget:N0}), " +
+                        $"实际导入: {result.RowsCopied:N0} 行, 差异: {Math.Abs(result.RowsCopied - expectedNewRows):N0}", 
+                        cancellationToken);
+                }
+                else if (expectedNewRows > 0)
+                {
+                    await AppendLogAsync(task.Id, "Info", "行数验证", 
+                        $"增量导入行数验证通过 - 新增 {result.RowsCopied:N0} 行 (总数 {expectedRowCount:N0}, 已存在 {existingRowsInTarget:N0})", 
+                        cancellationToken);
+                }
+                else if (result.RowsCopied == 0 && expectedNewRows <= 0)
+                {
+                    await AppendLogAsync(task.Id, "Info", "行数验证", 
+                        "目标表已包含所有数据，无需导入新数据", 
+                        cancellationToken);
+                }
+            }
+            else if (expectedRowCount > 0 && result.RowsCopied != expectedRowCount)
+            {
+                // 全量导入模式: 验证总数
+                await AppendLogAsync(task.Id, "Warning", "行数不一致", 
+                    $"全量导入模式 - 预期行数: {expectedRowCount:N0}, 实际复制: {result.RowsCopied:N0}, 差异: {Math.Abs(result.RowsCopied - expectedRowCount):N0}", 
+                    cancellationToken);
+            }
+            else if (expectedRowCount > 0)
+            {
+                await AppendLogAsync(task.Id, "Info", "行数验证", 
+                    $"全量导入行数验证通过: {result.RowsCopied:N0} 行", 
+                    cancellationToken);
+            }
+
+            // ============== 删除临时表 ==============
+            if (!string.IsNullOrWhiteSpace(tempTableName) && usedPartitionSwitch)
+            {
+                try
+                {
+                    await partitionSwitchHelper.DropTempTableAsync(
+                        sourceConnectionString,
+                        snapshot.SchemaName,
+                        tempTableName,
+                        cancellationToken);
+
+                    await AppendLogAsync(task.Id, "Step", "清理临时表", 
+                        $"临时表已删除: [{snapshot.SchemaName}].[{tempTableName}]", 
+                        cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "删除临时表失败: {TempTableName}", tempTableName);
+                    await AppendLogAsync(task.Id, "Warning", "清理临时表失败", 
+                        $"无法删除临时表 [{snapshot.SchemaName}].[{tempTableName}]: {ex.Message}\n" +
+                        $"请手动执行: DROP TABLE [{snapshot.SchemaName}].[{tempTableName}]", 
+                        cancellationToken);
+                }
+            }
 
             task.UpdateProgress(0.95, "SYSTEM");
             await taskRepository.UpdateAsync(task, cancellationToken);

@@ -358,8 +358,8 @@ public partial class MonitorBase : ComponentBase, IDisposable
             BackgroundTaskOperationType.SplitBoundary => "拆分分区",
             BackgroundTaskOperationType.MergeBoundary => "合并分区",
             BackgroundTaskOperationType.ArchiveSwitch => "归档（分区切换）",
-            BackgroundTaskOperationType.ArchiveBcp => "归档（BCP 规划中）",
-            BackgroundTaskOperationType.ArchiveBulkCopy => "归档（BulkCopy 规划中）",
+            BackgroundTaskOperationType.ArchiveBcp => "归档（BCP）",
+            BackgroundTaskOperationType.ArchiveBulkCopy => "归档（BulkCopy）",
             BackgroundTaskOperationType.Custom => "自定义任务",
             _ => string.IsNullOrWhiteSpace(task.TaskType) ? "未知任务" : task.TaskType
         };

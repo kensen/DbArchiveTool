@@ -129,7 +129,7 @@
                                                 <DescriptionsItem Title="源服务器">@GetSourceServerDisplay()</DescriptionsItem>
                                                 <DescriptionsItem Title="源数据库">@_currentDataSource.DatabaseName</DescriptionsItem>
                                                 <DescriptionsItem Title="目标服务器">@GetTargetServerDisplay()</DescriptionsItem>
-                                                <DescriptionsItem Title="目标数据库">@(_form.TargetDatabase ?? _currentDataSource.DatabaseName)</DescriptionsItem>
+                                                <DescriptionsItem Title="目标数据库">@GetTargetDatabaseDisplay()</DescriptionsItem>
                                             </Descriptions>
                                         </MessageTemplate>
                                     </Alert>
@@ -397,7 +397,7 @@
                                             <DescriptionsItem Title="源数据库">@_currentDataSource.DatabaseName</DescriptionsItem>
                                             <DescriptionsItem Title="源服务器认证">@GetSourceAuthDisplay()</DescriptionsItem>
                                             <DescriptionsItem Title="目标服务器地址">@GetTargetServerDisplay()</DescriptionsItem>
-                                            <DescriptionsItem Title="目标数据库">@(_form.TargetDatabase ?? _currentDataSource.DatabaseName)</DescriptionsItem>
+                                            <DescriptionsItem Title="目标数据库">@GetTargetDatabaseDisplay()</DescriptionsItem>
                                             <DescriptionsItem Title="目标服务器认证">@GetTargetAuthDisplay()</DescriptionsItem>
                                         </Descriptions>
                                     </div>
@@ -452,7 +452,7 @@
                                             <DescriptionsItem Title="源数据库">@_currentDataSource.DatabaseName</DescriptionsItem>
                                             <DescriptionsItem Title="源服务器认证">@GetSourceAuthDisplay()</DescriptionsItem>
                                             <DescriptionsItem Title="目标服务器地址">@GetTargetServerDisplay()</DescriptionsItem>
-                                            <DescriptionsItem Title="目标数据库">@(_form.TargetDatabase ?? _currentDataSource.DatabaseName)</DescriptionsItem>
+                                            <DescriptionsItem Title="目标数据库">@GetTargetDatabaseDisplay()</DescriptionsItem>
                                             <DescriptionsItem Title="目标服务器认证">@GetTargetAuthDisplay()</DescriptionsItem>
                                         </Descriptions>
                                     </div>

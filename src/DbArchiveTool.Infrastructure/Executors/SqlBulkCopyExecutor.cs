@@ -152,6 +152,10 @@ public class SqlBulkCopyExecutor
             // 5. 执行批量复制
             await bulkCopy.WriteToServerAsync(reader, cancellationToken);
 
+            // ⚠️ 关键修复: SqlRowsCopied 事件在数据量 < NotifyAfter 时不触发
+            // 必须在 WriteToServerAsync 完成后使用 RowsCopied 属性获取实际行数
+            totalRowsCopied = bulkCopy.RowsCopied;
+
             stopwatch.Stop();
             var duration = stopwatch.Elapsed;
             var throughput = duration.TotalSeconds > 0

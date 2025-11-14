@@ -360,6 +360,17 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			Message.Warning($"读取配置详情失败: {ex.Message}");
 		}
 
+		// 如果配置中没有目标数据库，从数据源自动填充
+		if (string.IsNullOrWhiteSpace(_form.TargetDatabase) && _currentDataSource != null)
+		{
+			var targetDatabase = _currentDataSource.UseSourceAsTarget
+				? _currentDataSource.DatabaseName
+				: (_currentDataSource.TargetDatabaseName ?? _currentDataSource.DatabaseName);
+			
+			_form.TargetDatabase = targetDatabase;
+			Logger.LogInformation("配置中无目标数据库，从数据源自动填充: {TargetDatabase}", targetDatabase);
+		}
+
 		StateHasChanged();
 	}
 
@@ -538,7 +549,22 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	private void PopulateFormFromArchiveConfig(ArchiveConfigurationDetailModel config, ArchiveMode mode)
 	{
 		// 填充通用字段
-		_form.TargetDatabase = null; // 配置中无目标数据库,保持现有逻辑
+		// 从数据源自动填充目标数据库
+		if (_currentDataSource != null)
+		{
+			var targetDatabase = _currentDataSource.UseSourceAsTarget
+				? _currentDataSource.DatabaseName
+				: (_currentDataSource.TargetDatabaseName ?? _currentDataSource.DatabaseName);
+			
+			_form.TargetDatabase = targetDatabase;
+			Logger.LogInformation("从数据源自动填充目标数据库: {TargetDatabase}", targetDatabase);
+		}
+		else
+		{
+			_form.TargetDatabase = null;
+			Logger.LogWarning("数据源信息未加载，无法自动填充目标数据库");
+		}
+		
 		// 目标表名使用配置的源表名,自动添加_bak后缀
 		_form.TargetTable = $"{config.SourceSchemaName}.{config.SourceTableName}_bak";
 
@@ -1094,7 +1120,12 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 	/// </summary>
 	private async Task OnBcpAutoFixClickedAsync()
 	{
-		if (_bcpInspectionResult?.AutoFixSteps == null || !_bcpInspectionResult.AutoFixSteps.Any())
+		// 根据当前模式选择正确的检查结果
+		var inspectionResult = _selectedMode == ArchiveMode.BulkCopy 
+			? _bulkCopyInspectionResult 
+			: _bcpInspectionResult;
+
+		if (inspectionResult?.AutoFixSteps == null || !inspectionResult.AutoFixSteps.Any())
 		{
 			Message.Warning("没有可自动修复的步骤。");
 			return;
@@ -1105,7 +1136,7 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 		try
 		{
 			// 目前只支持 CREATE_TARGET_TABLE 修复
-			var createTableStep = _bcpInspectionResult.AutoFixSteps
+			var createTableStep = inspectionResult.AutoFixSteps
 				.FirstOrDefault(s => s.Code == "CREATE_TARGET_TABLE");
 
 			if (createTableStep == null)
@@ -1123,8 +1154,9 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				"CREATE_TARGET_TABLE",
 				_form.RequestedBy);
 
-			Logger.LogInformation("开始执行 BCP 自动修复: TargetTable={TargetTable}, TargetDatabase={TargetDatabase}, FixCode={FixCode}", 
-				_form.TargetTable, _form.TargetDatabase, "CREATE_TARGET_TABLE");
+			var modeText = _selectedMode == ArchiveMode.BulkCopy ? "BulkCopy" : "BCP";
+			Logger.LogInformation("开始执行 {Mode} 自动修复: TargetTable={TargetTable}, TargetDatabase={TargetDatabase}, FixCode={FixCode}", 
+				modeText, _form.TargetTable, _form.TargetDatabase, "CREATE_TARGET_TABLE");
 
 			var result = await PartitionArchiveApi.ExecuteAutoFixAsync(request);
 			if (!result.IsSuccess || string.IsNullOrEmpty(result.Value))
@@ -1138,8 +1170,15 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			Logger.LogInformation("自动修复完成: {Message}", result.Value);
 			Message.Success("目标表已成功创建,正在重新预检...");
 			
-			// 自动重新预检
-			await RunBcpInspectionAsync();
+			// 根据当前模式自动重新预检
+			if (_selectedMode == ArchiveMode.BulkCopy)
+			{
+				await RunBulkCopyInspectionAsync();
+			}
+			else
+			{
+				await RunBcpInspectionAsync();
+			}
 		}
 		catch (Exception ex)
 		{
@@ -1587,6 +1626,34 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				? "Windows 集成身份验证" 
 				: $"SQL Server 身份验证 ({_currentDataSource.TargetUserName})";
 		}
+	}
+
+	/// <summary>
+	/// 获取目标数据库显示名称
+	/// </summary>
+	private string GetTargetDatabaseDisplay()
+	{
+		if (_currentDataSource == null) return "(未知)";
+		
+		// 如果用户在表单中输入了目标数据库，优先使用
+		if (!string.IsNullOrWhiteSpace(_form.TargetDatabase))
+		{
+			return _form.TargetDatabase;
+		}
+		
+		// 同服务器归档：使用源数据库名称
+		if (_currentDataSource.UseSourceAsTarget)
+		{
+			return _currentDataSource.DatabaseName;
+		}
+		
+		// 跨服务器归档：使用目标数据库配置，如果没有配置则显示提示
+		if (!string.IsNullOrWhiteSpace(_currentDataSource.TargetDatabaseName))
+		{
+			return _currentDataSource.TargetDatabaseName;
+		}
+		
+		return "(未配置)";
 	}
 
 	private enum ArchiveMode
