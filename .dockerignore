@@ -1,0 +1,52 @@
+﻿# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# Build artifacts
+**/bin/
+**/obj/
+**/out/
+publish/
+**/node_modules/
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userprefs
+
+# Logs and databases
+*.log
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+**/TestResults/
+**/*.trx
+
+# Documentation
+**/Docs/
+README.md
+LICENSE
+
+# Backups
+**/Backups/
+*.bak
+*.zip
+
+# Temp files
+**/Temp/
+**/temp/
+**/*.tmp

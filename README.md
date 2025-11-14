@@ -86,7 +86,45 @@ DbArchiveTool/
 ```
 
 ## 快速开始
-### 环境准备
+
+### 方式一：Docker 部署（推荐，最简单）
+
+```powershell
+# 前置要求：已安装 Docker Desktop
+# 下载：https://www.docker.com/products/docker-desktop/
+
+# 1. 进入项目目录
+cd DBManageTool
+
+# 2. 一键启动所有服务（SQL Server + API + Web）
+docker-compose up -d
+
+# 3. 等待服务就绪（约 60-90 秒）
+Start-Sleep -Seconds 90
+
+# 4. 访问服务
+# Web 界面: http://localhost:5000
+# API 文档: http://localhost:5001/swagger
+# Hangfire:  http://localhost:5001/hangfire
+
+# 5. 注册管理员账户
+$adminData = @{
+    username = "admin"
+    password = "Admin@123456"
+    email = "admin@example.com"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:5001/api/v1/auth/register" `
+    -Method Post -Body $adminData -ContentType "application/json"
+```
+
+📖 **详细说明**: 查看 [Docker 快速启动指南](DOCKER-QUICK-START.md)
+
+---
+
+### 方式二：本地开发环境
+
+#### 环境准备
 1. 安装 [.NET 8 SDK](https://dotnet.microsoft.com/) 与 SQL Server（或确保可访问目标实例）。
 2. 配置 `src/DbArchiveTool.Api/appsettings.Development.json` 中的 `ConnectionStrings:ArchiveDatabase`，并在 `src/DbArchiveTool.Web/appsettings.Development.json` 中指向本地 API 地址。
 3. 若需使用 `dotnet ef`，请先执行 `dotnet tool restore` 或 `dotnet tool install --global dotnet-ef`。

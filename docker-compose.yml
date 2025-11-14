@@ -1,0 +1,119 @@
+﻿version: '3.8'
+
+services:
+  # ============ SQL Server 数据库 ============
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: dbarchive-sqlserver
+    hostname: sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - SA_PASSWORD=Archive@Pass123!
+      - MSSQL_PID=Developer
+      - MSSQL_TCP_PORT=1433
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - ./Sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P Archive@Pass123! -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    networks:
+      - dbarchive-network
+    restart: unless-stopped
+
+  # ============ API 服务 ============
+  api:
+    build:
+      context: .
+      dockerfile: src/DbArchiveTool.Api/Dockerfile
+    container_name: dbarchive-api
+    hostname: api
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5001
+      - ConnectionStrings__ArchiveDatabase=Server=sqlserver,1433;Database=DbArchiveTool;User Id=sa;Password=Archive@Pass123!;TrustServerCertificate=True;Encrypt=False;Connection Timeout=30;Max Pool Size=200
+      - SQLSERVER_ALWAYSON_MODE=false
+      - Archive__TempDirectory=/app/temp
+      - Archive__MaxConcurrentTasks=4
+      - Archive__BcpTimeout=7200
+      - Archive__BulkCopyBatchSize=10000
+      - Hangfire__WorkerCount=4
+      - Hangfire__ServerName=docker-archive-01
+      - TZ=Asia/Shanghai
+    ports:
+      - "5001:5001"
+    volumes:
+      - api-logs:/app/logs
+      - api-temp:/app/temp
+      - api-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5001/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - dbarchive-network
+    restart: unless-stopped
+
+  # ============ Web 界面 ============
+  web:
+    build:
+      context: .
+      dockerfile: src/DbArchiveTool.Web/Dockerfile
+    container_name: dbarchive-web
+    hostname: web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:5000
+      - ArchiveApi__BaseUrl=http://api:5001
+      - ConnectionStrings__HangfireDatabase=Server=sqlserver,1433;Database=DbArchiveTool;User Id=sa;Password=Archive@Pass123!;TrustServerCertificate=True;Encrypt=False
+      - TZ=Asia/Shanghai
+    ports:
+      - "5000:5000"
+    volumes:
+      - web-logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - dbarchive-network
+    restart: unless-stopped
+
+# ============ 数据卷 ============
+volumes:
+  sqlserver-data:
+    name: dbarchive-sqlserver-data
+    driver: local
+  api-logs:
+    name: dbarchive-api-logs
+    driver: local
+  api-temp:
+    name: dbarchive-api-temp
+    driver: local
+  api-data:
+    name: dbarchive-api-data
+    driver: local
+  web-logs:
+    name: dbarchive-web-logs
+    driver: local
+
+# ============ 网络 ============
+networks:
+  dbarchive-network:
+    name: dbarchive-network
+    driver: bridge

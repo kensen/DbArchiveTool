@@ -1,0 +1,55 @@
+﻿version: '3.8'
+
+# 开发环境 Docker Compose 配置
+# 使用方式: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  sqlserver:
+    ports:
+      - "1433:1433"  # 暴露端口供本地 SSMS 连接
+    volumes:
+      - sqlserver-data-dev:/var/opt/mssql
+      - ./Sql:/docker-entrypoint-initdb.d:ro
+      - ./快速清理临时表.sql:/scripts/cleanup.sql:ro
+
+  api:
+    build:
+      context: .
+      dockerfile: src/DbArchiveTool.Api/Dockerfile
+      target: build  # 使用 SDK 镜像，支持调试
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:5001
+      - Logging__LogLevel__Default=Debug
+      - Logging__LogLevel__Microsoft.EntityFrameworkCore=Information
+    volumes:
+      - ./src/DbArchiveTool.Api:/src/src/DbArchiveTool.Api:ro
+      - ./src/DbArchiveTool.Application:/src/src/DbArchiveTool.Application:ro
+      - ./src/DbArchiveTool.Infrastructure:/src/src/DbArchiveTool.Infrastructure:ro
+      - api-logs-dev:/app/logs
+      - api-temp-dev:/app/temp
+    ports:
+      - "5001:5001"
+      - "5002:5002"  # 调试端口
+    command: ["dotnet", "watch", "run", "--project", "/src/src/DbArchiveTool.Api/DbArchiveTool.Api.csproj"]
+
+  web:
+    build:
+      context: .
+      dockerfile: src/DbArchiveTool.Web/Dockerfile
+      target: build  # 使用 SDK 镜像，支持调试
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Logging__LogLevel__Default=Debug
+    volumes:
+      - ./src/DbArchiveTool.Web:/src/src/DbArchiveTool.Web:ro
+      - web-logs-dev:/app/logs
+    ports:
+      - "5000:5000"
+    command: ["dotnet", "watch", "run", "--project", "/src/src/DbArchiveTool.Web/DbArchiveTool.Web.csproj"]
+
+volumes:
+  sqlserver-data-dev:
+  api-logs-dev:
+  api-temp-dev:
+  web-logs-dev:
