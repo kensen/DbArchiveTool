@@ -116,17 +116,18 @@ internal sealed class ArchiveJobService : IArchiveJobService
 
         try
         {
-            // 获取所有启用的归档配置
+            // 获取所有启用的归档配置(仅包含启用了定时归档的配置)
             var configs = await _orchestrationService.GetArchiveConfigurationsAsync(
                 dataSourceId: null,
                 isEnabled: true,
+                enableScheduledArchive: true, // 仅读取启用了定时归档的配置
                 CancellationToken.None);
 
             var configIds = configs.Select(c => c.Id).ToList();
 
             if (configIds.Count == 0)
             {
-                _logger.LogInformation("没有启用的归档配置,跳过执行");
+                _logger.LogInformation("没有启用定时归档的配置,跳过执行");
 
                 return new BatchArchiveExecutionResult
                 {

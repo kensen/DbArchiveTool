@@ -16,11 +16,14 @@ using DbArchiveTool.Infrastructure.Queries;
 using DbArchiveTool.Infrastructure.Security;
 using DbArchiveTool.Infrastructure.SqlExecution;
 using DbArchiveTool.Infrastructure.Scheduling;
+using DbArchiveTool.Infrastructure.Logging;
 using DbArchiveTool.Shared.DataSources;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Serilog.Core;
 
 namespace DbArchiveTool.Infrastructure;
 
@@ -83,6 +86,10 @@ public static class DependencyInjection
         // 注册密码加密服务
         services.AddDataProtection();
         services.AddSingleton<IPasswordEncryptionService, PasswordEncryptionService>();
+
+        // 注册 Serilog 自定义 Enricher
+        services.AddHttpContextAccessor();
+        services.AddSingleton<ILogEventEnricher, TaskContextEnricher>();
 
         return services;
     }

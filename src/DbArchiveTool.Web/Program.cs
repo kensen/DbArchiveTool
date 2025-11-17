@@ -3,8 +3,17 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Hangfire;
 using Hangfire.SqlServer;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 配置 Serilog
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.WithProperty("Application", "DbArchiveTool.Web")
+    .Enrich.WithProperty("Environment", context.HostingEnvironment.EnvironmentName)
+);
 
 // 配置全局 JSON 序列化选项（枚举使用 PascalCase 字符串）
 var jsonOptions = new JsonSerializerOptions

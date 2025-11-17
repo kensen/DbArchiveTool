@@ -207,11 +207,13 @@ public sealed class ArchiveOrchestrationService
     /// </summary>
     /// <param name="dataSourceId">数据源ID(可选)</param>
     /// <param name="isEnabled">是否启用(可选)</param>
+    /// <param name="enableScheduledArchive">是否启用定时归档(可选,用于过滤定时任务)</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns>归档配置列表</returns>
     public async Task<IEnumerable<ArchiveConfiguration>> GetArchiveConfigurationsAsync(
         Guid? dataSourceId = null,
         bool? isEnabled = null,
+        bool? enableScheduledArchive = null,
         CancellationToken cancellationToken = default)
     {
         var configs = await _configRepository.GetAllAsync(cancellationToken);
@@ -224,6 +226,11 @@ public sealed class ArchiveOrchestrationService
         if (isEnabled.HasValue)
         {
             configs = configs.Where(c => c.IsEnabled == isEnabled.Value).ToList();
+        }
+
+        if (enableScheduledArchive.HasValue)
+        {
+            configs = configs.Where(c => c.EnableScheduledArchive == enableScheduledArchive.Value).ToList();
         }
 
         return configs;

@@ -10,8 +10,17 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi.Models;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// 配置 Serilog
+builder.Host.UseSerilog((context, services, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .ReadFrom.Services(services)
+    .Enrich.WithProperty("Application", "DbArchiveTool.Api")
+    .Enrich.WithProperty("Environment", context.HostingEnvironment.EnvironmentName)
+);
 
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -104,17 +113,31 @@ app.UseHangfireDashboard("/hangfire", new DashboardOptions
     DashboardTitle = "归档任务调度中心"
 });
 
+// ⚠️ 暂时禁用全局定时归档任务
+// 原因: ArchiveConfiguration 应仅作为手动归档的配置模板,不应被定时任务自动执行
+// 后续将实现独立的 ScheduledArchiveJob 实体用于定时归档功能
 // 配置定时任务示例(根据实际需求调整)
 // 每天凌晨2点执行所有启用的归档任务
-RecurringJob.AddOrUpdate<IArchiveJobService>(
-    "daily-archive-all",
-    "archive", // 队列名称
-    service => service.ExecuteAllEnabledArchiveJobsAsync(),
-    Cron.Daily(2), // 每天凌晨2点
-    new RecurringJobOptions
+// RecurringJob.AddOrUpdate<IArchiveJobService>(
+//     "daily-archive-all",
+//     "archive", // 队列名称
+//     service => service.ExecuteAllEnabledArchiveJobsAsync(),
+//     Cron.Daily(2), // 每天凌晨2点
+//     new RecurringJobOptions
+//     {
+//         TimeZone = TimeZoneInfo.Local
+//     });
+
+// 添加 Serilog HTTP 请求日志中间件
+app.UseSerilogRequestLogging(options =>
+{
+    options.MessageTemplate = "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000} ms";
+    options.EnrichDiagnosticContext = (diagnosticContext, httpContext) =>
     {
-        TimeZone = TimeZoneInfo.Local
-    });
+        diagnosticContext.Set("RequestHost", httpContext.Request.Host.Value);
+        diagnosticContext.Set("UserAgent", httpContext.Request.Headers["User-Agent"].ToString());
+    };
+});
 
 app.UseHttpsRedirection();
 

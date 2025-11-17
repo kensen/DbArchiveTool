@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Components;
 using System.Linq;
 using OneOf;
 using DbArchiveTool.Web.Core;
+using Microsoft.Extensions.Logging;
 
 namespace DbArchiveTool.Web.Pages.BackgroundTasks;
 
@@ -22,6 +23,7 @@ public partial class ExecutionWizard
     [Inject] private IMessageService Message { get; set; } = default!;
     [Inject] private ReuseTabsService ReuseTabsService { get; set; } = default!;
     [Inject] private PartitionPageState PartitionPageState { get; set; } = default!;
+    [Inject] private ILogger<ExecutionWizard> Logger { get; set; } = default!;
 
     private bool Loading { get; set; } = true;
     private bool Submitting { get; set; }
@@ -573,7 +575,7 @@ public partial class ExecutionWizard
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+            Logger.LogError(ex, "关闭向导标签页失败");
         }
     }
 
@@ -603,7 +605,7 @@ public partial class ExecutionWizard
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+                    Logger.LogError(ex, "关闭向导标签页失败");
                 }
             });
         });
@@ -638,7 +640,7 @@ public partial class ExecutionWizard
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"关闭向导标签页失败: {ex.Message}");
+                Logger.LogError(ex, "关闭向导标签页失败");
             }
         }
     }
