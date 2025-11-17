@@ -4,6 +4,7 @@ using DbArchiveTool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DbArchiveTool.Infrastructure.Migrations
 {
     [DbContext(typeof(ArchiveDbContext))]
-    partial class ArchiveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251117072426_AddScheduledArchiveJobTable")]
+    partial class AddScheduledArchiveJobTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -654,7 +657,7 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.Property<int>("BatchSize")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
-                        .HasDefaultValue(5000);
+                        .HasDefaultValue(10000);
 
                     b.Property<int>("ConsecutiveFailureCount")
                         .ValueGeneratedOnAdd()
@@ -684,10 +687,10 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .HasMaxLength(500)
                         .HasColumnType("nvarchar(500)");
 
-                    b.Property<int>("IntervalMinutes")
+                    b.Property<int>("IntervalSeconds")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
-                        .HasDefaultValue(5);
+                        .HasDefaultValue(10);
 
                     b.Property<bool>("IsDeleted")
                         .HasColumnType("bit");
@@ -713,11 +716,6 @@ namespace DbArchiveTool.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(5);
-
-                    b.Property<int>("MaxRowsPerExecution")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(50000);
 
                     b.Property<string>("Name")
                         .IsRequired()

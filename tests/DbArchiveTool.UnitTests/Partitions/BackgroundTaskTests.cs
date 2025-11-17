@@ -47,13 +47,15 @@ public class BackgroundTaskTests
     }
 
     [Fact]
-    public void Create_ShouldFail_WhenPartitionConfigurationIdEmpty()
+    public void Create_ShouldSucceed_WhenPartitionConfigurationIdEmpty()
     {
-        // Act & Assert
-        var ex = Assert.Throws<ArgumentException>(() =>
-            BackgroundTask.Create(Guid.Empty, TestDataSourceId, TestUser, TestUser));
+        // 非分区归档场景(如BCP/BulkCopy)允许 partitionConfigurationId 为空
+        // Act
+        var task = BackgroundTask.Create(null, TestDataSourceId, TestUser, TestUser);
 
-        Assert.Contains("标识符不能为空", ex.Message);
+        // Assert
+        Assert.Null(task.PartitionConfigurationId);
+        Assert.Equal(TestDataSourceId, task.DataSourceId);
     }
 
     [Fact]

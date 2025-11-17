@@ -15,13 +15,12 @@ namespace DbArchiveTool.UnitTests.Api;
 public class ArchiveConfigurationsControllerTests
 {
     /// <summary>
-    /// 验证启用定时归档时可以成功创建配置并同步 Hangfire 任务。
+    /// 验证可以成功创建配置。
     /// </summary>
     [Fact]
-    public async Task Create_ShouldReturnCreatedAndSyncScheduler_WhenScheduledEnabled()
+    public async Task Create_ShouldReturnCreated_WhenRequestValid()
     {
         var repositoryMock = new Mock<IArchiveConfigurationRepository>();
-        var schedulerMock = new Mock<IArchiveTaskScheduler>();
         ArchiveConfiguration? persistedConfig = null;
 
         repositoryMock
@@ -29,59 +28,51 @@ public class ArchiveConfigurationsControllerTests
             .Callback<ArchiveConfiguration, CancellationToken>((config, _) => persistedConfig = config)
             .Returns(Task.CompletedTask);
 
-        var controller = CreateController(repositoryMock, schedulerMock);
-        var request = CreateRequest(enableScheduledArchive: true);
+        var controller = CreateController(repositoryMock);
+        var request = CreateRequest();
 
         var result = await controller.Create(request, CancellationToken.None);
 
         var createdResult = Assert.IsType<CreatedAtActionResult>(result);
         var dto = Assert.IsType<ArchiveConfigurationDetailDto>(createdResult.Value);
         Assert.NotEqual(Guid.Empty, dto.Id);
-        Assert.True(dto.EnableScheduledArchive);
-        Assert.NotNull(dto.NextArchiveAtUtc);
 
         Assert.NotNull(persistedConfig);
-        Assert.True(persistedConfig!.EnableScheduledArchive);
-        Assert.NotNull(persistedConfig.NextArchiveAtUtc);
-
-        schedulerMock.Verify(
-            s => s.SyncRecurringJobAsync(
-                It.Is<ArchiveConfiguration>(cfg => cfg == persistedConfig),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
     }
 
     /// <summary>
-    /// 验证当 Cron 表达式无效时会返回 400,且不会落库或调用调度器。
+    /// 验证创建配置时会正常保存到数据库。
     /// </summary>
     [Fact]
-    public async Task Create_ShouldReturnBadRequest_WhenCronInvalid()
+    public async Task Create_ShouldSucceed_WhenRequestValid()
     {
         var repositoryMock = new Mock<IArchiveConfigurationRepository>(MockBehavior.Strict);
-        var schedulerMock = new Mock<IArchiveTaskScheduler>(MockBehavior.Strict);
-        var controller = CreateController(repositoryMock, schedulerMock);
+        var controller = CreateController(repositoryMock);
 
-        var request = CreateRequest(enableScheduledArchive: true);
-        request.CronExpression = "invalid-cron";
+        var request = CreateRequest();
+
+        repositoryMock
+            .Setup(r => r.AddAsync(It.IsAny<ArchiveConfiguration>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         var result = await controller.Create(request, CancellationToken.None);
 
-        var badRequest = Assert.IsType<BadRequestObjectResult>(result);
-        Assert.Contains("Cron", badRequest.Value!.ToString(), StringComparison.OrdinalIgnoreCase);
+        var createdResult = Assert.IsType<CreatedAtActionResult>(result);
+        Assert.NotNull(createdResult.Value);
+        Assert.Equal(nameof(ArchiveConfigurationsController.GetById), createdResult.ActionName);
     }
 
     /// <summary>
     /// 验证更新配置时会重新计算下一次执行时间并同步 Hangfire 任务。
     /// </summary>
     [Fact]
-    public async Task Update_ShouldResyncScheduler_WhenConfigurationExists()
+    public async Task Update_ShouldSucceed_WhenConfigurationExists()
     {
         var repositoryMock = new Mock<IArchiveConfigurationRepository>();
-        var schedulerMock = new Mock<IArchiveTaskScheduler>();
-        var controller = CreateController(repositoryMock, schedulerMock);
+        var controller = CreateController(repositoryMock);
 
         var configurationId = Guid.NewGuid();
-        var existingConfig = CreateConfiguration(configurationId, enableScheduledArchive: false);
+        var existingConfig = CreateConfiguration(configurationId);
 
         repositoryMock
             .Setup(r => r.GetByIdAsync(configurationId, It.IsAny<CancellationToken>()))
@@ -91,68 +82,26 @@ public class ArchiveConfigurationsControllerTests
             .Setup(r => r.UpdateAsync(existingConfig, It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
-        var request = CreateUpdateRequest(enableScheduledArchive: true);
+        var request = CreateUpdateRequest();
 
         var result = await controller.Update(configurationId, request, CancellationToken.None);
 
         var okResult = Assert.IsType<OkObjectResult>(result);
         var dto = Assert.IsType<ArchiveConfigurationDetailDto>(okResult.Value);
-        Assert.True(dto.EnableScheduledArchive);
-        Assert.Equal(request.CronExpression, dto.CronExpression);
-
-        Assert.True(existingConfig.EnableScheduledArchive);
-        Assert.Equal(request.CronExpression, existingConfig.CronExpression);
-        Assert.NotNull(existingConfig.NextArchiveAtUtc);
-
-        schedulerMock.Verify(
-            s => s.SyncRecurringJobAsync(existingConfig, It.IsAny<CancellationToken>()),
-            Times.Once);
+        Assert.Equal(request.Name, dto.Name);
     }
 
     /// <summary>
-    /// 验证禁用配置时会通知调度器移除定时任务。
+    /// 验证删除配置时会成功软删除。
     /// </summary>
     [Fact]
-    public async Task Disable_ShouldSyncScheduler_WhenCalled()
+    public async Task Delete_ShouldSucceed_WhenConfigurationExists()
     {
         var repositoryMock = new Mock<IArchiveConfigurationRepository>();
-        var schedulerMock = new Mock<IArchiveTaskScheduler>();
-        var controller = CreateController(repositoryMock, schedulerMock);
+        var controller = CreateController(repositoryMock);
 
         var configurationId = Guid.NewGuid();
-        var existingConfig = CreateConfiguration(configurationId, enableScheduledArchive: true);
-
-        repositoryMock
-            .Setup(r => r.GetByIdAsync(configurationId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(existingConfig);
-
-        repositoryMock
-            .Setup(r => r.UpdateAsync(existingConfig, It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
-        var result = await controller.Disable(configurationId, CancellationToken.None);
-
-        var okResult = Assert.IsType<OkObjectResult>(result);
-        Assert.Contains("禁用", okResult.Value!.ToString(), StringComparison.OrdinalIgnoreCase);
-        Assert.False(existingConfig.IsEnabled);
-
-        schedulerMock.Verify(
-            s => s.SyncRecurringJobAsync(existingConfig, It.IsAny<CancellationToken>()),
-            Times.Once);
-    }
-
-    /// <summary>
-    /// 验证删除配置时会调用调度器清理定时任务。
-    /// </summary>
-    [Fact]
-    public async Task Delete_ShouldRemoveScheduler_WhenConfigurationExists()
-    {
-        var repositoryMock = new Mock<IArchiveConfigurationRepository>();
-        var schedulerMock = new Mock<IArchiveTaskScheduler>();
-        var controller = CreateController(repositoryMock, schedulerMock);
-
-        var configurationId = Guid.NewGuid();
-        var existingConfig = CreateConfiguration(configurationId, enableScheduledArchive: true);
+        var existingConfig = CreateConfiguration(configurationId);
 
         repositoryMock
             .Setup(r => r.GetByIdAsync(configurationId, It.IsAny<CancellationToken>()))
@@ -165,24 +114,18 @@ public class ArchiveConfigurationsControllerTests
         var result = await controller.Delete(configurationId, CancellationToken.None);
 
         Assert.IsType<NoContentResult>(result);
-
-        schedulerMock.Verify(
-            s => s.RemoveRecurringJobAsync(configurationId, It.IsAny<CancellationToken>()),
-            Times.Once);
     }
 
     private static ArchiveConfigurationsController CreateController(
-        Mock<IArchiveConfigurationRepository> repositoryMock,
-        Mock<IArchiveTaskScheduler> schedulerMock)
+        Mock<IArchiveConfigurationRepository> repositoryMock)
     {
         var loggerMock = new Mock<ILogger<ArchiveConfigurationsController>>();
         return new ArchiveConfigurationsController(
             repositoryMock.Object,
-            schedulerMock.Object,
             loggerMock.Object);
     }
 
-    private static CreateArchiveConfigurationRequest CreateRequest(bool enableScheduledArchive)
+    private static CreateArchiveConfigurationRequest CreateRequest()
     {
         return new CreateArchiveConfigurationRequest
         {
@@ -197,13 +140,11 @@ public class ArchiveConfigurationsControllerTests
             ArchiveMethod = ArchiveMethod.Bcp,
             ArchiveFilterColumn = "CreateDate",
             ArchiveFilterCondition = "< DATEADD(day, -30, GETDATE())",
-            DeleteSourceDataAfterArchive = true,
-            EnableScheduledArchive = enableScheduledArchive,
-            CronExpression = enableScheduledArchive ? "0 2 * * *" : null
+            DeleteSourceDataAfterArchive = true
         };
     }
 
-    private static UpdateArchiveConfigurationRequest CreateUpdateRequest(bool enableScheduledArchive)
+    private static UpdateArchiveConfigurationRequest CreateUpdateRequest()
     {
         return new UpdateArchiveConfigurationRequest
         {
@@ -218,13 +159,11 @@ public class ArchiveConfigurationsControllerTests
             ArchiveMethod = ArchiveMethod.Bcp,
             ArchiveFilterColumn = "CreateDate",
             ArchiveFilterCondition = "< DATEADD(day, -60, GETDATE())",
-            DeleteSourceDataAfterArchive = true,
-            EnableScheduledArchive = enableScheduledArchive,
-            CronExpression = enableScheduledArchive ? "*/30 * * * *" : null
+            DeleteSourceDataAfterArchive = true
         };
     }
 
-    private static ArchiveConfiguration CreateConfiguration(Guid id, bool enableScheduledArchive)
+    private static ArchiveConfiguration CreateConfiguration(Guid id)
     {
         var config = new ArchiveConfiguration(
             "订单表归档",
@@ -240,10 +179,7 @@ public class ArchiveConfigurationsControllerTests
             10000,
             null,
             "archive",
-            "Orders_Archive",
-            enableScheduledArchive,
-            enableScheduledArchive ? "0 2 * * *" : null,
-            enableScheduledArchive ? DateTime.UtcNow.AddHours(2) : null);
+            "Orders_Archive");
 
         config.OverrideId(id);
         return config;

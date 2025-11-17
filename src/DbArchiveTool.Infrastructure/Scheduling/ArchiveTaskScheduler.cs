@@ -33,30 +33,13 @@ internal sealed class ArchiveTaskScheduler : IArchiveTaskScheduler
 
         try
         {
-            if (!configuration.IsEnabled || !configuration.EnableScheduledArchive || string.IsNullOrWhiteSpace(configuration.CronExpression))
-            {
-                _recurringJobManager.RemoveIfExists(jobId);
-                _logger.LogDebug("归档配置定时任务已移除: ConfigId={ConfigId}", configuration.Id);
-                return Task.CompletedTask;
-            }
-
-            _recurringJobManager.AddOrUpdate<IArchiveJobService>(
-                jobId,
-                service => service.ExecuteArchiveJobAsync(configuration.Id),
-                configuration.CronExpression!,
-                new RecurringJobOptions
-                {
-                    TimeZone = TimeZoneInfo.Utc
-                });
-
-            _logger.LogInformation(
-                "归档配置定时任务已同步: ConfigId={ConfigId}, Cron={Cron}",
-                configuration.Id,
-                configuration.CronExpression);
+            // 注意:定时归档功能已移除,此方法现在仅移除现有任务
+            _recurringJobManager.RemoveIfExists(jobId);
+            _logger.LogDebug("归档配置定时任务已移除(功能已废弃): ConfigId={ConfigId}", configuration.Id);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "同步归档配置定时任务失败: ConfigId={ConfigId}", configuration.Id);
+            _logger.LogError(ex, "移除归档配置定时任务失败: ConfigId={ConfigId}", configuration.Id);
             throw;
         }
 

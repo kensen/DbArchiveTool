@@ -37,27 +37,6 @@ public sealed class ArchiveConfigurationListItemDto
     /// <summary>归档方法</summary>
     public ArchiveMethod ArchiveMethod { get; set; }
 
-    /// <summary>是否启用</summary>
-    public bool IsEnabled { get; set; }
-
-    /// <summary>是否启用定时归档</summary>
-    public bool EnableScheduledArchive { get; set; }
-
-    /// <summary>Cron 表达式</summary>
-    public string? CronExpression { get; set; }
-
-    /// <summary>下次归档时间</summary>
-    public DateTime? NextArchiveAtUtc { get; set; }
-
-    /// <summary>上次执行时间</summary>
-    public DateTime? LastExecutionTimeUtc { get; set; }
-
-    /// <summary>上次执行状态</summary>
-    public string? LastExecutionStatus { get; set; }
-
-    /// <summary>上次归档行数</summary>
-    public long? LastArchivedRowCount { get; set; }
-
     /// <summary>创建时间</summary>
     public DateTime CreatedAtUtc { get; set; }
 
@@ -114,27 +93,6 @@ public sealed class ArchiveConfigurationDetailDto
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; set; }
-
-    /// <summary>是否启用</summary>
-    public bool IsEnabled { get; set; }
-
-    /// <summary>是否启用定时归档</summary>
-    public bool EnableScheduledArchive { get; set; }
-
-    /// <summary>Cron 表达式</summary>
-    public string? CronExpression { get; set; }
-
-    /// <summary>下次归档时间</summary>
-    public DateTime? NextArchiveAtUtc { get; set; }
-
-    /// <summary>上次执行时间</summary>
-    public DateTime? LastExecutionTimeUtc { get; set; }
-
-    /// <summary>上次执行状态</summary>
-    public string? LastExecutionStatus { get; set; }
-
-    /// <summary>上次归档行数</summary>
-    public long? LastArchivedRowCount { get; set; }
 
     /// <summary>创建时间</summary>
     public DateTime CreatedAtUtc { get; set; }
@@ -195,12 +153,6 @@ public sealed class CreateArchiveConfigurationRequest
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; set; } = 10000;
-
-    /// <summary>是否启用定时归档</summary>
-    public bool EnableScheduledArchive { get; set; }
-
-    /// <summary>Cron 表达式</summary>
-    public string? CronExpression { get; set; }
 }
 
 /// <summary>
@@ -249,10 +201,4 @@ public sealed class UpdateArchiveConfigurationRequest
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; set; } = 10000;
-
-    /// <summary>是否启用定时归档</summary>
-    public bool EnableScheduledArchive { get; set; }
-
-    /// <summary>Cron 表达式</summary>
-    public string? CronExpression { get; set; }
 }

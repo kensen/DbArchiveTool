@@ -31,7 +31,7 @@ public sealed class ArchiveOrchestrationService
     }
 
     /// <summary>
-    /// 执行归档任务
+    /// 执行归档任务(基于归档配置ID)
     /// </summary>
     /// <param name="configurationId">归档配置ID</param>
     /// <param name="partitionNumber">分区号(仅分区表需要)</param>
@@ -59,19 +59,6 @@ public sealed class ArchiveOrchestrationService
                     Success = false,
                     ConfigurationId = configurationId,
                     Message = $"归档配置不存在: {configurationId}",
-                    StartTimeUtc = startTime,
-                    EndTimeUtc = DateTime.UtcNow
-                };
-            }
-
-            if (!config.IsEnabled)
-            {
-                return new ArchiveExecutionResult
-                {
-                    Success = false,
-                    ConfigurationId = configurationId,
-                    ConfigurationName = config.Name,
-                    Message = "归档配置已禁用",
                     StartTimeUtc = startTime,
                     EndTimeUtc = DateTime.UtcNow
                 };
@@ -123,25 +110,13 @@ public sealed class ArchiveOrchestrationService
                 progressCallback,
                 cancellationToken);
 
-            // 步骤 5: 更新配置的最后执行信息
+            // 步骤 5: 保存执行结果(仅保留简单记录,不更新配置)
             if (result.Success)
             {
-                DateTime? nextArchiveAtUtc = null;
-                if (config.EnableScheduledArchive && !string.IsNullOrWhiteSpace(config.CronExpression))
-                {
-                    nextArchiveAtUtc = CronScheduleHelper.GetNextOccurrenceUtc(
-                        config.CronExpression,
-                        DateTime.UtcNow);
-                }
-
-                config.UpdateLastExecution(
-                    DateTime.UtcNow,
-                    "Success",
-                    result.RowsArchived,
-                    "SYSTEM",
-                    nextArchiveAtUtc);
-
-                await _configRepository.UpdateAsync(config, cancellationToken);
+                _logger.LogInformation(
+                    "归档成功: ConfigId={ConfigId}, 归档行数={RowsArchived}",
+                    configurationId,
+                    result.RowsArchived);
             }
 
             // 步骤 6: 返回执行结果
@@ -155,6 +130,127 @@ public sealed class ArchiveOrchestrationService
             {
                 Success = false,
                 ConfigurationId = configurationId,
+                Message = $"归档任务执行失败: {ex.Message}",
+                ErrorDetails = ex.ToString(),
+                StartTimeUtc = startTime,
+                EndTimeUtc = DateTime.UtcNow
+            };
+        }
+    }
+
+    /// <summary>
+    /// 执行归档任务(基于内存归档参数,用于定时归档任务)
+    /// </summary>
+    /// <param name="parameters">归档参数</param>
+    /// <param name="progressCallback">进度回调</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>归档结果</returns>
+    public async Task<ArchiveExecutionResult> ExecuteArchiveAsync(
+        ArchiveParameters parameters,
+        Action<ArchiveProgressInfo>? progressCallback = null,
+        CancellationToken cancellationToken = default)
+    {
+        var startTime = DateTime.UtcNow;
+
+        try
+        {
+            _logger.LogInformation(
+                "开始执行归档任务(参数模式): Source={SourceSchema}.{SourceTable}, Target={TargetSchema}.{TargetTable}",
+                parameters.SourceSchemaName,
+                parameters.SourceTableName,
+                parameters.TargetSchemaName,
+                parameters.TargetTableName);
+
+            // 步骤 1: 加载数据源配置
+            var dataSource = await _dataSourceRepository.GetAsync(parameters.DataSourceId, cancellationToken);
+            if (dataSource == null)
+            {
+                return new ArchiveExecutionResult
+                {
+                    Success = false,
+                    Message = $"数据源不存在: {parameters.DataSourceId}",
+                    StartTimeUtc = startTime,
+                    EndTimeUtc = DateTime.UtcNow
+                };
+            }
+
+            if (!dataSource.IsEnabled)
+            {
+                return new ArchiveExecutionResult
+                {
+                    Success = false,
+                    Message = "数据源已禁用",
+                    StartTimeUtc = startTime,
+                    EndTimeUtc = DateTime.UtcNow
+                };
+            }
+
+            // 步骤 2: 构建目标连接字符串
+            var targetConnectionString = BuildTargetConnectionString(dataSource);
+
+            // 步骤 3: 将参数转换为临时的 ArchiveConfiguration 对象
+            var tempConfig = new ArchiveConfiguration(
+                name: $"Temp_{parameters.SourceTableName}_{Guid.NewGuid():N}",
+                description: "Temporary config for scheduled archive job",
+                dataSourceId: parameters.DataSourceId,
+                sourceSchemaName: parameters.SourceSchemaName,
+                sourceTableName: parameters.SourceTableName,
+                isPartitionedTable: false,
+                archiveFilterColumn: parameters.ArchiveFilterColumn,
+                archiveFilterCondition: parameters.ArchiveFilterCondition,
+                archiveMethod: parameters.ArchiveMethod,
+                deleteSourceDataAfterArchive: parameters.DeleteSourceDataAfterArchive,
+                batchSize: parameters.BatchSize,
+                partitionConfigurationId: null,
+                targetSchemaName: parameters.TargetSchemaName,
+                targetTableName: parameters.TargetTableName);
+
+            // 步骤 4: 执行归档
+            _logger.LogInformation(
+                "执行归档: {Schema}.{Table}, 批次大小={BatchSize}",
+                parameters.SourceSchemaName,
+                parameters.SourceTableName,
+                parameters.BatchSize);
+
+            var result = await _archiveExecutor.ExecuteAsync(
+                tempConfig,
+                dataSource,
+                targetConnectionString,
+                partitionNumber: null,
+                progressCallback,
+                cancellationToken);
+
+            // 步骤 5: 返回执行结果
+            if (result.Success)
+            {
+                _logger.LogInformation(
+                    "归档成功(参数模式): Source={SourceSchema}.{SourceTable}, 归档行数={RowsArchived}",
+                    parameters.SourceSchemaName,
+                    parameters.SourceTableName,
+                    result.RowsArchived);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "归档失败(参数模式): Source={SourceSchema}.{SourceTable}, 错误={Error}",
+                    parameters.SourceSchemaName,
+                    parameters.SourceTableName,
+                    result.Message);
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(
+                ex,
+                "归档任务执行失败(参数模式): Source={SourceSchema}.{SourceTable}",
+                parameters.SourceSchemaName,
+                parameters.SourceTableName);
+
+            return new ArchiveExecutionResult
+            {
+                Success = false,
                 Message = $"归档任务执行失败: {ex.Message}",
                 ErrorDetails = ex.ToString(),
                 StartTimeUtc = startTime,
@@ -206,14 +302,10 @@ public sealed class ArchiveOrchestrationService
     /// 获取归档配置列表
     /// </summary>
     /// <param name="dataSourceId">数据源ID(可选)</param>
-    /// <param name="isEnabled">是否启用(可选)</param>
-    /// <param name="enableScheduledArchive">是否启用定时归档(可选,用于过滤定时任务)</param>
     /// <param name="cancellationToken">取消令牌</param>
     /// <returns>归档配置列表</returns>
     public async Task<IEnumerable<ArchiveConfiguration>> GetArchiveConfigurationsAsync(
         Guid? dataSourceId = null,
-        bool? isEnabled = null,
-        bool? enableScheduledArchive = null,
         CancellationToken cancellationToken = default)
     {
         var configs = await _configRepository.GetAllAsync(cancellationToken);
@@ -221,16 +313,6 @@ public sealed class ArchiveOrchestrationService
         if (dataSourceId.HasValue)
         {
             configs = configs.Where(c => c.DataSourceId == dataSourceId.Value).ToList();
-        }
-
-        if (isEnabled.HasValue)
-        {
-            configs = configs.Where(c => c.IsEnabled == isEnabled.Value).ToList();
-        }
-
-        if (enableScheduledArchive.HasValue)
-        {
-            configs = configs.Where(c => c.EnableScheduledArchive == enableScheduledArchive.Value).ToList();
         }
 
         return configs;

@@ -4,6 +4,7 @@ using DbArchiveTool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DbArchiveTool.Infrastructure.Migrations
 {
     [DbContext(typeof(ArchiveDbContext))]
-    partial class ArchiveDbContextModelSnapshot : ModelSnapshot
+    [Migration("20251117070702_RemoveScheduledFieldsFromArchiveConfiguration")]
+    partial class RemoveScheduledFieldsFromArchiveConfiguration
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -632,152 +635,6 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.ToTable("PartitionCommand", (string)null);
                 });
 
-            modelBuilder.Entity("DbArchiveTool.Domain.ScheduledArchiveJobs.ScheduledArchiveJob", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("ArchiveFilterColumn")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("ArchiveFilterCondition")
-                        .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("ArchiveMethod")
-                        .HasColumnType("int");
-
-                    b.Property<int>("BatchSize")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(5000);
-
-                    b.Property<int>("ConsecutiveFailureCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(0);
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("CreatedBy")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("CronExpression")
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
-
-                    b.Property<Guid>("DataSourceId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<bool>("DeleteSourceDataAfterArchive")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(true);
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(500)
-                        .HasColumnType("nvarchar(500)");
-
-                    b.Property<int>("IntervalMinutes")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(5);
-
-                    b.Property<bool>("IsDeleted")
-                        .HasColumnType("bit");
-
-                    b.Property<bool>("IsEnabled")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bit")
-                        .HasDefaultValue(true);
-
-                    b.Property<long?>("LastArchivedRowCount")
-                        .HasColumnType("bigint");
-
-                    b.Property<DateTime?>("LastExecutionAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("LastExecutionError")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<int>("LastExecutionStatus")
-                        .HasColumnType("int");
-
-                    b.Property<int>("MaxConsecutiveFailures")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(5);
-
-                    b.Property<int>("MaxRowsPerExecution")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(50000);
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("nvarchar(200)");
-
-                    b.Property<DateTime?>("NextExecutionAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("SourceSchemaName")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("SourceTableName")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("TargetSchemaName")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<string>("TargetTableName")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<long>("TotalArchivedRowCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L);
-
-                    b.Property<long>("TotalExecutionCount")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint")
-                        .HasDefaultValue(0L);
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("UpdatedBy")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DataSourceId")
-                        .HasFilter("[IsDeleted] = 0");
-
-                    b.HasIndex("LastExecutionAtUtc")
-                        .HasFilter("[IsDeleted] = 0");
-
-                    b.HasIndex("NextExecutionAtUtc")
-                        .HasFilter("[IsEnabled] = 1 AND [IsDeleted] = 0");
-
-                    b.ToTable("ScheduledArchiveJob", (string)null);
-                });
-
             modelBuilder.Entity("DbArchiveTool.Infrastructure.Persistence.Models.PartitionConfigurationBoundaryEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -990,15 +847,6 @@ namespace DbArchiveTool.Infrastructure.Migrations
                     b.HasIndex("ConfigurationId");
 
                     b.ToTable("PartitionConfigurationFilegroupMapping", (string)null);
-                });
-
-            modelBuilder.Entity("DbArchiveTool.Domain.ScheduledArchiveJobs.ScheduledArchiveJob", b =>
-                {
-                    b.HasOne("DbArchiveTool.Domain.DataSources.ArchiveDataSource", null)
-                        .WithMany()
-                        .HasForeignKey("DataSourceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("DbArchiveTool.Infrastructure.Persistence.Models.PartitionConfigurationBoundaryEntity", b =>

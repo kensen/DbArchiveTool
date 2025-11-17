@@ -2,11 +2,13 @@ using System;
 using DbArchiveTool.Application.Abstractions;
 using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Application.Partitions;
+using DbArchiveTool.Application.Services.ScheduledArchiveJobs;
 using DbArchiveTool.Domain.AdminUsers;
 using DbArchiveTool.Domain.ArchiveConfigurations;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Domain.ScheduledArchiveJobs;
 using DbArchiveTool.Infrastructure.Archives;
 using DbArchiveTool.Infrastructure.DataSources;
 using DbArchiveTool.Infrastructure.Executors;
@@ -48,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<IAdminUserRepository, AdminUserRepository>();
         services.AddScoped<IDataSourceRepository, DataSourceRepository>();
         services.AddScoped<IArchiveConfigurationRepository, ArchiveConfigurationRepository>();
+        services.AddScoped<IScheduledArchiveJobRepository, ScheduledArchiveJobRepository>();
         services.AddScoped<IArchiveConnectionTester, ArchiveConnectionTester>();
         services.AddScoped<IDbConnectionFactory, SqlConnectionFactory>();
         services.AddScoped<ISqlExecutor, SqlExecutor>();
@@ -82,6 +85,10 @@ public static class DependencyInjection
         services.AddHostedService<BackgroundTaskHostedService>();
         services.AddHostedService<PartitionCommandHostedService>();
         services.AddSingleton<IBackgroundTaskDispatcher, BackgroundTaskDispatcher>();
+
+        // 注册定时归档任务调度器和执行器
+        services.AddScoped<IScheduledArchiveJobScheduler, ScheduledArchiveJobScheduler>();
+        services.AddScoped<IScheduledArchiveJobExecutor, ScheduledArchiveJobExecutor>();
 
         // 注册密码加密服务
         services.AddDataProtection();

@@ -16,83 +16,27 @@ namespace DbArchiveTool.UnitTests.Infrastructure.Scheduling;
 public class ArchiveTaskSchedulerTests
 {
     /// <summary>
-    /// 当配置启用且开启定时归档时,应向 Hangfire 注册或更新周期任务。
+    /// ArchiveConfiguration 定时归档功能已移除,SyncRecurringJobAsync 只会调用 RemoveIfExists 清理旧任务。
     /// </summary>
     [Fact]
-    public async Task SyncRecurringJobAsync_ShouldAddOrUpdateJob_WhenConfigurationEnabled()
+    public async Task SyncRecurringJobAsync_ShouldRemoveOldJob_ForArchiveConfiguration()
     {
         var recurringJobManagerMock = new Mock<IRecurringJobManager>();
-    var scheduler = new ArchiveTaskScheduler(recurringJobManagerMock.Object, NullLogger<ArchiveTaskScheduler>.Instance);
+        var scheduler = new ArchiveTaskScheduler(recurringJobManagerMock.Object, NullLogger<ArchiveTaskScheduler>.Instance);
         var configuration = CreateConfiguration(enableScheduledArchive: true);
 
         await scheduler.SyncRecurringJobAsync(configuration, CancellationToken.None);
 
         var expectedJobId = $"archive-config-{configuration.Id:N}";
-
-        var addInvocation = recurringJobManagerMock.Invocations.Single(invocation => invocation.Method.Name == nameof(IRecurringJobManager.AddOrUpdate));
-        Assert.Equal(expectedJobId, addInvocation.Arguments[0]);
-        Assert.Equal(configuration.CronExpression, addInvocation.Arguments[2]);
-        var options = Assert.IsType<RecurringJobOptions>(addInvocation.Arguments[3]);
-        Assert.Equal(TimeZoneInfo.Utc, options.TimeZone);
-
-        Assert.DoesNotContain(recurringJobManagerMock.Invocations, inv => inv.Method.Name == nameof(IRecurringJobManager.RemoveIfExists));
-    }
-
-    /// <summary>
-    /// 当配置被禁用时,应移除已有的周期任务。
-    /// </summary>
-    [Fact]
-    public async Task SyncRecurringJobAsync_ShouldRemoveJob_WhenConfigurationDisabled()
-    {
-        var recurringJobManagerMock = new Mock<IRecurringJobManager>();
-    var scheduler = new ArchiveTaskScheduler(recurringJobManagerMock.Object, NullLogger<ArchiveTaskScheduler>.Instance);
-        var configuration = CreateConfiguration(enableScheduledArchive: true);
-        configuration.Disable();
-
-        await scheduler.SyncRecurringJobAsync(configuration, CancellationToken.None);
-
-        var expectedJobId = $"archive-config-{configuration.Id:N}";
-
+        
+        // 只应调用 RemoveIfExists 清理旧任务
         recurringJobManagerMock.Verify(m => m.RemoveIfExists(expectedJobId), Times.Once);
-        Assert.DoesNotContain(recurringJobManagerMock.Invocations, inv => inv.Method.Name == nameof(IRecurringJobManager.AddOrUpdate));
-    }
-
-    /// <summary>
-    /// 当配置未开启定时归档时,应移除对应的周期任务。
-    /// </summary>
-    [Fact]
-    public async Task SyncRecurringJobAsync_ShouldRemoveJob_WhenScheduledDisabled()
-    {
-        var recurringJobManagerMock = new Mock<IRecurringJobManager>();
-    var scheduler = new ArchiveTaskScheduler(recurringJobManagerMock.Object, NullLogger<ArchiveTaskScheduler>.Instance);
-        var configuration = CreateConfiguration(enableScheduledArchive: false);
-
-        await scheduler.SyncRecurringJobAsync(configuration, CancellationToken.None);
-
-        var expectedJobId = $"archive-config-{configuration.Id:N}";
-        recurringJobManagerMock.Verify(m => m.RemoveIfExists(expectedJobId), Times.Once);
-        Assert.DoesNotContain(recurringJobManagerMock.Invocations, inv => inv.Method.Name == nameof(IRecurringJobManager.AddOrUpdate));
-    }
-
-    /// <summary>
-    /// 当 Hangfire 抛出异常时,应将异常向上抛出供上层处理。
-    /// </summary>
-    [Fact]
-    public async Task SyncRecurringJobAsync_ShouldThrow_WhenRecurringJobManagerFails()
-    {
-        var recurringJobManagerMock = new Mock<IRecurringJobManager>();
-    var scheduler = new ArchiveTaskScheduler(recurringJobManagerMock.Object, NullLogger<ArchiveTaskScheduler>.Instance);
-        var configuration = CreateConfiguration(enableScheduledArchive: true);
-
-        recurringJobManagerMock
-            .Setup(m => m.AddOrUpdate(
-                It.IsAny<string>(),
-                It.IsAny<Hangfire.Common.Job>(),
-                It.IsAny<string>(),
-                It.IsAny<RecurringJobOptions>()))
-            .Throws(new InvalidOperationException("注册失败"));
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => scheduler.SyncRecurringJobAsync(configuration, CancellationToken.None));
+        // 不应注册新任务
+        recurringJobManagerMock.Verify(m => m.AddOrUpdate(
+            It.IsAny<string>(),
+            It.IsAny<Hangfire.Common.Job>(),
+            It.IsAny<string>(),
+            It.IsAny<RecurringJobOptions>()), Times.Never);
     }
 
     /// <summary>
@@ -113,9 +57,6 @@ public class ArchiveTaskSchedulerTests
 
     private static ArchiveConfiguration CreateConfiguration(bool enableScheduledArchive)
     {
-        var cron = enableScheduledArchive ? "0 2 * * *" : null;
-        DateTime? nextUtc = enableScheduledArchive ? DateTime.UtcNow.AddHours(2) : null;
-
         return new ArchiveConfiguration(
             "订单表归档",
             "测试用配置",
@@ -130,9 +71,6 @@ public class ArchiveTaskSchedulerTests
             10000,
             null,
             "archive",
-            "Orders_Archive",
-            enableScheduledArchive,
-            cron,
-            nextUtc);
+            "Orders_Archive");
     }
 }

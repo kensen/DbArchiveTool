@@ -3,6 +3,7 @@ using DbArchiveTool.Domain.ArchiveConfigurations;
 using DbArchiveTool.Domain.ArchiveTasks;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Partitions;
+using DbArchiveTool.Domain.ScheduledArchiveJobs;
 using DbArchiveTool.Shared.Partitions;
 using DbArchiveTool.Infrastructure.Persistence.Models;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,7 @@ public sealed class ArchiveDbContext : DbContext
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<ArchiveDataSource> ArchiveDataSources => Set<ArchiveDataSource>();
     public DbSet<ArchiveConfiguration> ArchiveConfigurations => Set<ArchiveConfiguration>();
+    public DbSet<ScheduledArchiveJob> ScheduledArchiveJobs => Set<ScheduledArchiveJob>();
     public DbSet<PartitionCommand> PartitionCommands => Set<PartitionCommand>();
     public DbSet<PartitionConfigurationEntity> PartitionConfigurations => Set<PartitionConfigurationEntity>();
     public DbSet<BackgroundTask> BackgroundTasks => Set<BackgroundTask>();
@@ -82,23 +84,11 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.ArchiveMethod).IsRequired();
             builder.Property(x => x.DeleteSourceDataAfterArchive).IsRequired().HasDefaultValue(true);
             builder.Property(x => x.BatchSize).IsRequired().HasDefaultValue(10000);
-            builder.Property(x => x.IsEnabled).IsRequired().HasDefaultValue(true);
-            builder.Property(x => x.EnableScheduledArchive).IsRequired().HasDefaultValue(false);
-            builder.Property(x => x.CronExpression).HasMaxLength(100);
-            builder.Property(x => x.NextArchiveAtUtc);
-            builder.Property(x => x.LastExecutionTimeUtc);
-            builder.Property(x => x.LastExecutionStatus).HasMaxLength(50);
-            builder.Property(x => x.LastArchivedRowCount);
 
             // 唯一索引:同一数据源下同一张表只能有一个归档配置
             builder.HasIndex(x => new { x.DataSourceId, x.SourceSchemaName, x.SourceTableName })
                 .IsUnique()
                 .HasFilter("[IsDeleted] = 0");
-
-            // 调度索引:仅对启用的定时任务生效
-            builder.HasIndex(x => x.NextArchiveAtUtc)
-                .HasDatabaseName("IX_ArchiveConfiguration_NextArchive")
-                .HasFilter("[IsEnabled] = 1 AND [EnableScheduledArchive] = 1");
         });
 
         modelBuilder.Entity<PartitionCommand>(builder =>
@@ -245,6 +235,51 @@ public sealed class ArchiveDbContext : DbContext
 
             builder.HasIndex(x => new { x.ResourceType, x.ResourceId, x.OccurredAtUtc });
             builder.HasIndex(x => new { x.Action, x.OccurredAtUtc });
+        });
+
+        modelBuilder.Entity<ScheduledArchiveJob>(builder =>
+        {
+            builder.ToTable("ScheduledArchiveJob");
+            builder.HasKey(x => x.Id);
+            builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
+            builder.Property(x => x.Description).HasMaxLength(500);
+            builder.Property(x => x.DataSourceId).IsRequired();
+            builder.Property(x => x.SourceSchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.SourceTableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetSchemaName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.TargetTableName).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.ArchiveFilterColumn).IsRequired().HasMaxLength(128);
+            builder.Property(x => x.ArchiveFilterCondition).IsRequired().HasMaxLength(500);
+            builder.Property(x => x.ArchiveMethod).IsRequired();
+            builder.Property(x => x.DeleteSourceDataAfterArchive).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.BatchSize).IsRequired().HasDefaultValue(5000);
+            builder.Property(x => x.MaxRowsPerExecution).IsRequired().HasDefaultValue(50000);
+            builder.Property(x => x.IntervalMinutes).IsRequired().HasDefaultValue(5);
+            builder.Property(x => x.CronExpression).HasMaxLength(100);
+            builder.Property(x => x.IsEnabled).IsRequired().HasDefaultValue(true);
+            builder.Property(x => x.NextExecutionAtUtc);
+            builder.Property(x => x.LastExecutionAtUtc);
+            builder.Property(x => x.LastExecutionStatus).IsRequired();
+            builder.Property(x => x.LastExecutionError).HasColumnType("nvarchar(max)");
+            builder.Property(x => x.LastArchivedRowCount);
+            builder.Property(x => x.TotalExecutionCount).IsRequired().HasDefaultValue(0);
+            builder.Property(x => x.TotalArchivedRowCount).IsRequired().HasDefaultValue(0);
+            builder.Property(x => x.ConsecutiveFailureCount).IsRequired().HasDefaultValue(0);
+            builder.Property(x => x.MaxConsecutiveFailures).IsRequired().HasDefaultValue(5);
+
+            // 索引
+            builder.HasIndex(x => x.DataSourceId)
+                .HasFilter("[IsDeleted] = 0");
+            builder.HasIndex(x => x.NextExecutionAtUtc)
+                .HasFilter("[IsEnabled] = 1 AND [IsDeleted] = 0");
+            builder.HasIndex(x => x.LastExecutionAtUtc)
+                .HasFilter("[IsDeleted] = 0");
+
+            // 外键
+            builder.HasOne<ArchiveDataSource>()
+                .WithMany()
+                .HasForeignKey(x => x.DataSourceId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

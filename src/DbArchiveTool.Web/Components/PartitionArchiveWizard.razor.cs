@@ -484,6 +484,28 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 			Logger.LogInformation("开始保存归档配置: Mode={Mode}, DataSourceId={DataSourceId}, Schema={Schema}, Table={Table}",
 				_selectedMode, DataSourceId, SchemaName, TableName);
 
+			// 解析目标表信息(从 _form.TargetTable)
+			string? targetSchemaName = null;
+			string? targetTableName = null;
+			
+			if (!string.IsNullOrWhiteSpace(_form.TargetTable))
+			{
+				var parts = _form.TargetTable.Split('.');
+				if (parts.Length == 2)
+				{
+					targetSchemaName = parts[0].Trim();
+					targetTableName = parts[1].Trim();
+				}
+				else if (parts.Length == 1)
+				{
+					targetSchemaName = "dbo"; // 默认架构
+					targetTableName = parts[0].Trim();
+				}
+				
+				Logger.LogInformation("解析目标表: Schema={TargetSchema}, Table={TargetTable}", 
+					targetSchemaName, targetTableName);
+			}
+
 			// 如果已经加载了配置,则更新;否则创建新配置
 			if (_loadedArchiveConfig != null)
 			{
@@ -495,6 +517,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 					DataSourceId = DataSourceId,
 					SourceSchemaName = SchemaName,
 					SourceTableName = TableName,
+					TargetSchemaName = targetSchemaName,
+					TargetTableName = targetTableName,
 					IsPartitionedTable = false, // 暂不支持分区表归档
 					PartitionConfigurationId = null,
 					// 提供占位符过滤条件以满足实体验证规则
@@ -507,7 +531,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				};
 
 				await ArchiveConfigApi.UpdateAsync(_loadedArchiveConfig.Id, updateModel);
-				Logger.LogInformation("成功更新归档配置: ConfigId={ConfigId}", _loadedArchiveConfig.Id);
+				Logger.LogInformation("成功更新归档配置: ConfigId={ConfigId}, TargetTable={TargetSchema}.{TargetTable}", 
+					_loadedArchiveConfig.Id, targetSchemaName, targetTableName);
 			}
 			else
 			{
@@ -520,6 +545,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 					DataSourceId = DataSourceId,
 					SourceSchemaName = SchemaName,
 					SourceTableName = TableName,
+					TargetSchemaName = targetSchemaName,
+					TargetTableName = targetTableName,
 					IsPartitionedTable = false,
 					PartitionConfigurationId = null,
 					// 提供占位符过滤条件以满足实体验证规则
@@ -532,8 +559,8 @@ public sealed partial class PartitionArchiveWizard : ComponentBase
 				};
 
 				_loadedArchiveConfig = await ArchiveConfigApi.CreateAsync(createModel);
-				Logger.LogInformation("成功创建归档配置: ConfigId={ConfigId}, Name={Name}",
-					_loadedArchiveConfig.Id, _loadedArchiveConfig.Name);
+				Logger.LogInformation("成功创建归档配置: ConfigId={ConfigId}, Name={Name}, TargetTable={TargetSchema}.{TargetTable}",
+					_loadedArchiveConfig.Id, _loadedArchiveConfig.Name, targetSchemaName, targetTableName);
 			}
 		}
 		catch (Exception ex)

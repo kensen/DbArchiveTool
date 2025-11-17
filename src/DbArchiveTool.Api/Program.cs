@@ -96,6 +96,24 @@ builder.Services.AddHangfireServer(options =>
 
 var app = builder.Build();
 
+// 应用启动后立即注册所有启用的定时归档任务
+using (var scope = app.Services.CreateScope())
+{
+    var scheduler = scope.ServiceProvider.GetRequiredService<DbArchiveTool.Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobScheduler>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    
+    try
+    {
+        var registeredCount = await scheduler.RegisterAllJobsAsync();
+        logger.LogInformation("成功注册 {Count} 个定时归档任务到 Hangfire", registeredCount);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "注册定时归档任务失败");
+        // 不中止应用启动,允许手动管理任务
+    }
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
