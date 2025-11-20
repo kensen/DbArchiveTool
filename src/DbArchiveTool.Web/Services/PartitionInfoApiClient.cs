@@ -31,6 +31,14 @@ public class PartitionInfoApiClient
         return await response.Content.ReadFromJsonAsync<List<DatabaseTableDto>>() ?? new List<DatabaseTableDto>();
     }
 
+    /// <summary>获取数据源下的全部非分区表及其统计信息(用于归档表选择)。</summary>
+    public async Task<List<TableWithStatisticsDto>> GetTablesWithStatisticsAsync(Guid dataSourceId)
+    {
+        var response = await httpClient.GetAsync($"api/v1/data-sources/{dataSourceId}/tables/with-statistics");
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<List<TableWithStatisticsDto>>() ?? new List<TableWithStatisticsDto>();
+    }
+
     /// <summary>获取指定表的分区详情。</summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(Guid dataSourceId, string schemaName, string tableName)
     {
@@ -165,6 +173,68 @@ public class DatabaseTableDto
 {
     public string SchemaName { get; set; } = "";
     public string TableName { get; set; } = "";
+}
+
+/// <summary>
+/// 带统计信息的表 DTO(用于归档表选择)。
+/// </summary>
+public class TableWithStatisticsDto
+{
+    /// <summary>Schema 名称</summary>
+    public string SchemaName { get; set; } = string.Empty;
+
+    /// <summary>表名称</summary>
+    public string TableName { get; set; } = string.Empty;
+
+    /// <summary>行数</summary>
+    public long RowCount { get; set; }
+
+    /// <summary>数据大小(KB)</summary>
+    public long DataTotalSpaceKB { get; set; }
+
+    /// <summary>索引大小(KB)</summary>
+    public long IndexTotalSpaceKB { get; set; }
+
+    /// <summary>已使用空间(KB)</summary>
+    public long UsedSpaceKB { get; set; }
+
+    /// <summary>总空间(KB)</summary>
+    public long TotalSpaceKB { get; set; }
+
+    /// <summary>是否已分区</summary>
+    public bool IsPartitioned { get; set; }
+
+    /// <summary>分区数量</summary>
+    public int PartitionCount { get; set; }
+
+    /// <summary>索引数量</summary>
+    public int IndexCount { get; set; }
+
+    /// <summary>创建日期</summary>
+    public DateTime CreationDate { get; set; }
+
+    /// <summary>最后修改日期</summary>
+    public DateTime LastModifiedDate { get; set; }
+    
+    /// <summary>完整表名(Schema.TableName)</summary>
+    public string FullTableName => $"{SchemaName}.{TableName}";
+    
+    /// <summary>格式化的行数(带千分位)</summary>
+    public string FormattedRowCount => RowCount.ToString("N0");
+    
+    /// <summary>格式化的总大小(自动单位)</summary>
+    public string FormattedTotalSize
+    {
+        get
+        {
+            if (TotalSpaceKB < 1024)
+                return $"{TotalSpaceKB} KB";
+            else if (TotalSpaceKB < 1024 * 1024)
+                return $"{TotalSpaceKB / 1024.0:F2} MB";
+            else
+                return $"{TotalSpaceKB / 1024.0 / 1024.0:F2} GB";
+        }
+    }
 }
 
 public class DefaultFilePathResponse

@@ -1,0 +1,32 @@
+﻿.table-selector {
+    width: 100%;
+}
+
+.table-option {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+}
+
+.table-option-name {
+    font-weight: 500;
+    color: rgba(0, 0, 0, 0.85);
+}
+
+.table-option-stats {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: rgba(0, 0, 0, 0.45);
+}
+
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stat-item anticon {
+    font-size: 12px;
+}

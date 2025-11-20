@@ -1,0 +1,203 @@
+﻿@using AntDesign
+@using DbArchiveTool.Web.Services
+@inject PartitionInfoApiClient PartitionApi
+@inject MessageService Message
+
+<div class="table-selector">
+    <Form Model="_model" LabelCol="new ColLayoutParam { Span = 24 }">
+        <FormItem Label="源表">
+            <Select @bind-Value="_selectedTableKey"
+                    Placeholder="请选择要归档的表"
+                    ShowSearch
+                    FilterExpression="@((item, value) => item.Label.Contains(value, StringComparison.OrdinalIgnoreCase))"
+                    Loading="_loading"
+                    OnSelectedItemChanged="@(EventCallback.Factory.Create<string?>(this, OnTableSelectedWrapper))"
+                    Style="width: 100%;">
+                <SelectOptions>
+                    @foreach (var table in _tables)
+                    {
+                        <SelectOption TItem="string" TItemValue="string" Value="@table.FullTableName" Label="@table.FullTableName">
+                            <ChildContent Context="selectContext">
+                                <div class="table-option">
+                                    <div class="table-option-name">@table.FullTableName</div>
+                                    <div class="table-option-stats">
+                                        <span class="stat-item">
+                                            <Icon Type="database" Theme="@IconThemeType.Outline" />
+                                            @table.FormattedRowCount 行
+                                        </span>
+                                        <span class="stat-item">
+                                            <Icon Type="file" Theme="@IconThemeType.Outline" />
+                                            @table.FormattedTotalSize
+                                        </span>
+                                    </div>
+                                </div>
+                            </ChildContent>
+                        </SelectOption>
+                    }
+                </SelectOptions>
+            </Select>
+        </FormItem>
+
+        @if (_selectedTable != null)
+        {
+            <Card Size="@CardSize.Small" Style="margin-top: 16px;">
+                <Descriptions Title="表信息" Bordered Size="@DescriptionsSize.Small" Column="2">
+                    <DescriptionsItem Title="完整表名">@_selectedTable.FullTableName</DescriptionsItem>
+                    <DescriptionsItem Title="行数">@_selectedTable.FormattedRowCount</DescriptionsItem>
+                </Descriptions>
+            </Card>
+
+            @if (_selectedTable.RowCount > 1000000)
+            {
+                <Alert Type="@AlertType.Warning" 
+                       Message="大表警告" 
+                       Description="@($"该表包含 {_selectedTable.FormattedRowCount} 行数据,建议设置较小的批次大小并考虑使用分批归档。")"
+                       ShowIcon="true"
+                       Style="margin-top: 16px;" />
+            }
+        }
+    </Form>
+</div>
+
+@code {
+    /// <summary>数据源ID</summary>
+    [Parameter] public Guid DataSourceId { get; set; }
+
+    /// <summary>源Schema名称</summary>
+    [Parameter] public string? SourceSchema { get; set; }
+
+    /// <summary>源表名称</summary>
+    [Parameter] public string? SourceTable { get; set; }
+
+    /// <summary>Schema变更事件</summary>
+    [Parameter] public EventCallback<string?> SourceSchemaChanged { get; set; }
+
+    /// <summary>表名变更事件</summary>
+    [Parameter] public EventCallback<string?> SourceTableChanged { get; set; }
+
+    /// <summary>表统计信息变更事件</summary>
+    [Parameter] public EventCallback<TableWithStatisticsDto?> OnTableStatisticsChanged { get; set; }
+
+    private class FormModel { }
+    private FormModel _model = new();
+
+    private List<TableWithStatisticsDto> _tables = new();
+    private TableWithStatisticsDto? _selectedTable;
+    private string? _selectedTableKey;
+    private bool _loading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTablesAsync();
+
+        // 如果已有选中的表,设置初始值
+        if (!string.IsNullOrEmpty(SourceSchema) && !string.IsNullOrEmpty(SourceTable))
+        {
+            _selectedTableKey = $"{SourceSchema}.{SourceTable}";
+            _selectedTable = _tables.FirstOrDefault(t => 
+                t.SchemaName == SourceSchema && t.TableName == SourceTable);
+        }
+    }
+
+    private async Task LoadTablesAsync()
+    {
+        _loading = true;
+        try
+        {
+            _tables = await PartitionApi.GetTablesWithStatisticsAsync(DataSourceId);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"加载表列表失败: {ex.Message}");
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task OnTableSelectedWrapper(string? key)
+    {
+        _selectedTable = _tables.FirstOrDefault(t => t.FullTableName == key);
+        await OnTableSelected(_selectedTable);
+    }
+
+    private async Task OnTableSelected(TableWithStatisticsDto? table)
+    {
+        if (table != null)
+        {
+            // 触发参数更新
+            if (SourceSchemaChanged.HasDelegate)
+                await SourceSchemaChanged.InvokeAsync(table.SchemaName);
+
+            if (SourceTableChanged.HasDelegate)
+                await SourceTableChanged.InvokeAsync(table.TableName);
+
+            if (OnTableStatisticsChanged.HasDelegate)
+                await OnTableStatisticsChanged.InvokeAsync(table);
+        }
+        else
+        {
+            if (SourceSchemaChanged.HasDelegate)
+                await SourceSchemaChanged.InvokeAsync(null);
+
+            if (SourceTableChanged.HasDelegate)
+                await SourceTableChanged.InvokeAsync(null);
+
+            if (OnTableStatisticsChanged.HasDelegate)
+                await OnTableStatisticsChanged.InvokeAsync(null);
+        }
+
+        StateHasChanged();
+    }
+
+    private string FormatSize(long sizeKB)
+    {
+        if (sizeKB < 1024)
+            return $"{sizeKB} KB";
+        else if (sizeKB < 1024 * 1024)
+            return $"{sizeKB / 1024.0:F2} MB";
+        else
+            return $"{sizeKB / 1024.0 / 1024.0:F2} GB";
+    }
+
+    /// <summary>公开方法:刷新表列表</summary>
+    public async Task RefreshAsync()
+    {
+        await LoadTablesAsync();
+    }
+
+    /// <summary>公开方法:获取当前选中的表统计信息</summary>
+    public TableWithStatisticsDto? GetSelectedTable()
+    {
+        return _selectedTable;
+    }
+
+    /// <summary>公开方法:验证是否已选择表</summary>
+    public bool ValidateSelection()
+    {
+        return _selectedTable != null;
+    }
+
+    /// <summary>公开方法:检查选中的表是否适合归档</summary>
+    public (bool IsValid, string? ErrorMessage) ValidateTableForArchive()
+    {
+        if (_selectedTable == null)
+        {
+            return (false, "请先选择源表");
+        }
+
+        if (_selectedTable.IsPartitioned)
+        {
+            return (false, "已分区表不适合使用归档功能,建议使用分区维护功能");
+        }
+
+        if (_selectedTable.RowCount == 0)
+        {
+            return (false, "该表无数据,无需归档");
+        }
+
+        return (true, null);
+    }
+}

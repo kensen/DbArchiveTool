@@ -66,6 +66,53 @@ ORDER BY s.name, t.name";
     }
 
     /// <summary>
+    /// 查询数据库中所有非分区表及其统计信息(用于归档表选择)。
+    /// 只返回表名和行数,简化查询提高性能。
+    /// </summary>
+    public async Task<List<TableWithStatisticsDto>> GetTablesWithStatisticsAsync(string connectionString)
+    {
+        // 简化版 SQL: 只查询表名和行数,使用方括号避免关键字冲突
+        const string sql = @"
+SELECT 
+    s.[name] AS [SchemaName],
+    t.[name] AS [TableName],
+    SUM(CASE WHEN i.[type] IN (0, 1, 5) THEN ps.[row_count] ELSE 0 END) AS [RowCount],
+    CAST(0 AS BIT) AS [IsPartitioned],
+    0 AS [DataTotalSpaceKB],
+    0 AS [IndexTotalSpaceKB],
+    0 AS [UsedSpaceKB],
+    0 AS [TotalSpaceKB],
+    0 AS [PartitionCount],
+    0 AS [IndexCount],
+    GETDATE() AS [CreationDate],
+    GETDATE() AS [LastModifiedDate]
+FROM sys.tables t
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON t.object_id = i.object_id
+INNER JOIN sys.partitions p ON i.object_id = p.object_id AND i.index_id = p.index_id
+INNER JOIN sys.dm_db_partition_stats ps ON p.object_id = ps.object_id AND p.index_id = ps.index_id AND p.partition_id = ps.partition_id
+WHERE t.is_ms_shipped = 0
+  AND i.object_id > 255
+  AND i.[type] IN (0, 1, 5)
+  AND NOT EXISTS (
+      SELECT 1 
+      FROM sys.indexes si
+      WHERE si.object_id = t.object_id 
+        AND si.[type] IN (0,1) 
+        AND si.data_space_id IN (SELECT data_space_id FROM sys.partition_schemes)
+  )
+GROUP BY 
+    t.object_id, 
+    t.[name], 
+    s.[name]
+ORDER BY [RowCount] DESC;";
+
+        await using var connection = new SqlConnection(connectionString);
+        var result = await connection.QueryAsync<TableWithStatisticsDto>(sql);
+        return result.ToList();
+    }
+
+    /// <summary>
     /// 查询指定表的分区边界详情。
     /// </summary>
     public async Task<List<PartitionDetailDto>> GetPartitionDetailsAsync(
@@ -556,6 +603,48 @@ public class DatabaseTableDto
 {
     public string SchemaName { get; set; } = string.Empty;
     public string TableName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 带统计信息的表 DTO(用于归档表选择)。
+/// </summary>
+public class TableWithStatisticsDto
+{
+    /// <summary>Schema 名称</summary>
+    public string SchemaName { get; set; } = string.Empty;
+
+    /// <summary>表名称</summary>
+    public string TableName { get; set; } = string.Empty;
+
+    /// <summary>行数</summary>
+    public long RowCount { get; set; }
+
+    /// <summary>数据大小(KB)</summary>
+    public long DataTotalSpaceKB { get; set; }
+
+    /// <summary>索引大小(KB)</summary>
+    public long IndexTotalSpaceKB { get; set; }
+
+    /// <summary>已使用空间(KB)</summary>
+    public long UsedSpaceKB { get; set; }
+
+    /// <summary>总空间(KB)</summary>
+    public long TotalSpaceKB { get; set; }
+
+    /// <summary>是否已分区</summary>
+    public bool IsPartitioned { get; set; }
+
+    /// <summary>分区数量</summary>
+    public int PartitionCount { get; set; }
+
+    /// <summary>索引数量</summary>
+    public int IndexCount { get; set; }
+
+    /// <summary>创建日期</summary>
+    public DateTime CreationDate { get; set; }
+
+    /// <summary>最后修改日期</summary>
+    public DateTime LastModifiedDate { get; set; }
 }
 
 internal sealed class ColumnStatsRow

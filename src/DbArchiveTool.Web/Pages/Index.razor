@@ -59,6 +59,7 @@
                     <div class="data-source-card__footer">
                         <Button Type="ButtonType.Link" OnClick="() => BeginEdit(item)">编辑</Button>
                         <Button Type="ButtonType.Link" OnClick="@(() => NavigateToPartitions(item.Id))">分区管理</Button>
+                        <Button Type="ButtonType.Link" OnClick="@(() => NavigateToScheduledJobs(item.Id))">定时归档配置</Button>
                         <Button Type="ButtonType.Link" Disabled="true">更多</Button>
                     </div>
                 </div>
@@ -192,6 +193,11 @@
     private void NavigateToPartitions(Guid dataSourceId)
     {
         Navigation.NavigateTo($"/archive-data-sources/{dataSourceId}/partitions");
+    }
+
+    private void NavigateToScheduledJobs(Guid dataSourceId)
+    {
+        Navigation.NavigateTo($"/archive-data-sources/{dataSourceId}/scheduled-jobs");
     }
 
     private void HandleCancel()

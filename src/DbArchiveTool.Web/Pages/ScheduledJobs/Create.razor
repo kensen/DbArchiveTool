@@ -1,0 +1,471 @@
+﻿@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs/create"
+@using AntDesign
+@using DbArchiveTool.Web.Services
+@using DbArchiveTool.Web.Models
+@attribute [ReuseTabsPage(Title = "新建定时归档任务", Closable = true)]
+
+<PageHeader Title="新建定时归档任务" SubTitle="配置基于 BulkCopy 的定时归档任务（仅支持普通表）" OnBack="NavigateBack">
+    <PageHeaderExtra>
+        <Space>
+            <SpaceItem><Button OnClick="HandleReset">重置</Button></SpaceItem>
+            <SpaceItem><Button OnClick="NavigateBack">取消</Button></SpaceItem>
+            <SpaceItem><Button Type="@ButtonType.Primary" Loading="_submitting" OnClick="HandleSubmit">保存</Button></SpaceItem>
+        </Space>
+    </PageHeaderExtra>
+</PageHeader>
+
+<div class="scheduled-job-form-container">
+    <Row Gutter="16">
+        <!-- 左侧：表单区域 -->
+        <Col Span="16">
+            <Card Title="基本信息" Class="form-section">
+                <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="任务名称" Required>
+                        <Input @bind-Value="_formModel.Name" Placeholder="例如: 订单归档任务" MaxLength="100" />
+                        <span class="ant-form-text">2-100 字符，不允许仅数字</span>
+                    </FormItem>
+                    <FormItem Label="任务描述">
+                        <TextArea @bind-Value="_formModel.Description" Rows="3" Placeholder="描述任务用途、归档规则等" MaxLength="500" />
+                    </FormItem>
+                    <FormItem Label="数据源">
+                        <div class="readonly-field">
+                            <span><strong>@_dataSourceName</strong></span>
+                            <span style="color: rgba(0,0,0,.45);"> (@_dataSourceInfo)</span>
+                        </div>
+                    </FormItem>
+                </Form>
+            </Card>
+
+            <Card Title="表配置" Class="form-section">
+                <TableSelector @ref="_tableSelector"
+                               DataSourceId="@DataSourceId"
+                               SourceSchema="@_formModel.SourceSchemaName"
+                               SourceTable="@_formModel.SourceTableName"
+                               SourceSchemaChanged="OnSourceSchemaChanged"
+                               SourceTableChanged="OnSourceTableChanged"
+                               OnTableStatisticsChanged="OnTableStatisticsChanged" />
+                <Divider />
+                <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="目标表架构">
+                        <Input @bind-Value="_formModel.TargetSchemaName" Placeholder="默认: dbo" />
+                    </FormItem>
+                    <FormItem Label="目标表名称" Required>
+                        <Input @bind-Value="_formModel.TargetTableName" Placeholder="例如: Orders_Archive" />
+                        <span class="ant-form-text">自动建议: @GetSuggestedTargetTable()</span>
+                    </FormItem>
+                </Form>
+            </Card>
+
+            <Card Title="筛选条件(必填)" Class="form-section">
+                <Alert Type="@AlertType.Warning" Message="定时归档任务必须配置筛选条件,防止意外归档整个表" ShowIcon="true" Closable="false" Style="margin-bottom: 16px;" />
+                <FilterBuilder DataSourceId="@DataSourceId"
+                               SourceSchema="@_formModel.SourceSchemaName"
+                               SourceTable="@_formModel.SourceTableName"
+                               WhereClause="@_formModel.ArchiveFilterCondition"
+                               WhereClauseChanged="OnWhereClauseChanged" />
+            </Card>
+
+            <Card Title="归档参数" Class="form-section">
+                <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="归档方法">
+                        <div class="readonly-field">
+                            <Tag Color="@("blue")">BulkCopy</Tag>
+                            <span style="color: rgba(0,0,0,.45);">固定使用 SqlBulkCopy API</span>
+                        </div>
+                    </FormItem>
+                    <FormItem Label="批次大小" Required>
+                        <RadioGroup @bind-Value="_formModel.BatchSize">
+                            <Radio Value="1000">1,000 行</Radio>
+                            <Radio Value="5000">5,000 行（推荐）</Radio>
+                            <Radio Value="10000">10,000 行</Radio>
+                        </RadioGroup>
+                        <AntDesign.InputNumber @bind-Value="_formModel.BatchSize" Min="1" Max="100000" Style="width: 200px; margin-left: 16px;" />
+                    </FormItem>
+                    <FormItem Label="单次最大行数">
+                        <AntDesign.InputNumber @bind-Value="_formModel.MaxRowsPerExecution" Min="1000" Max="10000000" Step="1000" Style="width: 200px;" />
+                        <span class="ant-form-text">推荐 50,000，避免单次执行时间过长</span>
+                    </FormItem>
+                </Form>
+            </Card>
+
+            <Card Title="调度配置" Class="form-section">
+                <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="调度方式">
+                        <RadioGroup @bind-Value="_scheduleMode">
+                            <Radio Value="@("interval")">按间隔</Radio>
+                            <Radio Value="@("cron")">Cron 表达式（高级）</Radio>
+                        </RadioGroup>
+                    </FormItem>
+                    @if (_scheduleMode == "interval")
+                    {
+                        <FormItem Label="间隔分钟">
+                            <AntDesign.InputNumber @bind-Value="_formModel.IntervalMinutes" Min="1" Max="43200" Style="width: 200px;" />
+                            <span class="ant-form-text">最小 1 分钟，最大 30 天</span>
+                        </FormItem>
+                    }
+                    else
+                    {
+                        <FormItem Label="Cron 表达式">
+                            <CronBuilder CronExpression="@_formModel.CronExpression"
+                                         CronExpressionChanged="OnCronExpressionChanged" />
+                        </FormItem>
+                    }
+                </Form>
+            </Card>
+
+            <Card Title="安全与限制" Class="form-section">
+                <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="最大连续失败">
+                        <AntDesign.InputNumber @bind-Value="_formModel.MaxConsecutiveFailures" Min="1" Max="100" Style="width: 200px;" />
+                        <span class="ant-form-text">达到此次数后自动禁用任务</span>
+                    </FormItem>
+                    <FormItem Label="立即启用">
+                        <Switch @bind-Checked="_formModel.IsEnabled" CheckedChildren="是" UnCheckedChildren="否" />
+                        <span class="ant-form-text">保存后立即开始调度</span>
+                    </FormItem>
+                </Form>
+            </Card>
+        </Col>
+
+        <!-- 右侧：预览面板 -->
+        <Col Span="8">
+            <div class="preview-panel">
+                <Card Title="任务预览" Class="preview-card">
+                    <Descriptions Bordered Size="@DescriptionsSize.Small" Column="1">
+                        <DescriptionsItem Title="任务名称">@(_formModel.Name ?? "-")</DescriptionsItem>
+                        <DescriptionsItem Title="源表">@GetFullSourceTable()</DescriptionsItem>
+                        <DescriptionsItem Title="目标表">@GetFullTargetTable()</DescriptionsItem>
+                        <DescriptionsItem Title="筛选条件">
+                            @if (!string.IsNullOrWhiteSpace(_formModel.ArchiveFilterCondition))
+                            {
+                                <pre class="filter-preview">@_formModel.ArchiveFilterCondition</pre>
+                            }
+                            else
+                            {
+                                <span style="color: rgba(0,0,0,.45);">未配置</span>
+                            }
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="归档方法">
+                            <Tag Color="@("blue")">BulkCopy</Tag>
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="批次大小">@_formModel.BatchSize.ToString("N0") 行</DescriptionsItem>
+                        <DescriptionsItem Title="单次最大">@_formModel.MaxRowsPerExecution.ToString("N0") 行</DescriptionsItem>
+                        <DescriptionsItem Title="调度方式">
+                            @if (_scheduleMode == "interval" && _formModel.IntervalMinutes.HasValue)
+                            {
+                                <span>每 @_formModel.IntervalMinutes 分钟</span>
+                            }
+                            else if (_scheduleMode == "cron" && !string.IsNullOrWhiteSpace(_formModel.CronExpression))
+                            {
+                                <span>@_formModel.CronExpression</span>
+                            }
+                            else
+                            {
+                                <span style="color: rgba(0,0,0,.45);">未配置</span>
+                            }
+                        </DescriptionsItem>
+                        <DescriptionsItem Title="启用状态">
+                            @if (_formModel.IsEnabled)
+                            {
+                                <Badge Status="@BadgeStatus.Success" Text="立即启用" />
+                            }
+                            else
+                            {
+                                <Badge Status="@BadgeStatus.Default" Text="保存后不启用" />
+                            }
+                        </DescriptionsItem>
+                    </Descriptions>
+                </Card>
+
+                @if (!string.IsNullOrWhiteSpace(_validationMessage))
+                {
+                    <Alert Type="@AlertType.Warning" Message="@_validationMessage" ShowIcon="true" Style="margin-top: 16px;" />
+                }
+            </div>
+        </Col>
+    </Row>
+</div>
+
+@code {
+    [Parameter] public Guid DataSourceId { get; set; }
+
+    [Inject] private ScheduledArchiveJobApiClient JobApi { get; set; } = default!;
+    [Inject] private ScheduledArchiveJobState JobState { get; set; } = default!;
+    [Inject] private ArchiveDataSourceApiClient DataSourceApi { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private readonly CreateJobFormModel _formModel = new();
+    private string _dataSourceName = "加载中...";
+    private string _dataSourceInfo = "";
+    private string? _validationMessage;
+    private bool _submitting;
+    private string _scheduleMode = "interval";
+    private TableSelector? _tableSelector;
+    private TableWithStatisticsDto? _selectedTableStats;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSourceInfoAsync();
+        InitializeFormDefaults();
+    }
+
+    private async Task LoadDataSourceInfoAsync()
+    {
+        var result = await DataSourceApi.GetAsync();
+        if (result.IsSuccess && result.Value != null)
+        {
+            var dataSource = result.Value.FirstOrDefault(ds => ds.Id == DataSourceId);
+            if (dataSource != null)
+            {
+                _dataSourceName = dataSource.Name;
+                _dataSourceInfo = $"{dataSource.ServerAddress}:{dataSource.ServerPort} / {dataSource.DatabaseName}";
+            }
+        }
+    }
+
+    private void InitializeFormDefaults()
+    {
+        _formModel.SourceSchemaName = "dbo";
+        _formModel.TargetSchemaName = "dbo";
+        _formModel.BatchSize = 5000;
+        _formModel.MaxRowsPerExecution = 50000;
+        _formModel.MaxConsecutiveFailures = 5;
+        _formModel.IsEnabled = true;
+        _formModel.IntervalMinutes = 60;
+    }
+
+    private async Task OnSourceSchemaChanged(string? schema)
+    {
+        _formModel.SourceSchemaName = schema ?? "dbo";
+        _formModel.TargetSchemaName = schema ?? "dbo";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnSourceTableChanged(string? tableName)
+    {
+        _formModel.SourceTableName = tableName;
+        
+        // 自动建议目标表名
+        if (!string.IsNullOrWhiteSpace(_formModel.SourceTableName) && string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        {
+            _formModel.TargetTableName = $"{_formModel.SourceTableName}_Archive";
+        }
+        
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnTableStatisticsChanged(TableWithStatisticsDto? stats)
+    {
+        _selectedTableStats = stats;
+        
+        // 如果表超过100万行,建议调整批次大小
+        if (stats != null && stats.RowCount > 1000000)
+        {
+            if (_formModel.BatchSize > 5000)
+            {
+                _formModel.BatchSize = 5000;
+            }
+            if (_formModel.MaxRowsPerExecution > 50000)
+            {
+                _formModel.MaxRowsPerExecution = 50000;
+            }
+        }
+        
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private string GetSuggestedTargetTable()
+    {
+        if (string.IsNullOrWhiteSpace(_formModel.SourceTableName))
+        {
+            return "-";
+        }
+        return $"{_formModel.SourceTableName}_Archive";
+    }
+
+    private string GetFullSourceTable()
+    {
+        if (string.IsNullOrWhiteSpace(_formModel.SourceTableName))
+        {
+            return "-";
+        }
+        return $"{_formModel.SourceSchemaName ?? "dbo"}.{_formModel.SourceTableName}";
+    }
+
+    private string GetFullTargetTable()
+    {
+        if (string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        {
+            return "-";
+        }
+        return $"{_formModel.TargetSchemaName ?? "dbo"}.{_formModel.TargetTableName}";
+    }
+
+    private bool ValidateForm()
+    {
+        var errors = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(_formModel.Name))
+        {
+            errors.Add("请填写任务名称");
+        }
+        else if (_formModel.Name.Length < 2 || _formModel.Name.Length > 100)
+        {
+            errors.Add("任务名称长度需在 2-100 字符之间");
+        }
+
+        // 使用 TableSelector 的验证
+        if (_tableSelector != null)
+        {
+            var (isValid, errorMessage) = _tableSelector.ValidateTableForArchive();
+            if (!isValid)
+            {
+                errors.Add(errorMessage ?? "表选择验证失败");
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(_formModel.SourceTableName))
+        {
+            errors.Add("请选择源表");
+        }
+
+        if (string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        {
+            errors.Add("请填写目标表名称");
+        }
+
+        if (string.IsNullOrWhiteSpace(_formModel.ArchiveFilterCondition))
+        {
+            errors.Add("必须配置筛选条件，防止意外归档整个表");
+        }
+
+        if (_scheduleMode == "interval" && (!_formModel.IntervalMinutes.HasValue || _formModel.IntervalMinutes < 1))
+        {
+            errors.Add("请设置有效的间隔分钟数（最小 1 分钟）");
+        }
+
+        if (_scheduleMode == "cron" && string.IsNullOrWhiteSpace(_formModel.CronExpression))
+        {
+            errors.Add("请填写 Cron 表达式");
+        }
+
+        if (errors.Any())
+        {
+            _validationMessage = string.Join("；", errors);
+            return false;
+        }
+
+        _validationMessage = null;
+        return true;
+    }
+
+    private async Task HandleSubmit()
+    {
+        if (!ValidateForm())
+        {
+            Message.Warning(_validationMessage ?? "请完善表单信息");
+            return;
+        }
+
+        _submitting = true;
+        try
+        {
+            var request = new CreateScheduledArchiveJobRequest
+            {
+                Name = _formModel.Name!.Trim(),
+                Description = string.IsNullOrWhiteSpace(_formModel.Description) ? null : _formModel.Description.Trim(),
+                DataSourceId = DataSourceId,
+                SourceSchemaName = _formModel.SourceSchemaName ?? "dbo",
+                SourceTableName = _formModel.SourceTableName!.Trim(),
+                TargetSchemaName = _formModel.TargetSchemaName ?? "dbo",
+                TargetTableName = _formModel.TargetTableName!.Trim(),
+                ArchiveFilterColumn = _formModel.ArchiveFilterColumn?.Trim() ?? "",
+                ArchiveFilterCondition = _formModel.ArchiveFilterCondition!.Trim(),
+                BatchSize = _formModel.BatchSize,
+                MaxRowsPerExecution = _formModel.MaxRowsPerExecution,
+                IntervalMinutes = _scheduleMode == "interval" ? _formModel.IntervalMinutes : null,
+                CronExpression = _scheduleMode == "cron" ? _formModel.CronExpression?.Trim() : null,
+                IsEnabled = _formModel.IsEnabled,
+                MaxConsecutiveFailures = _formModel.MaxConsecutiveFailures
+            };
+
+            var result = await JobApi.CreateAsync(request);
+            if (result.IsSuccess)
+            {
+                Message.Success("任务创建成功");
+                JobState.ClearCache(DataSourceId);
+                Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs");
+            }
+            else
+            {
+                Message.Error(result.Error ?? "创建任务失败");
+            }
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+
+    private void HandleReset()
+    {
+        _formModel.Reset();
+        InitializeFormDefaults();
+        _scheduleMode = "interval";
+        _validationMessage = null;
+        _selectedTableStats = null;
+    }
+
+    private async Task OnWhereClauseChanged(string? whereClause)
+    {
+        _formModel.ArchiveFilterCondition = whereClause;
+        await Task.CompletedTask;
+    }
+
+    private async Task OnCronExpressionChanged(string? cronExpression)
+    {
+        _formModel.CronExpression = cronExpression;
+        await Task.CompletedTask;
+    }
+
+    private void NavigateBack()
+    {
+        Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs");
+    }
+
+    private sealed class CreateJobFormModel
+    {
+        public string? Name { get; set; }
+        public string? Description { get; set; }
+        public string? SourceSchemaName { get; set; }
+        public string? SourceTableName { get; set; }
+        public string? TargetSchemaName { get; set; }
+        public string? TargetTableName { get; set; }
+        public string? ArchiveFilterColumn { get; set; }
+        public string? ArchiveFilterCondition { get; set; }
+        public int BatchSize { get; set; } = 5000;
+        public int MaxRowsPerExecution { get; set; } = 50000;
+        public int? IntervalMinutes { get; set; }
+        public string? CronExpression { get; set; }
+        public bool IsEnabled { get; set; } = true;
+        public int MaxConsecutiveFailures { get; set; } = 5;
+
+        public void Reset()
+        {
+            Name = null;
+            Description = null;
+            SourceSchemaName = "dbo";
+            SourceTableName = null;
+            TargetSchemaName = "dbo";
+            TargetTableName = null;
+            ArchiveFilterColumn = null;
+            ArchiveFilterCondition = null;
+            BatchSize = 5000;
+            MaxRowsPerExecution = 50000;
+            IntervalMinutes = 60;
+            CronExpression = null;
+            IsEnabled = true;
+            MaxConsecutiveFailures = 5;
+        }
+    }
+}

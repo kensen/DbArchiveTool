@@ -1,0 +1,383 @@
+﻿@using AntDesign
+@using Cronos
+@inject MessageService Message
+
+<div class="cron-builder">
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+        @* 频率类型选择 *@
+        <Card Title="选择调度频率" Size="@CardSize.Small">
+            <ChildContent>
+                <RadioGroup @bind-Value="_frequencyType" ButtonStyle="@RadioButtonStyle.Solid">
+                    <Radio RadioButton Value="@("minute")">每分钟</Radio>
+                    <Radio RadioButton Value="@("hourly")">每小时</Radio>
+                    <Radio RadioButton Value="@("daily")">每天</Radio>
+                    <Radio RadioButton Value="@("weekly")">每周</Radio>
+                    <Radio RadioButton Value="@("monthly")">每月</Radio>
+                </RadioGroup>
+            </ChildContent>
+        </Card>
+
+        @* 详细配置区域 *@
+        <Card Title="详细配置" Size="@CardSize.Small">
+            <ChildContent>
+                @if (_frequencyType == "minute")
+                {
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span>每</span>
+                        <AntDesign.InputNumber @bind-Value="_minuteInterval"
+                                               Min="1"
+                                               Max="59"
+                                               @bind-Value:after="OnConfigChanged"
+                                               Style="width: 100px;" />
+                        <span>分钟执行一次</span>
+                    </div>
+                }
+                else if (_frequencyType == "hourly")
+                {
+                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span>每</span>
+                            <AntDesign.InputNumber @bind-Value="_hourInterval"
+                                                   Min="1"
+                                                   Max="23"
+                                                   @bind-Value:after="OnConfigChanged"
+                                                   Style="width: 100px;" />
+                            <span>小时执行一次</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span>在第</span>
+                            <AntDesign.InputNumber @bind-Value="_atMinute"
+                                                   Min="0"
+                                                   Max="59"
+                                                   @bind-Value:after="OnConfigChanged"
+                                                   Style="width: 100px;" />
+                            <span>分钟</span>
+                        </div>
+                    </div>
+                }
+                else if (_frequencyType == "daily")
+                {
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <span>每天</span>
+                        <TimePicker @bind-Value="_dailyTime"
+                                    Format="HH:mm"
+                                    @bind-Value:after="OnConfigChanged"
+                                    Style="width: 120px;" />
+                        <span>执行</span>
+                    </div>
+                }
+                else if (_frequencyType == "weekly")
+                {
+                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <div>
+                            <Text Strong>选择星期几:</Text>
+                            <CheckboxGroup @bind-Value="_selectedWeekdays" Options="_weekdayOptions" @bind-Value:after="OnConfigChanged" />
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span>在</span>
+                            <TimePicker @bind-Value="_weeklyTime"
+                                        Format="HH:mm"
+                                        @bind-Value:after="OnConfigChanged"
+                                        Style="width: 120px;" />
+                            <span>执行</span>
+                        </div>
+                    </div>
+                }
+                else if (_frequencyType == "monthly")
+                {
+                    <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <div>
+                            <Text Strong>选择日期(可多选):</Text>
+                            <CheckboxGroup @bind-Value="_selectedMonthdays" Options="_monthdayOptions" @bind-Value:after="OnConfigChanged" />
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span>在</span>
+                            <TimePicker @bind-Value="_monthlyTime"
+                                        Format="HH:mm"
+                                        @bind-Value:after="OnConfigChanged"
+                                        Style="width: 120px;" />
+                            <span>执行</span>
+                        </div>
+                    </div>
+                }
+            </ChildContent>
+        </Card>
+
+        @* Cron 表达式预览 *@
+        <Card Title="Cron 表达式" Size="@CardSize.Small">
+            <Extra>
+                @if (_isValid)
+                {
+                    <Tag Color="@("green")">有效</Tag>
+                }
+                else
+                {
+                    <Tag Color="@("red")">无效</Tag>
+                }
+            </Extra>
+            <ChildContent>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <div class="cron-expression">
+                        <code>@(_cronExpression ?? "未配置")</code>
+                        @if (!string.IsNullOrWhiteSpace(_cronExpression))
+                        {
+                            <Button Size="@ButtonSize.Small"
+                                    Icon="copy"
+                                    OnClick="CopyCronExpression"
+                                    Style="margin-left: 8px;">
+                                复制
+                            </Button>
+                        }
+                    </div>
+
+                    @* 中文语义描述 *@
+                    @if (!string.IsNullOrWhiteSpace(_description))
+                    {
+                        <Alert Type="@AlertType.Info"
+                               Message="@_description"
+                               ShowIcon="true" />
+                    }
+
+                    @* 下次执行时间预览 *@
+                    @if (_nextExecution.HasValue)
+                    {
+                        <Descriptions Bordered Size="@DescriptionsSize.Small" Column="1">
+                            <DescriptionsItem Title="下次执行时间">
+                                @_nextExecution.Value.ToString("yyyy-MM-dd HH:mm:ss")
+                            </DescriptionsItem>
+                            <DescriptionsItem Title="距离现在">
+                                @GetTimeUntilNext()
+                            </DescriptionsItem>
+                        </Descriptions>
+                    }
+
+                    @* 验证错误消息 *@
+                    @if (!string.IsNullOrWhiteSpace(_validationError))
+                    {
+                        <Alert Type="@AlertType.Error"
+                               Message="@_validationError"
+                               ShowIcon="true" />
+                    }
+                </div>
+            </ChildContent>
+        </Card>
+    </div>
+</div>
+
+@code {
+    /// <summary>
+    /// 生成的 Cron 表达式
+    /// </summary>
+    [Parameter]
+    public string? CronExpression { get; set; }
+
+    /// <summary>
+    /// Cron 表达式变化事件
+    /// </summary>
+    [Parameter]
+    public EventCallback<string?> CronExpressionChanged { get; set; }
+
+    /// <summary>
+    /// 频率类型: minute/hourly/daily/weekly/monthly
+    /// </summary>
+    private string _frequencyType = "daily";
+
+    // 分钟级配置
+    private int _minuteInterval = 5;
+
+    // 小时级配置
+    private int _hourInterval = 1;
+    private int _atMinute = 0;
+
+    // 每日配置
+    private DateTime? _dailyTime = DateTime.Today.AddHours(2).AddMinutes(30); // 默认 02:30
+
+    // 每周配置
+    private string[] _selectedWeekdays = new[] { "1" }; // 默认周一
+    private DateTime? _weeklyTime = DateTime.Today.AddHours(2).AddMinutes(30);
+    private CheckboxOption<string>[] _weekdayOptions = new[]
+    {
+        new CheckboxOption<string> { Label = "周一", Value = "1" },
+        new CheckboxOption<string> { Label = "周二", Value = "2" },
+        new CheckboxOption<string> { Label = "周三", Value = "3" },
+        new CheckboxOption<string> { Label = "周四", Value = "4" },
+        new CheckboxOption<string> { Label = "周五", Value = "5" },
+        new CheckboxOption<string> { Label = "周六", Value = "6" },
+        new CheckboxOption<string> { Label = "周日", Value = "0" }
+    };
+
+    // 每月配置
+    private string[] _selectedMonthdays = new[] { "1" }; // 默认每月1号
+    private DateTime? _monthlyTime = DateTime.Today.AddHours(2).AddMinutes(30);
+    private CheckboxOption<string>[] _monthdayOptions = Enumerable.Range(1, 31)
+        .Select(d => new CheckboxOption<string> { Label = $"{d}日", Value = d.ToString() })
+        .ToArray();
+
+    // 生成的表达式和状态
+    private string? _cronExpression;
+    private string? _description;
+    private bool _isValid;
+    private string? _validationError;
+    private DateTime? _nextExecution;
+
+    protected override void OnInitialized()
+    {
+        // 初始化时生成表达式
+        GenerateCronExpression();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // 如果外部传入了表达式,尝试解析
+        if (!string.IsNullOrWhiteSpace(CronExpression) && CronExpression != _cronExpression)
+        {
+            _cronExpression = CronExpression;
+            ValidateAndPreview();
+        }
+    }
+
+    /// <summary>
+    /// 配置变化时触发
+    /// </summary>
+    private async Task OnConfigChanged()
+    {
+        GenerateCronExpression();
+        await CronExpressionChanged.InvokeAsync(_cronExpression);
+    }
+
+    /// <summary>
+    /// 生成 Cron 表达式
+    /// </summary>
+    private void GenerateCronExpression()
+    {
+        try
+        {
+            _cronExpression = _frequencyType switch
+            {
+                "minute" => $"*/{_minuteInterval} * * * *",
+                "hourly" => $"{_atMinute} */{_hourInterval} * * *",
+                "daily" => _dailyTime.HasValue 
+                    ? $"{_dailyTime.Value.Minute} {_dailyTime.Value.Hour} * * *"
+                    : null,
+                "weekly" => _weeklyTime.HasValue && _selectedWeekdays.Any()
+                    ? $"{_weeklyTime.Value.Minute} {_weeklyTime.Value.Hour} * * {string.Join(",", _selectedWeekdays.OrderBy(w => w))}"
+                    : null,
+                "monthly" => _monthlyTime.HasValue && _selectedMonthdays.Any()
+                    ? $"{_monthlyTime.Value.Minute} {_monthlyTime.Value.Hour} {string.Join(",", _selectedMonthdays.Select(int.Parse).OrderBy(d => d))} * *"
+                    : null,
+                _ => null
+            };
+
+            ValidateAndPreview();
+        }
+        catch (Exception ex)
+        {
+            _isValid = false;
+            _validationError = $"生成失败: {ex.Message}";
+            _description = null;
+            _nextExecution = null;
+        }
+    }
+
+    /// <summary>
+    /// 验证并预览表达式
+    /// </summary>
+    private void ValidateAndPreview()
+    {
+        if (string.IsNullOrWhiteSpace(_cronExpression))
+        {
+            _isValid = false;
+            _validationError = "Cron 表达式为空";
+            _description = null;
+            _nextExecution = null;
+            return;
+        }
+
+        try
+        {
+            var expression = Cronos.CronExpression.Parse(_cronExpression, CronFormat.Standard);
+            _isValid = true;
+            _validationError = null;
+
+            // 生成中文描述
+            _description = GenerateDescription();
+
+            // 计算下次执行时间
+            _nextExecution = expression.GetNextOccurrence(DateTime.Now, TimeZoneInfo.Local);
+        }
+        catch (Exception ex)
+        {
+            _isValid = false;
+            _validationError = $"无效的 Cron 表达式: {ex.Message}";
+            _description = null;
+            _nextExecution = null;
+        }
+    }
+
+    /// <summary>
+    /// 生成中文语义描述
+    /// </summary>
+    private string GenerateDescription()
+    {
+        return _frequencyType switch
+        {
+            "minute" => $"每 {_minuteInterval} 分钟执行一次",
+            "hourly" => $"每 {_hourInterval} 小时的第 {_atMinute} 分钟执行",
+            "daily" => _dailyTime.HasValue 
+                ? $"每天 {_dailyTime.Value:HH:mm} 执行"
+                : "未配置",
+            "weekly" => _weeklyTime.HasValue && _selectedWeekdays.Any()
+                ? $"每周 {string.Join("、", _selectedWeekdays.Select(GetWeekdayName))} {_weeklyTime.Value:HH:mm} 执行"
+                : "未配置",
+            "monthly" => _monthlyTime.HasValue && _selectedMonthdays.Any()
+                ? $"每月 {string.Join("、", _selectedMonthdays.Select(d => $"{d}日"))} {_monthlyTime.Value:HH:mm} 执行"
+                : "未配置",
+            _ => "未知频率"
+        };
+    }
+
+    /// <summary>
+    /// 获取星期几的名称
+    /// </summary>
+    private string GetWeekdayName(string dayValue)
+    {
+        return dayValue switch
+        {
+            "0" => "周日",
+            "1" => "周一",
+            "2" => "周二",
+            "3" => "周三",
+            "4" => "周四",
+            "5" => "周五",
+            "6" => "周六",
+            _ => dayValue
+        };
+    }
+
+    /// <summary>
+    /// 获取距离下次执行的时间描述
+    /// </summary>
+    private string GetTimeUntilNext()
+    {
+        if (!_nextExecution.HasValue)
+            return "N/A";
+
+        var span = _nextExecution.Value - DateTime.Now;
+        if (span.TotalDays >= 1)
+            return $"{(int)span.TotalDays} 天 {span.Hours} 小时";
+        if (span.TotalHours >= 1)
+            return $"{(int)span.TotalHours} 小时 {span.Minutes} 分钟";
+        if (span.TotalMinutes >= 1)
+            return $"{(int)span.TotalMinutes} 分钟";
+        return "少于 1 分钟";
+    }
+
+    /// <summary>
+    /// 复制 Cron 表达式
+    /// </summary>
+    private void CopyCronExpression()
+    {
+        // TODO: 调用 JS Interop 复制到剪贴板
+        Message.Success("Cron 表达式已复制到剪贴板");
+    }
+}

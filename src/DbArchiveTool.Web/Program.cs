@@ -34,6 +34,9 @@ builder.Services.AddScoped<DbArchiveTool.Web.Core.PartitionPageState>();
 builder.Services.AddScoped<DbArchiveTool.Web.Services.AdminUserApiClient>();
 builder.Services.AddScoped<DbArchiveTool.Web.Services.ArchiveDataSourceApiClient>();
 
+// 注册定时归档任务状态管理服务
+builder.Services.AddScoped<DbArchiveTool.Web.Services.ScheduledArchiveJobState>();
+
 // 配置 Hangfire 存储(只读模式,用于监控)
 var hangfireConnectionString = builder.Configuration.GetConnectionString("HangfireDatabase");
 if (string.IsNullOrWhiteSpace(hangfireConnectionString))
@@ -85,6 +88,7 @@ builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionConfiguration
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.BackgroundTaskApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.PartitionArchiveApiClient>(configureClient);
 builder.Services.AddHttpClient<DbArchiveTool.Web.Services.ArchiveConfigurationApiClient>(configureClient);
+builder.Services.AddHttpClient<DbArchiveTool.Web.Services.ScheduledArchiveJobApiClient>(configureClient);
 
 var app = builder.Build();
 

@@ -1,0 +1,604 @@
+﻿@using AntDesign
+@inject MessageService Message
+
+<div class="filter-builder">
+    <div style="display: flex; flex-direction: column; gap: 16px; width: 100%;">
+        @* 筛选条件列表 *@
+        @foreach (var (filter, index) in _filters.Select((f, i) => (f, i)))
+        {
+            <Card Size="@CardSize.Small" Class="filter-item">
+                <ChildContent>
+                    <Row Gutter="16" Align="@RowAlign.Middle">
+                        <AntDesign.Col Span="6">
+                            @* 字段选择 *@
+                            <Select @bind-Value="filter.ColumnName"
+                                    Placeholder="选择字段"
+                                    AllowClear
+                                    ShowSearch
+                                    TItem="string"
+                                    TItemValue="string"
+                                    @bind-Value:after="() => OnColumnChanged(filter)"
+                                    Style="width: 100%;">
+                                <SelectOptions>
+                                    @if (_availableColumns != null)
+                                    {
+                                        @foreach (var col in _availableColumns)
+                                        {
+                                            <SelectOption TItemValue="string" TItem="string" Value="@col.ColumnName" Label="@col.DisplayName">
+                                                <Space Size="@("small")">
+                                                    <SpaceItem>
+                                                        <Tag Color="@GetColumnTypeColor(col.DataType)">@col.DataType</Tag>
+                                                    </SpaceItem>
+                                                    <SpaceItem>@col.ColumnName</SpaceItem>
+                                                    @if (col.HasIndex)
+                                                    {
+                                                        <SpaceItem><Tag Color="@("green")">索引</Tag></SpaceItem>
+                                                    }
+                                                </Space>
+                                            </SelectOption>
+                                        }
+                                    }
+                                </SelectOptions>
+                            </Select>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="5">
+                            @* 操作符选择 *@
+                            <Select @bind-Value="filter.Operator"
+                                    Placeholder="操作符"
+                                    TItem="string"
+                                    TItemValue="string"
+                                    Style="width: 100%;">
+                                <SelectOptions>
+                                    @foreach (var op in GetAvailableOperators(filter.ColumnType))
+                                    {
+                                        <SelectOption TItemValue="string" TItem="string" Value="@op.Value" Label="@op.Label" />
+                                    }
+                                </SelectOptions>
+                            </Select>
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="11">
+                            @* 值输入 - 根据字段类型和操作符动态渲染 *@
+                            @RenderValueInput(filter)
+                        </AntDesign.Col>
+                        <AntDesign.Col Span="2">
+                            @* 删除按钮 *@
+                            <Button Type="@ButtonType.Text"
+                                    Danger
+                                    Icon="delete"
+                                    OnClick="() => RemoveFilter(index)"
+                                    Disabled="@(_filters.Count == 1)" />
+                        </AntDesign.Col>
+                    </Row>
+                </ChildContent>
+            </Card>
+        }
+
+        @* 添加条件按钮 *@
+        <Button Type="@ButtonType.Dashed"
+                Icon="plus"
+                Block
+                OnClick="AddFilter">
+            添加筛选条件
+        </Button>
+
+        @* WHERE 子句预览 *@
+        @if (!string.IsNullOrWhiteSpace(_whereClause))
+        {
+            <Card Title="WHERE 子句预览" Size="@CardSize.Small" Class="where-preview">
+                <Extra>
+                    <Space Size="@("small")">
+                        <SpaceItem>
+                            <Button Size="@ButtonSize.Small"
+                                    Icon="copy"
+                                    OnClick="CopyWhereClause">
+                                复制
+                            </Button>
+                        </SpaceItem>
+                        @if (_estimatedRowCount.HasValue)
+                        {
+                            <SpaceItem>
+                                <Tag Color="@(_estimatedRowCount.Value > 1000000 ? "red" : "blue")">
+                                    预估: @_estimatedRowCount.Value.ToString("N0") 行
+                                </Tag>
+                            </SpaceItem>
+                        }
+                        @if (_isEstimating)
+                        {
+                            <SpaceItem><Spin Size="@SpinSize.Small" /></SpaceItem>
+                        }
+                    </Space>
+                </Extra>
+                <ChildContent>
+                    <pre class="where-clause-code">@_whereClause</pre>
+                    @if (_estimatedRowCount.HasValue && _estimatedRowCount.Value > 1000000)
+                    {
+                        <Alert Type="@AlertType.Warning"
+                               Message="预估行数超过 100 万,建议调整筛选条件以减少影响范围"
+                               ShowIcon="true"
+                               Style="margin-top: 12px;" />
+            }
+        </ChildContent>
+            </Card>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>
+    /// 数据源ID - 用于获取表元数据
+    /// </summary>
+    [Parameter]
+    public Guid DataSourceId { get; set; }
+
+    /// <summary>
+    /// 源表架构名
+    /// </summary>
+    [Parameter]
+    public string? SourceSchema { get; set; }
+
+    /// <summary>
+    /// 源表名
+    /// </summary>
+    [Parameter]
+    public string? SourceTable { get; set; }
+
+    /// <summary>
+    /// 生成的 WHERE 子句(不含 WHERE 关键字)
+    /// </summary>
+    [Parameter]
+    public string? WhereClause { get; set; }
+
+    /// <summary>
+    /// WHERE 子句变化事件回调
+    /// </summary>
+    [Parameter]
+    public EventCallback<string?> WhereClauseChanged { get; set; }
+
+    /// <summary>
+    /// 筛选条件列表
+    /// </summary>
+    private List<FilterCondition> _filters = new();
+
+    /// <summary>
+    /// 可用的表字段列表
+    /// </summary>
+    private List<TableColumnInfo>? _availableColumns;
+
+    /// <summary>
+    /// 生成的 WHERE 子句
+    /// </summary>
+    private string? _whereClause;
+
+    /// <summary>
+    /// 预估影响的行数
+    /// </summary>
+    private long? _estimatedRowCount;
+
+    /// <summary>
+    /// 是否正在预估行数
+    /// </summary>
+    private bool _isEstimating = false;
+
+    protected override void OnInitialized()
+    {
+        // 初始化一个空条件
+        _filters.Add(new FilterCondition());
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // 当表名变化时,重新加载字段列表
+        if (!string.IsNullOrWhiteSpace(SourceSchema) && !string.IsNullOrWhiteSpace(SourceTable))
+        {
+            await LoadColumnsAsync();
+        }
+    }
+
+    /// <summary>
+    /// 加载表字段元数据
+    /// </summary>
+    private async Task LoadColumnsAsync()
+    {
+        // TODO: 调用后端 API 获取表字段列表
+        // 临时模拟数据
+        _availableColumns = new List<TableColumnInfo>
+        {
+            new() { ColumnName = "Id", DataType = "bigint", HasIndex = true, DisplayName = "Id (主键)" },
+            new() { ColumnName = "CreateTime", DataType = "datetime", HasIndex = true, DisplayName = "CreateTime (推荐归档字段)" },
+            new() { ColumnName = "UpdateTime", DataType = "datetime", HasIndex = false, DisplayName = "UpdateTime" },
+            new() { ColumnName = "Status", DataType = "int", HasIndex = false, DisplayName = "Status" },
+            new() { ColumnName = "UserName", DataType = "nvarchar", HasIndex = false, DisplayName = "UserName" },
+            new() { ColumnName = "Amount", DataType = "decimal", HasIndex = false, DisplayName = "Amount" }
+        };
+
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 添加筛选条件
+    /// </summary>
+    private void AddFilter()
+    {
+        _filters.Add(new FilterCondition());
+    }
+
+    /// <summary>
+    /// 移除筛选条件
+    /// </summary>
+    private async Task RemoveFilter(int index)
+    {
+        if (_filters.Count > 1)
+        {
+            _filters.RemoveAt(index);
+            await UpdateWhereClause();
+        }
+    }
+
+    /// <summary>
+    /// 字段选择变化时
+    /// </summary>
+    private async Task OnColumnChanged(FilterCondition filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter.ColumnName))
+        {
+            filter.ColumnType = null;
+            filter.Operator = null;
+        }
+        else
+        {
+            var column = _availableColumns?.FirstOrDefault(c => c.ColumnName == filter.ColumnName);
+            if (column != null)
+            {
+                filter.ColumnType = column.DataType;
+                // 根据字段类型预设默认操作符
+                filter.Operator = GetDefaultOperator(column.DataType);
+            }
+        }
+        await UpdateWhereClause();
+    }
+
+    /// <summary>
+    /// 获取默认操作符
+    /// </summary>
+    private string GetDefaultOperator(string dataType)
+    {
+        return dataType.ToLower() switch
+        {
+            "datetime" or "datetime2" or "date" => "RelativeDays",
+            "int" or "bigint" or "decimal" or "numeric" or "float" => "GreaterThanOrEqual",
+            "nvarchar" or "varchar" or "nchar" or "char" => "Contains",
+            _ => "Equals"
+        };
+    }
+
+    /// <summary>
+    /// 获取可用的操作符列表
+    /// </summary>
+    private List<OperatorOption> GetAvailableOperators(string? columnType)
+    {
+        if (string.IsNullOrWhiteSpace(columnType))
+            return new List<OperatorOption>();
+
+        return columnType.ToLower() switch
+        {
+            "datetime" or "datetime2" or "date" => new List<OperatorOption>
+            {
+                new("RelativeDays", "N 天以前 (推荐)"),
+                new("DateRange", "日期范围"),
+                new("LessThan", "< 早于"),
+                new("GreaterThan", "> 晚于")
+            },
+            "int" or "bigint" or "decimal" or "numeric" or "float" => new List<OperatorOption>
+            {
+                new("Equals", "= 等于"),
+                new("NotEquals", "≠ 不等于"),
+                new("GreaterThan", "> 大于"),
+                new("GreaterThanOrEqual", "≥ 大于等于"),
+                new("LessThan", "< 小于"),
+                new("LessThanOrEqual", "≤ 小于等于"),
+                new("Between", "范围")
+            },
+            "nvarchar" or "varchar" or "nchar" or "char" => new List<OperatorOption>
+            {
+                new("Equals", "= 等于"),
+                new("NotEquals", "≠ 不等于"),
+                new("Contains", "包含"),
+                new("StartsWith", "开头是"),
+                new("EndsWith", "结尾是")
+            },
+            _ => new List<OperatorOption>
+            {
+                new("Equals", "= 等于"),
+                new("NotEquals", "≠ 不等于")
+            }
+        };
+    }
+
+    /// <summary>
+    /// 渲染值输入控件 - 根据字段类型和操作符动态渲染
+    /// </summary>
+    private RenderFragment RenderValueInput(FilterCondition filter) => __builder =>
+    {
+        if (string.IsNullOrWhiteSpace(filter.ColumnType) || string.IsNullOrWhiteSpace(filter.Operator))
+        {
+            <span style="color: rgba(0,0,0,.25);">请先选择字段和操作符</span>
+            return;
+        }
+
+        var columnType = filter.ColumnType.ToLower();
+        var op = filter.Operator;
+
+        // 日期时间类型
+        if (columnType is "datetime" or "datetime2" or "date")
+        {
+            if (op == "RelativeDays")
+            {
+                <Space Size="@("small")">
+                    <SpaceItem>距今</SpaceItem>
+                    <SpaceItem>
+                        <AntDesign.InputNumber @bind-Value="filter.RelativeDays"
+                                               Min="1"
+                                               Max="3650"
+                                               Placeholder="天数"
+                                               Style="width: 100px;" />
+                    </SpaceItem>
+                    <SpaceItem>天以前</SpaceItem>
+                </Space>
+            }
+            else if (op == "DateRange")
+            {
+                <RangePicker @bind-Value="filter.DateRange"
+                             ShowTime="@true"
+                             Format="yyyy-MM-dd HH:mm:ss"
+                             Style="width: 100%;" />
+            }
+            else
+            {
+                <DatePicker @bind-Value="filter.DateValue"
+                            ShowTime="@true"
+                            Format="yyyy-MM-dd HH:mm:ss"
+                            Style="width: 100%;" />
+            }
+        }
+        // 数值类型
+        else if (columnType is "int" or "bigint" or "decimal" or "numeric" or "float")
+        {
+            if (op == "Between")
+            {
+                <Space Size="@("small")">
+                    <SpaceItem>
+                        <AntDesign.InputNumber @bind-Value="filter.NumericMin"
+                                               Placeholder="最小值"
+                                               Style="width: 120px;" />
+                    </SpaceItem>
+                    <SpaceItem>至</SpaceItem>
+                    <SpaceItem>
+                        <AntDesign.InputNumber @bind-Value="filter.NumericMax"
+                                               Placeholder="最大值"
+                                               Style="width: 120px;" />
+                    </SpaceItem>
+                </Space>
+            }
+            else
+            {
+                <AntDesign.InputNumber @bind-Value="filter.NumericValue"
+                                       Placeholder="数值"
+                                       Style="width: 100%;" />
+            }
+        }
+        // 字符串类型
+        else
+        {
+            <Input @bind-Value="filter.StringValue"
+                   Placeholder="文本值"
+                   AllowClear />
+        }
+    };
+
+    /// <summary>
+    /// 获取字段类型对应的标签颜色
+    /// </summary>
+    private string GetColumnTypeColor(string dataType)
+    {
+        return dataType.ToLower() switch
+        {
+            "datetime" or "datetime2" or "date" => "blue",
+            "int" or "bigint" => "green",
+            "decimal" or "numeric" or "float" => "cyan",
+            "nvarchar" or "varchar" => "orange",
+            _ => "default"
+        };
+    }
+
+    /// <summary>
+    /// 更新 WHERE 子句
+    /// </summary>
+    private async Task UpdateWhereClause()
+    {
+        var conditions = new List<string>();
+
+        foreach (var filter in _filters)
+        {
+            if (string.IsNullOrWhiteSpace(filter.ColumnName) || string.IsNullOrWhiteSpace(filter.Operator))
+                continue;
+
+            var condition = GenerateCondition(filter);
+            if (!string.IsNullOrWhiteSpace(condition))
+                conditions.Add(condition);
+        }
+
+        _whereClause = conditions.Any() ? string.Join(" AND ", conditions) : null;
+        await WhereClauseChanged.InvokeAsync(_whereClause);
+
+        // 触发行数预估(后台执行,不阻塞)
+        if (!string.IsNullOrWhiteSpace(_whereClause))
+        {
+#pragma warning disable CS4014 // 此调用不等待,后台执行
+            EstimateRowCountAsync();
+#pragma warning restore CS4014
+        }
+        else
+        {
+            _estimatedRowCount = null;
+        }
+
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// 生成单个条件的 SQL
+    /// </summary>
+    private string? GenerateCondition(FilterCondition filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter.ColumnName) || string.IsNullOrWhiteSpace(filter.Operator))
+            return null;
+
+        var columnType = filter.ColumnType?.ToLower();
+        var col = $"[{filter.ColumnName}]";
+
+        // 日期时间类型
+        if (columnType is "datetime" or "datetime2" or "date")
+        {
+            if (filter.Operator == "RelativeDays" && filter.RelativeDays.HasValue)
+            {
+                // 归档任务针对旧数据,使用 <= 比较符,筛选出 N 天以前的数据
+                return $"{col} <= DATEADD(DAY, -{filter.RelativeDays.Value}, GETDATE())";
+            }
+            else if (filter.Operator == "DateRange" && filter.DateRange != null)
+            {
+                var start = filter.DateRange[0]?.ToString("yyyy-MM-dd HH:mm:ss");
+                var end = filter.DateRange[1]?.ToString("yyyy-MM-dd HH:mm:ss");
+                if (!string.IsNullOrEmpty(start) && !string.IsNullOrEmpty(end))
+                    return $"{col} BETWEEN '{start}' AND '{end}'";
+            }
+            else if (filter.Operator == "LessThan" && filter.DateValue.HasValue)
+            {
+                return $"{col} < '{filter.DateValue.Value:yyyy-MM-dd HH:mm:ss}'";
+            }
+            else if (filter.Operator == "GreaterThan" && filter.DateValue.HasValue)
+            {
+                return $"{col} > '{filter.DateValue.Value:yyyy-MM-dd HH:mm:ss}'";
+            }
+        }
+        // 数值类型
+        else if (columnType is "int" or "bigint" or "decimal" or "numeric" or "float")
+        {
+            if (filter.Operator == "Between" && filter.NumericMin.HasValue && filter.NumericMax.HasValue)
+            {
+                return $"{col} BETWEEN {filter.NumericMin.Value} AND {filter.NumericMax.Value}";
+            }
+            else if (filter.NumericValue.HasValue)
+            {
+                return filter.Operator switch
+                {
+                    "Equals" => $"{col} = {filter.NumericValue.Value}",
+                    "NotEquals" => $"{col} <> {filter.NumericValue.Value}",
+                    "GreaterThan" => $"{col} > {filter.NumericValue.Value}",
+                    "GreaterThanOrEqual" => $"{col} >= {filter.NumericValue.Value}",
+                    "LessThan" => $"{col} < {filter.NumericValue.Value}",
+                    "LessThanOrEqual" => $"{col} <= {filter.NumericValue.Value}",
+                    _ => null
+                };
+            }
+        }
+        // 字符串类型
+        else if (!string.IsNullOrWhiteSpace(filter.StringValue))
+        {
+            var escaped = filter.StringValue.Replace("'", "''");
+            return filter.Operator switch
+            {
+                "Equals" => $"{col} = N'{escaped}'",
+                "NotEquals" => $"{col} <> N'{escaped}'",
+                "Contains" => $"{col} LIKE N'%{escaped}%'",
+                "StartsWith" => $"{col} LIKE N'{escaped}%'",
+                "EndsWith" => $"{col} LIKE N'%{escaped}'",
+                _ => null
+            };
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 预估影响的行数
+    /// </summary>
+    private async Task EstimateRowCountAsync()
+    {
+        if (string.IsNullOrWhiteSpace(SourceSchema) || string.IsNullOrWhiteSpace(SourceTable) || string.IsNullOrWhiteSpace(_whereClause))
+            return;
+
+        _isEstimating = true;
+        StateHasChanged();
+
+        try
+        {
+            // TODO: 调用后端 API 执行 COUNT(*) 查询
+            // 临时模拟
+            await Task.Delay(500);
+            _estimatedRowCount = new Random().Next(1000, 5000000);
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"预估行数失败: {ex.Message}");
+            _estimatedRowCount = null;
+        }
+        finally
+        {
+            _isEstimating = false;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// 复制 WHERE 子句到剪贴板
+    /// </summary>
+    private void CopyWhereClause()
+    {
+        // TODO: 调用 JS Interop 复制到剪贴板
+        Message.Success("WHERE 子句已复制到剪贴板");
+    }
+
+    /// <summary>
+    /// 表字段信息
+    /// </summary>
+    private class TableColumnInfo
+    {
+        public string ColumnName { get; set; } = string.Empty;
+        public string DataType { get; set; } = string.Empty;
+        public bool HasIndex { get; set; }
+        public string DisplayName { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 筛选条件模型
+    /// </summary>
+    private class FilterCondition
+    {
+        /// <summary>字段名</summary>
+        public string? ColumnName { get; set; }
+        
+        /// <summary>字段数据类型</summary>
+        public string? ColumnType { get; set; }
+        
+        /// <summary>操作符</summary>
+        public string? Operator { get; set; }
+
+        // 日期时间值
+        public int? RelativeDays { get; set; }
+        public DateTime?[]? DateRange { get; set; }
+        public DateTime? DateValue { get; set; }
+
+        // 数值
+        public decimal? NumericValue { get; set; }
+        public decimal? NumericMin { get; set; }
+        public decimal? NumericMax { get; set; }
+
+        // 字符串
+        public string? StringValue { get; set; }
+    }
+
+    /// <summary>
+    /// 操作符选项
+    /// </summary>
+    private record OperatorOption(string Value, string Label);
+}

@@ -1,0 +1,377 @@
+﻿@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs"
+@using AntDesign
+@using DbArchiveTool.Web.Services
+@using DbArchiveTool.Web.Models
+@implements IDisposable
+@attribute [ReuseTabsPage(Title = "定时归档任务", Closable = true)]
+
+<PageHeader Title="定时归档任务" OnBack="NavigateBack">
+    <PageHeaderExtra>
+        <Space>
+            <SpaceItem><Button Type="ButtonType.Primary" Icon="plus" OnClick="ShowCreateModal">新建任务</Button></SpaceItem>
+            <SpaceItem><Button Type="ButtonType.Default" Icon="reload" Loading="_loading" OnClick="RefreshAsync">刷新</Button></SpaceItem>
+        </Space>
+    </PageHeaderExtra>
+    <PageHeaderContent>
+        <div class="scheduled-jobs-header">
+            <div class="header-info">
+                <Text Strong>数据源：</Text>
+                <Text>@_dataSourceName</Text>
+            </div>
+            <div class="header-stats">
+                <Statistic Title="任务总数" Value="@_statistics?.TotalJobCount" Suffix="个" />
+                <Statistic Title="启用任务" Value="@_statistics?.EnabledJobCount" Suffix="个" />
+                <Statistic Title="今日执行" Value="@_statistics?.TodayExecutionCount" Suffix="次" />
+                <Statistic Title="今日成功率" Value="@(_statistics?.TodaySuccessRate.ToString("F1"))" Suffix="%" />
+            </div>
+        </div>
+    </PageHeaderContent>
+</PageHeader>
+
+<Card>
+    <div class="scheduled-jobs-filters">
+        <Space>
+            <SpaceItem>
+                <RadioGroup @bind-Value="_filterEnabled" ButtonStyle="RadioButtonStyle.Solid">
+                    <Radio Value="@((bool?)null)">全部</Radio>
+                    <Radio Value="@((bool?)true)">已启用</Radio>
+                    <Radio Value="@((bool?)false)">已禁用</Radio>
+                </RadioGroup>
+            </SpaceItem>
+            <SpaceItem>
+                <Search Placeholder="搜索任务名称或表名" @bind-Value="_searchKeyword" OnSearch="OnFilterChanged" EnterButton="true" Style="width: 300px;" />
+            </SpaceItem>
+        </Space>
+    </div>
+
+    <Table TItem="ScheduledArchiveJobDto"
+           DataSource="_filteredJobs"
+           Loading="_loading"
+           Size="TableSize.Small"
+           Bordered
+           @bind-PageIndex="_pageIndex"
+           @bind-PageSize="_pageSize"
+           Total="_filteredJobs.Count">
+        <PropertyColumn Property="c => c.Name" Title="任务名称" Width="200">
+            <a href="javascript:void(0)" @onclick="() => NavigateToDetails(context.Id)">@context.Name</a>
+        </PropertyColumn>
+        <PropertyColumn Property="c => c.FullSourceTable" Title="源表" Width="180" />
+        <PropertyColumn Property="c => c.FullTargetTable" Title="目标表" Width="180" />
+        <PropertyColumn Property="c => c.CronDescription" Title="执行频率" Width="150">
+            @if (!string.IsNullOrEmpty(context.CronDescription))
+            {
+                <span>@context.CronDescription</span>
+            }
+            else if (context.IntervalMinutes.HasValue)
+            {
+                <span>每 @context.IntervalMinutes 分钟</span>
+            }
+            else
+            {
+                <span style="color: rgba(0,0,0,.45);">未配置</span>
+            }
+        </PropertyColumn>
+        <PropertyColumn Property="c => c.NextExecutionDisplay" Title="下次执行" Width="140">
+            @if (context.IsEnabled && !string.IsNullOrEmpty(context.NextExecutionDisplay))
+            {
+                <span>@context.NextExecutionDisplay</span>
+            }
+            else if (!context.IsEnabled)
+            {
+                <span style="color: rgba(0,0,0,.45);">已禁用</span>
+            }
+            else
+            {
+                <span style="color: #faad14;">未调度</span>
+            }
+        </PropertyColumn>
+        <PropertyColumn Property="c => c.LastExecutionStatusDisplay" Title="最近状态" Width="100">
+            @switch (context.LastExecutionStatus)
+            {
+                case JobExecutionStatus.Success:
+                    <Tag Color="@("green")">@context.LastExecutionStatusDisplay</Tag>
+                    break;
+                case JobExecutionStatus.Running:
+                    <Tag Color="@("blue")">@context.LastExecutionStatusDisplay</Tag>
+                    break;
+                case JobExecutionStatus.Failed:
+                    <Tag Color="@("red")">@context.LastExecutionStatusDisplay</Tag>
+                    break;
+                case JobExecutionStatus.Skipped:
+                    <Tag Color="@("default")">@context.LastExecutionStatusDisplay</Tag>
+                    break;
+                default:
+                    <span style="color: rgba(0,0,0,.45);">@context.LastExecutionStatusDisplay</span>
+                    break;
+            }
+        </PropertyColumn>
+        <PropertyColumn Property="c => c.LastArchivedRowCount" Title="最近归档行数" Width="120" Align="ColumnAlign.Right">
+            @if (context.LastArchivedRowCount.HasValue)
+            {
+                <span>@context.LastArchivedRowCount.Value.ToString("N0")</span>
+            }
+            else
+            {
+                <span style="color: rgba(0,0,0,.45);">-</span>
+            }
+        </PropertyColumn>
+        <PropertyColumn Property="c => c.IsEnabled" Title="状态" Width="80">
+            @if (context.IsEnabled)
+            {
+                <Badge Status="@BadgeStatus.Success" Text="启用" />
+            }
+            else
+            {
+                <Badge Status="@BadgeStatus.Default" Text="禁用" />
+            }
+        </PropertyColumn>
+        <ActionColumn Title="操作" Width="220">
+            <Space Size="@("small")">
+                @if (context.IsEnabled)
+                {
+                    <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => DisableJobAsync(context.Id)">禁用</Button></SpaceItem>
+                }
+                else
+                {
+                    <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => EnableJobAsync(context.Id)">启用</Button></SpaceItem>
+                }
+                <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => ExecuteJobAsync(context.Id)">立即执行</Button></SpaceItem>
+                <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => ShowEditModal(context)">编辑</Button></SpaceItem>
+                <SpaceItem>
+                    <Popconfirm Title="确定删除此任务吗？" OnConfirm="() => DeleteJobAsync(context.Id)" OkText="删除" CancelText="取消">
+                        <Button Type="ButtonType.Link" Size="@ButtonSize.Small" Danger>删除</Button>
+                    </Popconfirm>
+                </SpaceItem>
+            </Space>
+        </ActionColumn>
+    </Table>
+</Card>
+
+@code {
+    [Parameter] public Guid DataSourceId { get; set; }
+
+    [Inject] private ScheduledArchiveJobApiClient JobApi { get; set; } = default!;
+    [Inject] private ScheduledArchiveJobState JobState { get; set; } = default!;
+    [Inject] private ArchiveDataSourceApiClient DataSourceApi { get; set; } = default!;
+    [Inject] private MessageService Message { get; set; } = default!;
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private List<ScheduledArchiveJobDto> _jobs = new();
+    private List<ScheduledArchiveJobDto> _filteredJobs = new();
+    private ScheduledArchiveJobStatisticsDto? _statistics;
+    private string _dataSourceName = "加载中...";
+
+    private bool _loading;
+    private string? _searchKeyword;
+    private int _pageIndex = 1;
+    private int _pageSize = 20;
+    private bool _disposed;
+
+    private bool? _filterEnabled
+    {
+        get => _filterEnabledValue;
+        set
+        {
+            if (_filterEnabledValue != value)
+            {
+                _filterEnabledValue = value;
+                ApplyFilters();
+                StateHasChanged();
+            }
+        }
+    }
+    private bool? _filterEnabledValue;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataSourceInfoAsync();
+        await LoadJobsAsync();
+        await LoadStatisticsAsync();
+
+        // 订阅状态变更事件
+        JobState.OnStateChanged += OnStateChanged;
+    }
+
+    private async Task LoadDataSourceInfoAsync()
+    {
+        var result = await DataSourceApi.GetAsync();
+        if (result.IsSuccess && result.Value != null)
+        {
+            var dataSource = result.Value.FirstOrDefault(ds => ds.Id == DataSourceId);
+            _dataSourceName = dataSource?.Name ?? "未知数据源";
+        }
+        else
+        {
+            _dataSourceName = "未知数据源";
+        }
+    }
+
+    private async Task LoadJobsAsync()
+    {
+        _loading = true;
+        try
+        {
+            var result = await JobState.GetJobsAsync(DataSourceId, forceRefresh: true);
+            if (result.IsSuccess && result.Value != null)
+            {
+                _jobs = result.Value;
+                ApplyFilters();
+            }
+            else
+            {
+                Message.Error(result.Error ?? "加载任务列表失败");
+            }
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadStatisticsAsync()
+    {
+        var result = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: true);
+        if (result.IsSuccess && result.Value != null)
+        {
+            _statistics = result.Value;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        await LoadJobsAsync();
+        await LoadStatisticsAsync();
+    }
+
+    private void OnFilterChanged()
+    {
+        ApplyFilters();
+        StateHasChanged();
+    }
+
+    private void ApplyFilters()
+    {
+        _filteredJobs = _jobs.Where(job =>
+        {
+            // 启用状态过滤
+            if (_filterEnabled.HasValue && job.IsEnabled != _filterEnabled.Value)
+            {
+                return false;
+            }
+
+            // 关键字搜索
+            if (!string.IsNullOrWhiteSpace(_searchKeyword))
+            {
+                var keyword = _searchKeyword.Trim().ToLowerInvariant();
+                return job.Name.ToLowerInvariant().Contains(keyword) ||
+                       job.FullSourceTable.ToLowerInvariant().Contains(keyword) ||
+                       job.FullTargetTable.ToLowerInvariant().Contains(keyword);
+            }
+
+            return true;
+        }).ToList();
+    }
+
+    private async Task EnableJobAsync(Guid jobId)
+    {
+        var result = await JobApi.EnableAsync(jobId);
+        if (result.IsSuccess)
+        {
+            Message.Success("任务已启用");
+            JobState.UpdateJobEnabledState(DataSourceId, jobId, true);
+            await RefreshAsync(); // 刷新以获取下次执行时间
+        }
+        else
+        {
+            Message.Error(result.Error ?? "启用任务失败");
+        }
+    }
+
+    private async Task DisableJobAsync(Guid jobId)
+    {
+        var result = await JobApi.DisableAsync(jobId);
+        if (result.IsSuccess)
+        {
+            Message.Success("任务已禁用");
+            JobState.UpdateJobEnabledState(DataSourceId, jobId, false);
+            await RefreshAsync();
+        }
+        else
+        {
+            Message.Error(result.Error ?? "禁用任务失败");
+        }
+    }
+
+    private async Task ExecuteJobAsync(Guid jobId)
+    {
+        var result = await JobApi.ExecuteAsync(jobId);
+        if (result.IsSuccess)
+        {
+            Message.Success("任务已触发执行，请稍后查看执行结果");
+            await Task.Delay(2000); // 等待2秒后刷新
+            await RefreshAsync();
+        }
+        else
+        {
+            Message.Error(result.Error ?? "触发执行失败");
+        }
+    }
+
+    private async Task DeleteJobAsync(Guid jobId)
+    {
+        var result = await JobApi.DeleteAsync(jobId);
+        if (result.IsSuccess)
+        {
+            Message.Success("任务已删除");
+            JobState.RemoveJobFromCache(DataSourceId, jobId);
+            await RefreshAsync();
+        }
+        else
+        {
+            Message.Error(result.Error ?? "删除任务失败");
+        }
+    }
+
+    private void ShowCreateModal()
+    {
+        // TODO: 导航到创建页面（Stage 4 实现）
+        Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs/create");
+    }
+
+    private void ShowEditModal(ScheduledArchiveJobDto job)
+    {
+        // TODO: 导航到编辑页面（Stage 4 实现）
+        Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs/{job.Id}/edit");
+    }
+
+    private void NavigateToDetails(Guid jobId)
+    {
+        // TODO: 导航到详情页面（Stage 5 实现）
+        Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs/{jobId}");
+    }
+
+    private void NavigateBack()
+    {
+        Navigation.NavigateTo("/");
+    }
+
+    private void OnStateChanged()
+    {
+        if (_disposed) return;
+        
+        InvokeAsync(async () =>
+        {
+            if (_disposed) return;
+            await LoadJobsAsync();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        JobState.OnStateChanged -= OnStateChanged;
+    }
+}

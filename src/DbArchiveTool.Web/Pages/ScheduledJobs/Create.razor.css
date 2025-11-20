@@ -1,0 +1,36 @@
+﻿/* 定时归档任务创建/编辑页面样式 */
+.scheduled-job-form-container {
+    padding: 16px;
+}
+
+.form-section {
+    margin-bottom: 16px;
+}
+
+.readonly-field {
+    padding: 4px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.preview-panel {
+    position: sticky;
+    top: 16px;
+}
+
+.preview-card {
+    margin-bottom: 16px;
+}
+
+.filter-preview {
+    background-color: #f5f5f5;
+    padding: 8px;
+    border-radius: 4px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    max-height: 150px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+}

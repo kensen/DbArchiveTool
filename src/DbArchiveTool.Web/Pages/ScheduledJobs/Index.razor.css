@@ -1,0 +1,21 @@
+﻿/* 定时归档任务列表页面样式 */
+.scheduled-jobs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.scheduled-jobs-header .header-info {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.scheduled-jobs-header .header-stats {
+    display: flex;
+    gap: 32px;
+}
+
+.scheduled-jobs-filters {
+    margin-bottom: 16px;
+}

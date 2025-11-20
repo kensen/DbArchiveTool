@@ -16,15 +16,18 @@ public class PartitionInfoController : ControllerBase
     private readonly IDataSourceRepository dataSourceRepository;
     private readonly SqlPartitionQueryService queryService;
     private readonly IDbConnectionFactory connectionFactory;
+    private readonly ILogger<PartitionInfoController> logger;
 
     public PartitionInfoController(
         IDataSourceRepository dataSourceRepository,
         SqlPartitionQueryService queryService,
-        IDbConnectionFactory connectionFactory)
+        IDbConnectionFactory connectionFactory,
+        ILogger<PartitionInfoController> logger)
     {
         this.dataSourceRepository = dataSourceRepository;
         this.queryService = queryService;
         this.connectionFactory = connectionFactory;
+        this.logger = logger;
     }
 
     /// <summary>获取数据源下的全部用户表。</summary>
@@ -46,6 +49,32 @@ public class PartitionInfoController : ControllerBase
         catch (Exception ex)
         {
             return StatusCode(500, new { message = $"查询表列表失败: {ex.Message}" });
+        }
+    }
+
+    /// <summary>获取数据源下的全部非分区表及其统计信息(用于归档表选择)。</summary>
+    [HttpGet("~/api/v1/data-sources/{dataSourceId:guid}/tables/with-statistics")]
+    [ProducesResponseType(typeof(List<TableWithStatisticsDto>), 200)]
+    [ProducesResponseType(404)]
+    public async Task<ActionResult<List<TableWithStatisticsDto>>> GetTablesWithStatistics(Guid dataSourceId, CancellationToken cancellationToken)
+    {
+        var dataSource = await dataSourceRepository.GetAsync(dataSourceId, cancellationToken);
+        if (dataSource is null)
+        {
+            return NotFound(new { message = "数据源不存在" });
+        }
+
+        try
+        {
+            var connectionString = connectionFactory.BuildConnectionString(dataSource);
+            var tables = await queryService.GetTablesWithStatisticsAsync(connectionString);
+            return Ok(tables);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "查询表统计信息失败: DataSourceId={DataSourceId}, Error={ErrorMessage}, StackTrace={StackTrace}", 
+                dataSourceId, ex.Message, ex.StackTrace);
+            return StatusCode(500, new { message = $"查询表统计信息失败: {ex.Message}", detail = ex.ToString() });
         }
     }
 
