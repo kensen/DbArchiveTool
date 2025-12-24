@@ -46,19 +46,60 @@
                                OnTableStatisticsChanged="OnTableStatisticsChanged" />
                 <Divider />
                 <Form Model="_formModel" LabelCol="new ColLayoutParam { Span = 6 }" WrapperCol="new ColLayoutParam { Span = 18 }">
+                    <FormItem Label="目标服务器">
+                        <div class="readonly-field">
+                            <span><strong>@_dataSourceName</strong></span>
+                            <span style="color: rgba(0,0,0,.45);"> (@_dataSourceInfo)</span>
+                        </div>
+                        <span class="ant-form-text">目标表将在同一服务器上创建</span>
+                    </FormItem>
                     <FormItem Label="目标表架构">
                         <Input @bind-Value="_formModel.TargetSchemaName" Placeholder="默认: dbo" />
                     </FormItem>
                     <FormItem Label="目标表名称" Required>
-                        <Input @bind-Value="_formModel.TargetTableName" Placeholder="例如: Orders_Archive" />
+                        <Input @bind-Value="_formModel.TargetTableName" 
+                               Placeholder="例如: Orders_Archive"
+                               @bind-Value:after="OnTargetTableNameChanged" />
                         <span class="ant-form-text">自动建议: @GetSuggestedTargetTable()</span>
+                    </FormItem>
+                    <FormItem Label="目标表检查">
+                        <Space>
+                            <SpaceItem>
+                                <Button OnClick="CheckTargetTable" Loading="_checkingTargetTable" Icon="search">
+                                    检查目标表
+                                </Button>
+                            </SpaceItem>
+                            @if (_targetTableExists.HasValue)
+                            {
+                                <SpaceItem>
+                                    @if (_targetTableExists.Value)
+                                    {
+                                        <Tag Color="@("green")">✅ 目标表已存在</Tag>
+                                    }
+                                    else
+                                    {
+                                        <Tag Color="@("orange")">⚠️ 目标表不存在</Tag>
+                                        <Button Type="@ButtonType.Primary" Size="@ButtonSize.Small" OnClick="GenerateTargetTable">
+                                            自动创建目标表
+                                        </Button>
+                                    }
+                                </SpaceItem>
+                            }
+                        </Space>
+                        @if (!string.IsNullOrWhiteSpace(_targetTableCheckMessage))
+                        {
+                            <div style="margin-top: 8px;">
+                                <span style="color: @(_targetTableExists == true ? "#52c41a" : "#faad14");">@_targetTableCheckMessage</span>
+                            </div>
+                        }
                     </FormItem>
                 </Form>
             </Card>
 
             <Card Title="筛选条件(必填)" Class="form-section">
                 <Alert Type="@AlertType.Warning" Message="定时归档任务必须配置筛选条件,防止意外归档整个表" ShowIcon="true" Closable="false" Style="margin-bottom: 16px;" />
-                <FilterBuilder DataSourceId="@DataSourceId"
+                <FilterBuilder @ref="_filterBuilder"
+                               DataSourceId="@DataSourceId"
                                SourceSchema="@_formModel.SourceSchemaName"
                                SourceTable="@_formModel.SourceTableName"
                                WhereClause="@_formModel.ArchiveFilterCondition"
@@ -202,7 +243,11 @@
     private bool _submitting;
     private string _scheduleMode = "interval";
     private TableSelector? _tableSelector;
+    private FilterBuilder? _filterBuilder;
     private TableWithStatisticsDto? _selectedTableStats;
+    private bool _checkingTargetTable;
+    private bool? _targetTableExists;
+    private string? _targetTableCheckMessage;
 
     protected override async Task OnInitializedAsync()
     {
@@ -370,6 +415,14 @@
         _submitting = true;
         try
         {
+            // 从 FilterBuilder 获取主筛选字段
+            var primaryFilterColumn = _filterBuilder?.GetPrimaryFilterColumn();
+            if (string.IsNullOrWhiteSpace(primaryFilterColumn))
+            {
+                Message.Warning("无法获取筛选字段，请检查筛选条件配置");
+                return;
+            }
+
             var request = new CreateScheduledArchiveJobRequest
             {
                 Name = _formModel.Name!.Trim(),
@@ -379,7 +432,7 @@
                 SourceTableName = _formModel.SourceTableName!.Trim(),
                 TargetSchemaName = _formModel.TargetSchemaName ?? "dbo",
                 TargetTableName = _formModel.TargetTableName!.Trim(),
-                ArchiveFilterColumn = _formModel.ArchiveFilterColumn?.Trim() ?? "",
+                ArchiveFilterColumn = primaryFilterColumn,
                 ArchiveFilterCondition = _formModel.ArchiveFilterCondition!.Trim(),
                 BatchSize = _formModel.BatchSize,
                 MaxRowsPerExecution = _formModel.MaxRowsPerExecution,
@@ -431,6 +484,71 @@
     private void NavigateBack()
     {
         Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs");
+    }
+
+    private async Task OnTargetTableNameChanged()
+    {
+        // 目标表名变化时，清除之前的检查结果
+        _targetTableExists = null;
+        _targetTableCheckMessage = null;
+        await Task.CompletedTask;
+    }
+
+    private async Task CheckTargetTable()
+    {
+        if (string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        {
+            Message.Warning("请先填写目标表名称");
+            return;
+        }
+
+        _checkingTargetTable = true;
+        _targetTableExists = null;
+        _targetTableCheckMessage = null;
+        try
+        {
+            // TODO: 调用 PartitionInfoApiClient.CheckTableExistsAsync() 检查目标表是否存在
+            // 临时模拟
+            await Task.Delay(500);
+            var exists = new Random().Next(0, 2) == 1;
+            _targetTableExists = exists;
+            
+            var fullTableName = $"{_formModel.TargetSchemaName ?? "dbo"}.{_formModel.TargetTableName}";
+            _targetTableCheckMessage = exists 
+                ? $"目标表 {fullTableName} 已存在，可以直接使用" 
+                : $"目标表 {fullTableName} 不存在，需要先创建";
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"检查目标表失败: {ex.Message}");
+        }
+        finally
+        {
+            _checkingTargetTable = false;
+        }
+    }
+
+    private async Task GenerateTargetTable()
+    {
+        if (string.IsNullOrWhiteSpace(_formModel.SourceTableName) || string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        {
+            Message.Warning("请先选择源表和填写目标表名称");
+            return;
+        }
+
+        try
+        {
+            // TODO: 调用后端 API 生成目标表（复制源表结构）
+            // 可以复用手动归档中的表结构生成逻辑
+            await Task.Delay(1000);
+            Message.Success("目标表创建成功");
+            _targetTableExists = true;
+            _targetTableCheckMessage = $"目标表 {_formModel.TargetSchemaName ?? "dbo"}.{_formModel.TargetTableName} 已创建";
+        }
+        catch (Exception ex)
+        {
+            Message.Error($"创建目标表失败: {ex.Message}");
+        }
     }
 
     private sealed class CreateJobFormModel

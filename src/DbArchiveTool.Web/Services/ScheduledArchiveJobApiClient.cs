@@ -144,9 +144,16 @@ public class ScheduledArchiveJobApiClient
                 return Result<Guid>.Failure($"创建任务失败: {error}");
             }
 
-            var jobId = await response.Content.ReadFromJsonAsync<Guid>();
-            _logger.LogInformation("成功创建定时归档任务: {JobId}, 任务名称: {Name}", jobId, request.Name);
-            return Result<Guid>.Success(jobId);
+            // 后端返回的是 ScheduledArchiveJobDto 对象，需要提取 Id
+            var dto = await response.Content.ReadFromJsonAsync<ScheduledArchiveJobDto>();
+            if (dto == null)
+            {
+                _logger.LogError("创建定时归档任务成功但无法解析返回结果");
+                return Result<Guid>.Failure("创建任务成功但无法获取任务ID");
+            }
+
+            _logger.LogInformation("成功创建定时归档任务: {JobId}, 任务名称: {Name}", dto.Id, request.Name);
+            return Result<Guid>.Success(dto.Id);
         }
         catch (Exception ex)
         {

@@ -188,7 +188,7 @@
         await LoadJobsAsync();
         await LoadStatisticsAsync();
 
-        // 订阅状态变更事件
+        // 订阅状态变更事件（仅在其他地方主动触发缓存更新时刷新UI）
         JobState.OnStateChanged += OnStateChanged;
     }
 
@@ -211,7 +211,8 @@
         _loading = true;
         try
         {
-            var result = await JobState.GetJobsAsync(DataSourceId, forceRefresh: true);
+            // 使用缓存优先策略，避免频繁刷新
+            var result = await JobState.GetJobsAsync(DataSourceId, forceRefresh: false);
             if (result.IsSuccess && result.Value != null)
             {
                 _jobs = result.Value;
@@ -231,7 +232,8 @@
 
     private async Task LoadStatisticsAsync()
     {
-        var result = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: true);
+        // 使用缓存优先策略
+        var result = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: false);
         if (result.IsSuccess && result.Value != null)
         {
             _statistics = result.Value;
@@ -241,8 +243,28 @@
 
     private async Task RefreshAsync()
     {
-        await LoadJobsAsync();
-        await LoadStatisticsAsync();
+        // 手动刷新时强制从API加载
+        _loading = true;
+        try
+        {
+            var jobsResult = await JobState.GetJobsAsync(DataSourceId, forceRefresh: true);
+            if (jobsResult.IsSuccess && jobsResult.Value != null)
+            {
+                _jobs = jobsResult.Value;
+                ApplyFilters();
+            }
+
+            var statsResult = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: true);
+            if (statsResult.IsSuccess && statsResult.Value != null)
+            {
+                _statistics = statsResult.Value;
+            }
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
     }
 
     private void OnFilterChanged()
@@ -361,10 +383,19 @@
     {
         if (_disposed) return;
         
-        InvokeAsync(async () =>
+        // 仅刷新UI，不重新加载数据（数据已由 JobState 更新缓存）
+        InvokeAsync(() =>
         {
             if (_disposed) return;
-            await LoadJobsAsync();
+            
+            // 从缓存中获取最新数据
+            var cachedJobs = JobState.GetJobsAsync(DataSourceId, forceRefresh: false).Result;
+            if (cachedJobs.IsSuccess && cachedJobs.Value != null)
+            {
+                _jobs = cachedJobs.Value;
+                ApplyFilters();
+            }
+            
             StateHasChanged();
         });
     }

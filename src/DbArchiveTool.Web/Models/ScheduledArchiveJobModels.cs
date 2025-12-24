@@ -100,8 +100,9 @@ public record ScheduledArchiveJobDto
 }
 
 /// <summary>
-/// 任务执行状态枚举
+/// 任务执行状态枚举（与后端 Domain.Entities.JobExecutionStatus 保持一致）
 /// </summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(JobExecutionStatusConverter))]
 public enum JobExecutionStatus
 {
     /// <summary>未开始</summary>
@@ -117,10 +118,7 @@ public enum JobExecutionStatus
     Failed = 3,
 
     /// <summary>跳过（本周期无数据）</summary>
-    Skipped = 4,
-
-    /// <summary>已禁用</summary>
-    Disabled = 5
+    Skipped = 4
 }
 
 /// <summary>

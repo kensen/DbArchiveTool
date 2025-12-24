@@ -26,10 +26,10 @@
                                         {
                                             <SelectOption TItemValue="string" TItem="string" Value="@col.ColumnName" Label="@col.DisplayName">
                                                 <Space Size="@("small")">
+                                                    <SpaceItem>@col.ColumnName</SpaceItem>
                                                     <SpaceItem>
                                                         <Tag Color="@GetColumnTypeColor(col.DataType)">@col.DataType</Tag>
                                                     </SpaceItem>
-                                                    <SpaceItem>@col.ColumnName</SpaceItem>
                                                     @if (col.HasIndex)
                                                     {
                                                         <SpaceItem><Tag Color="@("green")">索引</Tag></SpaceItem>
@@ -47,6 +47,7 @@
                                     Placeholder="操作符"
                                     TItem="string"
                                     TItemValue="string"
+                                    @bind-Value:after="UpdateWhereClause"
                                     Style="width: 100%;">
                                 <SelectOptions>
                                     @foreach (var op in GetAvailableOperators(filter.ColumnType))
@@ -340,6 +341,7 @@
                                                Min="1"
                                                Max="3650"
                                                Placeholder="天数"
+                                               @bind-Value:after="UpdateWhereClause"
                                                Style="width: 100px;" />
                     </SpaceItem>
                     <SpaceItem>天以前</SpaceItem>
@@ -350,6 +352,7 @@
                 <RangePicker @bind-Value="filter.DateRange"
                              ShowTime="@true"
                              Format="yyyy-MM-dd HH:mm:ss"
+                             @bind-Value:after="UpdateWhereClause"
                              Style="width: 100%;" />
             }
             else
@@ -357,6 +360,7 @@
                 <DatePicker @bind-Value="filter.DateValue"
                             ShowTime="@true"
                             Format="yyyy-MM-dd HH:mm:ss"
+                            @bind-Value:after="UpdateWhereClause"
                             Style="width: 100%;" />
             }
         }
@@ -369,12 +373,14 @@
                     <SpaceItem>
                         <AntDesign.InputNumber @bind-Value="filter.NumericMin"
                                                Placeholder="最小值"
+                                               @bind-Value:after="UpdateWhereClause"
                                                Style="width: 120px;" />
                     </SpaceItem>
                     <SpaceItem>至</SpaceItem>
                     <SpaceItem>
                         <AntDesign.InputNumber @bind-Value="filter.NumericMax"
                                                Placeholder="最大值"
+                                               @bind-Value:after="UpdateWhereClause"
                                                Style="width: 120px;" />
                     </SpaceItem>
                 </Space>
@@ -383,6 +389,7 @@
             {
                 <AntDesign.InputNumber @bind-Value="filter.NumericValue"
                                        Placeholder="数值"
+                                       @bind-Value:after="UpdateWhereClause"
                                        Style="width: 100%;" />
             }
         }
@@ -391,7 +398,9 @@
         {
             <Input @bind-Value="filter.StringValue"
                    Placeholder="文本值"
-                   AllowClear />
+                   AllowClear
+                   @bind-Value:after="UpdateWhereClause"
+                   OnPressEnter="UpdateWhereClause" />
         }
     };
 
@@ -601,4 +610,24 @@
     /// 操作符选项
     /// </summary>
     private record OperatorOption(string Value, string Label);
+
+    /// <summary>
+    /// 获取所有筛选条件的字段名列表（用于外部组件获取）
+    /// </summary>
+    public List<string> GetFilterColumns()
+    {
+        return _filters
+            .Where(f => !string.IsNullOrWhiteSpace(f.ColumnName))
+            .Select(f => f.ColumnName!)
+            .Distinct()
+            .ToList();
+    }
+
+    /// <summary>
+    /// 获取第一个筛选条件的字段名（通常用于归档任务的主筛选字段）
+    /// </summary>
+    public string? GetPrimaryFilterColumn()
+    {
+        return _filters.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f.ColumnName))?.ColumnName;
+    }
 }
