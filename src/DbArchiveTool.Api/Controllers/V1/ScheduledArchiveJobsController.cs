@@ -1,5 +1,8 @@
 using DbArchiveTool.Api.DTOs.Archives;
+using DbArchiveTool.Application.Abstractions;
+using DbArchiveTool.Application.Archives;
 using DbArchiveTool.Application.Services.ScheduledArchiveJobs;
+using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Entities;
 using DbArchiveTool.Domain.ScheduledArchiveJobs;
 using Microsoft.AspNetCore.Mvc;
@@ -16,15 +19,24 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
 {
     private readonly IScheduledArchiveJobRepository _repository;
     private readonly IScheduledArchiveJobScheduler _scheduler;
+    private readonly ITableManagementService _tableManagementService;
+    private readonly IDataSourceRepository _dataSourceRepository;
+    private readonly IPasswordEncryptionService _passwordEncryptionService;
     private readonly ILogger<ScheduledArchiveJobsController> _logger;
 
     public ScheduledArchiveJobsController(
         IScheduledArchiveJobRepository repository,
         IScheduledArchiveJobScheduler scheduler,
+        ITableManagementService tableManagementService,
+        IDataSourceRepository dataSourceRepository,
+        IPasswordEncryptionService passwordEncryptionService,
         ILogger<ScheduledArchiveJobsController> logger)
     {
         _repository = repository;
         _scheduler = scheduler;
+        _tableManagementService = tableManagementService;
+        _dataSourceRepository = dataSourceRepository;
+        _passwordEncryptionService = passwordEncryptionService;
         _logger = logger;
     }
 
@@ -555,6 +567,319 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
             return StatusCode(500, new { message = "触发任务执行失败", error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// 检查目标表是否存在
+    /// </summary>
+    /// <param name="request">检查请求</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>检查结果</returns>
+    [HttpPost("check-target-table")]
+    [ProducesResponseType(typeof(TargetTableCheckResult), 200)]
+    [ProducesResponseType(400)]
+    public async Task<IActionResult> CheckTargetTable(
+        [FromBody] CheckTargetTableRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // 获取数据源
+            var dataSource = await _dataSourceRepository.GetAsync(request.DataSourceId, cancellationToken);
+            if (dataSource == null)
+            {
+                return BadRequest(new { message = $"数据源不存在: {request.DataSourceId}" });
+            }
+
+            // 获取目标数据库连接字符串
+            var targetConnectionString = GetTargetConnectionString(dataSource);
+
+            // 检查目标表是否存在
+            var exists = await _tableManagementService.CheckTableExistsAsync(
+                targetConnectionString,
+                request.TargetSchemaName,
+                request.TargetTableName,
+                cancellationToken);
+
+            var result = new TargetTableCheckResult
+            {
+                Exists = exists,
+                TargetSchemaName = request.TargetSchemaName,
+                TargetTableName = request.TargetTableName,
+                Message = exists
+                    ? $"目标表 [{request.TargetSchemaName}].[{request.TargetTableName}] 已存在"
+                    : $"目标表 [{request.TargetSchemaName}].[{request.TargetTableName}] 不存在"
+            };
+
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "检查目标表失败");
+            return StatusCode(500, new { message = "检查目标表失败", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 创建目标表
+    /// </summary>
+    /// <param name="request">创建请求</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>创建结果</returns>
+    [HttpPost("create-target-table")]
+    [ProducesResponseType(typeof(TargetTableCreationResult), 200)]
+    [ProducesResponseType(400)]
+    public async Task<IActionResult> CreateTargetTable(
+        [FromBody] CreateTargetTableRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // 获取数据源
+            var dataSource = await _dataSourceRepository.GetAsync(request.DataSourceId, cancellationToken);
+            if (dataSource == null)
+            {
+                return BadRequest(new { message = $"数据源不存在: {request.DataSourceId}" });
+            }
+
+            // 获取源数据库和目标数据库连接字符串
+            var sourceConnectionString = GetSourceConnectionString(dataSource);
+            var targetConnectionString = GetTargetConnectionString(dataSource);
+
+            // 创建目标表
+            var creationResult = await _tableManagementService.CreateTargetTableAsync(
+                sourceConnectionString,
+                targetConnectionString,
+                request.SourceSchemaName,
+                request.SourceTableName,
+                request.TargetSchemaName,
+                request.TargetTableName,
+                cancellationToken);
+
+            if (!creationResult.Success)
+            {
+                return BadRequest(new { message = creationResult.ErrorMessage });
+            }
+
+            var result = new TargetTableCreationResult
+            {
+                Success = true,
+                Message = $"目标表 [{request.TargetSchemaName}].[{request.TargetTableName}] 创建成功",
+                TargetSchemaName = request.TargetSchemaName,
+                TargetTableName = request.TargetTableName,
+                ColumnCount = creationResult.ColumnCount,
+                Script = creationResult.Script
+            };
+
+            _logger.LogInformation(
+                "成功创建目标表: {Schema}.{Table}, 列数={ColumnCount}",
+                request.TargetSchemaName, request.TargetTableName, creationResult.ColumnCount);
+
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "创建目标表失败");
+            return StatusCode(500, new { message = "创建目标表失败", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 验证目标表结构
+    /// </summary>
+    /// <param name="request">验证请求</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>验证结果</returns>
+    [HttpPost("validate-target-table")]
+    [ProducesResponseType(typeof(TargetTableValidationResult), 200)]
+    [ProducesResponseType(400)]
+    public async Task<IActionResult> ValidateTargetTable(
+        [FromBody] ValidateTargetTableRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // 获取数据源
+            var dataSource = await _dataSourceRepository.GetAsync(request.DataSourceId, cancellationToken);
+            if (dataSource == null)
+            {
+                return BadRequest(new { message = $"数据源不存在: {request.DataSourceId}" });
+            }
+
+            // 获取源数据库和目标数据库连接字符串
+            var sourceConnectionString = GetSourceConnectionString(dataSource);
+            var targetConnectionString = GetTargetConnectionString(dataSource);
+
+            // 验证目标表结构
+            var comparisonResult = await _tableManagementService.CompareTableSchemasAsync(
+                sourceConnectionString,
+                request.SourceSchemaName,
+                request.SourceTableName,
+                targetConnectionString,
+                null, // 目标数据库名称从连接字符串中获取
+                request.TargetSchemaName,
+                request.TargetTableName,
+                cancellationToken);
+
+            var result = new TargetTableValidationResult
+            {
+                TargetTableExists = comparisonResult.TargetTableExists,
+                IsCompatible = comparisonResult.IsCompatible,
+                Message = comparisonResult.IsCompatible
+                    ? $"目标表 [{request.TargetSchemaName}].[{request.TargetTableName}] 结构与源表一致，共 {comparisonResult.SourceColumnCount} 列"
+                    : comparisonResult.DifferenceDescription ?? "目标表结构验证失败",
+                SourceColumnCount = comparisonResult.SourceColumnCount,
+                TargetColumnCount = comparisonResult.TargetColumnCount,
+                MissingColumns = comparisonResult.MissingColumns,
+                TypeMismatchColumns = comparisonResult.TypeMismatchColumns,
+                LengthInsufficientColumns = comparisonResult.LengthInsufficientColumns,
+                PrecisionInsufficientColumns = comparisonResult.PrecisionInsufficientColumns
+            };
+
+            return Ok(result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "验证目标表结构失败");
+            return StatusCode(500, new { message = "验证目标表结构失败", error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// 获取源数据库连接字符串
+    /// </summary>
+    private string GetSourceConnectionString(ArchiveDataSource dataSource)
+    {
+        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
+        {
+            DataSource = $"{dataSource.ServerAddress},{dataSource.ServerPort}",
+            InitialCatalog = dataSource.DatabaseName,
+            IntegratedSecurity = dataSource.UseIntegratedSecurity,
+            TrustServerCertificate = true
+        };
+
+        if (!dataSource.UseIntegratedSecurity)
+        {
+            builder.UserID = dataSource.UserName;
+            // 解密密码
+            builder.Password = DecryptPassword(dataSource.Password);
+        }
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// 获取目标数据库连接字符串
+    /// </summary>
+    private string GetTargetConnectionString(ArchiveDataSource dataSource)
+    {
+        if (dataSource.UseSourceAsTarget)
+        {
+            // 目标数据库与源数据库相同
+            return GetSourceConnectionString(dataSource);
+        }
+
+        // 使用独立的目标数据库配置
+        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
+        {
+            DataSource = $"{dataSource.TargetServerAddress},{dataSource.TargetServerPort}",
+            InitialCatalog = dataSource.TargetDatabaseName,
+            IntegratedSecurity = dataSource.TargetUseIntegratedSecurity,
+            TrustServerCertificate = true
+        };
+
+        if (!dataSource.TargetUseIntegratedSecurity)
+        {
+            builder.UserID = dataSource.TargetUserName;
+            // 解密密码
+            builder.Password = DecryptPassword(dataSource.TargetPassword);
+        }
+
+        return builder.ConnectionString;
+    }
+
+    /// <summary>
+    /// 解密密码
+    /// </summary>
+    private string? DecryptPassword(string? encrypted)
+    {
+        if (string.IsNullOrWhiteSpace(encrypted))
+        {
+            return encrypted;
+        }
+
+        // 检查是否已加密
+        return _passwordEncryptionService.IsEncrypted(encrypted)
+            ? _passwordEncryptionService.Decrypt(encrypted)
+            : encrypted;
+    }
+}
+
+/// <summary>
+/// 检查目标表请求
+/// </summary>
+public sealed record CheckTargetTableRequest(
+    Guid DataSourceId,
+    string TargetSchemaName,
+    string TargetTableName);
+
+/// <summary>
+/// 检查目标表结果
+/// </summary>
+public sealed record TargetTableCheckResult
+{
+    public bool Exists { get; init; }
+    public string TargetSchemaName { get; init; } = string.Empty;
+    public string TargetTableName { get; init; } = string.Empty;
+    public string Message { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// 创建目标表请求
+/// </summary>
+public sealed record CreateTargetTableRequest(
+    Guid DataSourceId,
+    string SourceSchemaName,
+    string SourceTableName,
+    string TargetSchemaName,
+    string TargetTableName);
+
+/// <summary>
+/// 创建目标表结果
+/// </summary>
+public sealed record TargetTableCreationResult
+{
+    public bool Success { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public string TargetSchemaName { get; init; } = string.Empty;
+    public string TargetTableName { get; init; } = string.Empty;
+    public int ColumnCount { get; init; }
+    public string? Script { get; init; }
+}
+
+/// <summary>
+/// 验证目标表结构请求
+/// </summary>
+public sealed record ValidateTargetTableRequest(
+    Guid DataSourceId,
+    string SourceSchemaName,
+    string SourceTableName,
+    string TargetSchemaName,
+    string TargetTableName);
+
+/// <summary>
+/// 验证目标表结构结果
+/// </summary>
+public sealed record TargetTableValidationResult
+{
+    public bool TargetTableExists { get; init; }
+    public bool IsCompatible { get; init; }
+    public string Message { get; init; } = string.Empty;
+    public int SourceColumnCount { get; init; }
+    public int? TargetColumnCount { get; init; }
+    public List<string> MissingColumns { get; init; } = new();
+    public List<string> TypeMismatchColumns { get; init; } = new();
+    public List<string> LengthInsufficientColumns { get; init; } = new();
+    public List<string> PrecisionInsufficientColumns { get; init; } = new();
 }
 
 

@@ -291,10 +291,14 @@
     {
         _formModel.SourceTableName = tableName;
         
-        // 自动建议目标表名
-        if (!string.IsNullOrWhiteSpace(_formModel.SourceTableName) && string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        // 自动更新目标表名（跟随源表变更）
+        if (!string.IsNullOrWhiteSpace(_formModel.SourceTableName))
         {
             _formModel.TargetTableName = $"{_formModel.SourceTableName}_Archive";
+            
+            // 清除之前的检查结果
+            _targetTableExists = null;
+            _targetTableCheckMessage = null;
         }
         
         await InvokeAsync(StateHasChanged);
@@ -515,9 +519,9 @@
 
     private async Task CheckTargetTable()
     {
-        if (string.IsNullOrWhiteSpace(_formModel.TargetTableName))
+        if (string.IsNullOrWhiteSpace(_formModel.SourceTableName) || string.IsNullOrWhiteSpace(_formModel.TargetTableName))
         {
-            Message.Warning("请先填写目标表名称");
+            Message.Warning("请先选择源表和填写目标表名称");
             return;
         }
 
@@ -526,20 +530,63 @@
         _targetTableCheckMessage = null;
         try
         {
-            // TODO: 调用 PartitionInfoApiClient.CheckTableExistsAsync() 检查目标表是否存在
-            // 临时模拟
-            await Task.Delay(500);
-            var exists = new Random().Next(0, 2) == 1;
-            _targetTableExists = exists;
-            
-            var fullTableName = $"{_formModel.TargetSchemaName ?? "dbo"}.{_formModel.TargetTableName}";
-            _targetTableCheckMessage = exists 
-                ? $"目标表 {fullTableName} 已存在，可以直接使用" 
-                : $"目标表 {fullTableName} 不存在，需要先创建";
+            var result = await JobApi.ValidateTargetTableAsync(
+                DataSourceId,
+                _formModel.SourceSchemaName ?? "dbo",
+                _formModel.SourceTableName,
+                _formModel.TargetSchemaName ?? "dbo",
+                _formModel.TargetTableName);
+
+            if (result.IsSuccess && result.Value != null)
+            {
+                _targetTableExists = result.Value.TargetTableExists;
+                _targetTableCheckMessage = result.Value.Message;
+                
+                if (result.Value.TargetTableExists)
+                {
+                    if (result.Value.IsCompatible)
+                    {
+                        // 目标表存在且结构一致
+                        Message.Success($"✅ 目标表结构验证通过：{result.Value.Message}");
+                    }
+                    else
+                    {
+                        // 目标表存在但结构不一致
+                        Message.Warning($"⚠️ {result.Value.Message}");
+                        
+                        // 显示详细差异信息
+                        if (result.Value.MissingColumns.Any())
+                        {
+                            Message.Warning($"缺失列: {string.Join(", ", result.Value.MissingColumns)}");
+                        }
+                        if (result.Value.TypeMismatchColumns.Any())
+                        {
+                            Message.Warning($"类型不匹配: {string.Join(", ", result.Value.TypeMismatchColumns)}");
+                        }
+                        if (result.Value.LengthInsufficientColumns.Any())
+                        {
+                            Message.Warning($"长度不足: {string.Join(", ", result.Value.LengthInsufficientColumns)}");
+                        }
+                        if (result.Value.PrecisionInsufficientColumns.Any())
+                        {
+                            Message.Warning($"精度不足: {string.Join(", ", result.Value.PrecisionInsufficientColumns)}");
+                        }
+                    }
+                }
+                else
+                {
+                    // 目标表不存在
+                    Message.Warning($"目标表不存在，请先创建目标表");
+                }
+            }
+            else
+            {
+                Message.Error(result.Error ?? "验证目标表失败");
+            }
         }
         catch (Exception ex)
         {
-            Message.Error($"检查目标表失败: {ex.Message}");
+            Message.Error($"验证目标表失败: {ex.Message}");
         }
         finally
         {
@@ -557,12 +604,26 @@
 
         try
         {
-            // TODO: 调用后端 API 生成目标表（复制源表结构）
-            // 可以复用手动归档中的表结构生成逻辑
-            await Task.Delay(1000);
-            Message.Success("目标表创建成功");
-            _targetTableExists = true;
-            _targetTableCheckMessage = $"目标表 {_formModel.TargetSchemaName ?? "dbo"}.{_formModel.TargetTableName} 已创建";
+            var result = await JobApi.CreateTargetTableAsync(
+                DataSourceId,
+                _formModel.SourceSchemaName ?? "dbo",
+                _formModel.SourceTableName,
+                _formModel.TargetSchemaName ?? "dbo",
+                _formModel.TargetTableName);
+
+            if (result.IsSuccess && result.Value != null)
+            {
+                _targetTableExists = true;
+                _targetTableCheckMessage = result.Value.Message;
+                Message.Success($"✅ 目标表创建成功，共 {result.Value.ColumnCount} 列");
+                
+                // 创建成功后自动验证表结构
+                await CheckTargetTable();
+            }
+            else
+            {
+                Message.Error(result.Error ?? "创建目标表失败");
+            }
         }
         catch (Exception ex)
         {

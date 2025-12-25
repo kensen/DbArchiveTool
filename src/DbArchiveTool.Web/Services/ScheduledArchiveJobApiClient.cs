@@ -385,4 +385,176 @@ public class ScheduledArchiveJobApiClient
             return Result<DbArchiveTool.Shared.Results.PagedResult<JobExecutionHistoryDto>>.Failure($"获取执行历史失败: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// 检查目标表是否存在
+    /// </summary>
+    /// <param name="dataSourceId">数据源ID</param>
+    /// <param name="targetSchemaName">目标架构名</param>
+    /// <param name="targetTableName">目标表名</param>
+    /// <returns>检查结果</returns>
+    public async Task<Result<TargetTableCheckResult>> CheckTargetTableAsync(
+        Guid dataSourceId,
+        string targetSchemaName,
+        string targetTableName)
+    {
+        try
+        {
+            var request = new
+            {
+                DataSourceId = dataSourceId,
+                TargetSchemaName = targetSchemaName,
+                TargetTableName = targetTableName
+            };
+
+            var response = await _httpClient.PostAsJsonAsync($"{BaseUrl}/check-target-table", request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("检查目标表失败: {StatusCode}, {Error}", response.StatusCode, error);
+                return Result<TargetTableCheckResult>.Failure($"检查目标表失败: {error}");
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<TargetTableCheckResult>();
+            return Result<TargetTableCheckResult>.Success(result!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "检查目标表时发生异常");
+            return Result<TargetTableCheckResult>.Failure($"检查目标表失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 创建目标表
+    /// </summary>
+    /// <param name="dataSourceId">数据源ID</param>
+    /// <param name="sourceSchemaName">源架构名</param>
+    /// <param name="sourceTableName">源表名</param>
+    /// <param name="targetSchemaName">目标架构名</param>
+    /// <param name="targetTableName">目标表名</param>
+    /// <returns>创建结果</returns>
+    public async Task<Result<TargetTableCreationResult>> CreateTargetTableAsync(
+        Guid dataSourceId,
+        string sourceSchemaName,
+        string sourceTableName,
+        string targetSchemaName,
+        string targetTableName)
+    {
+        try
+        {
+            var request = new
+            {
+                DataSourceId = dataSourceId,
+                SourceSchemaName = sourceSchemaName,
+                SourceTableName = sourceTableName,
+                TargetSchemaName = targetSchemaName,
+                TargetTableName = targetTableName
+            };
+
+            var response = await _httpClient.PostAsJsonAsync($"{BaseUrl}/create-target-table", request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("创建目标表失败: {StatusCode}, {Error}", response.StatusCode, error);
+                return Result<TargetTableCreationResult>.Failure($"创建目标表失败: {error}");
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<TargetTableCreationResult>();
+            return Result<TargetTableCreationResult>.Success(result!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "创建目标表时发生异常");
+            return Result<TargetTableCreationResult>.Failure($"创建目标表失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 验证目标表结构
+    /// </summary>
+    /// <param name="dataSourceId">数据源ID</param>
+    /// <param name="sourceSchemaName">源架构名</param>
+    /// <param name="sourceTableName">源表名</param>
+    /// <param name="targetSchemaName">目标架构名</param>
+    /// <param name="targetTableName">目标表名</param>
+    /// <returns>验证结果</returns>
+    public async Task<Result<TargetTableValidationResult>> ValidateTargetTableAsync(
+        Guid dataSourceId,
+        string sourceSchemaName,
+        string sourceTableName,
+        string targetSchemaName,
+        string targetTableName)
+    {
+        try
+        {
+            var request = new
+            {
+                DataSourceId = dataSourceId,
+                SourceSchemaName = sourceSchemaName,
+                SourceTableName = sourceTableName,
+                TargetSchemaName = targetSchemaName,
+                TargetTableName = targetTableName
+            };
+
+            var response = await _httpClient.PostAsJsonAsync($"{BaseUrl}/validate-target-table", request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("验证目标表结构失败: {StatusCode}, {Error}", response.StatusCode, error);
+                return Result<TargetTableValidationResult>.Failure($"验证目标表结构失败: {error}");
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<TargetTableValidationResult>();
+            return Result<TargetTableValidationResult>.Success(result!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "验证目标表结构时发生异常");
+            return Result<TargetTableValidationResult>.Failure($"验证目标表结构失败: {ex.Message}");
+        }
+    }
+}
+
+/// <summary>
+/// 目标表检查结果
+/// </summary>
+public class TargetTableCheckResult
+{
+    public bool Exists { get; set; }
+    public string TargetSchemaName { get; set; } = string.Empty;
+    public string TargetTableName { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 目标表创建结果
+/// </summary>
+public class TargetTableCreationResult
+{
+    public bool Success { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public string TargetSchemaName { get; set; } = string.Empty;
+    public string TargetTableName { get; set; } = string.Empty;
+    public int ColumnCount { get; set; }
+    public string? Script { get; set; }
+}
+
+/// <summary>
+/// 目标表验证结果
+/// </summary>
+public class TargetTableValidationResult
+{
+    public bool TargetTableExists { get; set; }
+    public bool IsCompatible { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public int SourceColumnCount { get; set; }
+    public int? TargetColumnCount { get; set; }
+    public List<string> MissingColumns { get; set; } = new();
+    public List<string> TypeMismatchColumns { get; set; } = new();
+    public List<string> LengthInsufficientColumns { get; set; } = new();
+    public List<string> PrecisionInsufficientColumns { get; set; } = new();
 }
