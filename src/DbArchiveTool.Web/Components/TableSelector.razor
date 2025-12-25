@@ -85,17 +85,35 @@
     private TableWithStatisticsDto? _selectedTable;
     private string? _selectedTableKey;
     private bool _loading;
+    private bool _initializationCompleted = false;
 
     protected override async Task OnInitializedAsync()
     {
         await LoadTablesAsync();
+        // 表列表加载完成后，设置初始选中值
+        SetInitialSelection();
+    }
 
+    protected override async Task OnParametersSetAsync()
+    {
         // 如果已有选中的表,设置初始值
         if (!string.IsNullOrEmpty(SourceSchema) && !string.IsNullOrEmpty(SourceTable))
         {
             _selectedTableKey = $"{SourceSchema}.{SourceTable}";
-            _selectedTable = _tables.FirstOrDefault(t => 
+            _selectedTable = _tables.FirstOrDefault(t =>
                 t.SchemaName == SourceSchema && t.TableName == SourceTable);
+             
+            // 只在第一次初始化时触发表名变更事件，防止无限循环
+            if (!_initializationCompleted)
+            {
+                if (SourceTableChanged.HasDelegate)
+                    await SourceTableChanged.InvokeAsync(SourceTable);
+                
+                if (OnTableStatisticsChanged.HasDelegate)
+                    await OnTableStatisticsChanged.InvokeAsync(_selectedTable);
+                
+                _initializationCompleted = true;
+            }
         }
     }
 
@@ -105,7 +123,6 @@
         try
         {
             _tables = await PartitionApi.GetTablesWithStatisticsAsync(DataSourceId);
-            StateHasChanged();
         }
         catch (Exception ex)
         {
@@ -114,6 +131,19 @@
         finally
         {
             _loading = false;
+        }
+    }
+
+    private void SetInitialSelection()
+    {
+        // 如果已有选中的表,设置初始值
+        if (!string.IsNullOrEmpty(SourceSchema) && !string.IsNullOrEmpty(SourceTable))
+        {
+            _selectedTableKey = $"{SourceSchema}.{SourceTable}";
+            _selectedTable = _tables.FirstOrDefault(t =>
+                t.SchemaName == SourceSchema && t.TableName == SourceTable);
+            
+            StateHasChanged();
         }
     }
 

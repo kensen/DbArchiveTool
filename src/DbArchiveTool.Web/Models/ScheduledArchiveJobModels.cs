@@ -44,6 +44,9 @@ public record ScheduledArchiveJobDto
     /// <summary>归档筛选条件（WHERE 子句），必填</summary>
     public string ArchiveFilterCondition { get; init; } = string.Empty;
 
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; init; }
+
     /// <summary>批次大小，推荐 1000-10000</summary>
     public int BatchSize { get; init; }
 
@@ -153,6 +156,9 @@ public record CreateScheduledArchiveJobRequest
     /// <summary>归档筛选条件（WHERE 子句），必填</summary>
     public string ArchiveFilterCondition { get; init; } = string.Empty;
 
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; init; }
+
     /// <summary>批次大小，范围 1-100000，推荐 1000-10000</summary>
     public int BatchSize { get; init; } = 5000;
 
@@ -200,6 +206,9 @@ public record UpdateScheduledArchiveJobRequest
 
     /// <summary>归档筛选条件（WHERE 子句）</summary>
     public string ArchiveFilterCondition { get; init; } = string.Empty;
+
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; init; }
 
     /// <summary>批次大小</summary>
     public int BatchSize { get; init; }
@@ -332,4 +341,37 @@ public record ColumnInfo
 
     /// <summary>是否推荐用于筛选（时间字段、主键等）</summary>
     public bool IsRecommendedForFilter { get; init; }
+}
+
+/// <summary>
+/// 筛选条件定义（用于序列化到JSON并存储到数据库，以便编辑时还原表单状态）
+/// </summary>
+public record FilterDefinition
+{
+    /// <summary>版本号，用于将来扩展兼容性</summary>
+    public string Version { get; init; } = "1.0";
+
+    /// <summary>筛选条件列表</summary>
+    public List<FilterConditionDto> Filters { get; init; } = new();
+}
+
+/// <summary>
+/// 单个筛选条件（与 FilterBuilder 组件内部 FilterCondition 对应）
+/// </summary>
+public record FilterConditionDto
+{
+    /// <summary>字段名</summary>
+    public string FieldName { get; init; } = string.Empty;
+
+    /// <summary>操作符(等号、不等号、大于、小于等)</summary>
+    public string Operator { get; init; } = string.Empty;
+
+    /// <summary>值（单值或逗号分隔的多值）</summary>
+    public string? Value { get; init; }
+
+    /// <summary>BETWEEN 的结束值</summary>
+    public string? ValueEnd { get; init; }
+
+    /// <summary>逻辑连接符：AND 或 OR</summary>
+    public string LogicalOperator { get; init; } = "AND";
 }

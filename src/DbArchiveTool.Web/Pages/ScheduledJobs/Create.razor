@@ -423,6 +423,9 @@
                 return;
             }
 
+            // 导出筛选条件定义为 JSON
+            var filterDefinition = _filterBuilder?.ExportFilterDefinition();
+
             var request = new CreateScheduledArchiveJobRequest
             {
                 Name = _formModel.Name!.Trim(),
@@ -434,6 +437,7 @@
                 TargetTableName = _formModel.TargetTableName!.Trim(),
                 ArchiveFilterColumn = primaryFilterColumn,
                 ArchiveFilterCondition = _formModel.ArchiveFilterCondition!.Trim(),
+                ArchiveFilterDefinition = filterDefinition,
                 BatchSize = _formModel.BatchSize,
                 MaxRowsPerExecution = _formModel.MaxRowsPerExecution,
                 IntervalMinutes = _scheduleMode == "interval" ? _formModel.IntervalMinutes : null,
@@ -442,20 +446,35 @@
                 MaxConsecutiveFailures = _formModel.MaxConsecutiveFailures
             };
 
+            Console.WriteLine("开始调用 CreateAsync...");
             var result = await JobApi.CreateAsync(request);
+            Console.WriteLine($"CreateAsync 完成: IsSuccess={result.IsSuccess}");
+            
             if (result.IsSuccess)
             {
+                var targetUrl = $"/archive-data-sources/{DataSourceId}/scheduled-jobs";
+                Console.WriteLine($"准备跳转到: {targetUrl}");
+                
+                // 显示成功消息
                 Message.Success("任务创建成功");
-                JobState.ClearCache(DataSourceId);
-                Navigation.NavigateTo($"/archive-data-sources/{DataSourceId}/scheduled-jobs");
+                
+                // 跳转到列表页面
+                Navigation.NavigateTo(targetUrl, forceLoad: true);
+                
+                Console.WriteLine("NavigateTo 已调用");
+                return; // 立即返回，避免后续代码执行
             }
             else
             {
+                Console.WriteLine($"创建失败: {result.Error}");
                 Message.Error(result.Error ?? "创建任务失败");
+                _submitting = false;
             }
         }
-        finally
+        catch (Exception ex)
         {
+            Console.WriteLine($"异常: {ex.Message}\n{ex.StackTrace}");
+            Message.Error($"保存失败: {ex.Message}");
             _submitting = false;
         }
     }
@@ -561,6 +580,7 @@
         public string? TargetTableName { get; set; }
         public string? ArchiveFilterColumn { get; set; }
         public string? ArchiveFilterCondition { get; set; }
+        public string? ArchiveFilterDefinition { get; set; }
         public int BatchSize { get; set; } = 5000;
         public int MaxRowsPerExecution { get; set; } = 50000;
         public int? IntervalMinutes { get; set; }

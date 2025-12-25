@@ -110,6 +110,9 @@ public sealed class ScheduledArchiveJobDetailDto
     /// <summary>归档过滤条件</summary>
     public string ArchiveFilterCondition { get; set; } = string.Empty;
 
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; set; }
+
     /// <summary>归档方法</summary>
     public ArchiveMethod ArchiveMethod { get; set; }
 
@@ -203,6 +206,9 @@ public sealed class CreateScheduledArchiveJobRequest
     /// <summary>归档过滤条件</summary>
     public string ArchiveFilterCondition { get; set; } = string.Empty;
 
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; set; }
+
     /// <summary>归档方法</summary>
     public ArchiveMethod ArchiveMethod { get; set; }
 
@@ -253,6 +259,9 @@ public sealed class UpdateScheduledArchiveJobRequest
 
     /// <summary>归档过滤条件</summary>
     public string ArchiveFilterCondition { get; set; } = string.Empty;
+
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; set; }
 
     /// <summary>归档方法</summary>
     public ArchiveMethod ArchiveMethod { get; set; }

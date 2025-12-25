@@ -250,6 +250,7 @@ public sealed class ArchiveDbContext : DbContext
             builder.Property(x => x.TargetTableName).IsRequired().HasMaxLength(128);
             builder.Property(x => x.ArchiveFilterColumn).IsRequired().HasMaxLength(128);
             builder.Property(x => x.ArchiveFilterCondition).IsRequired().HasMaxLength(500);
+            builder.Property(x => x.ArchiveFilterDefinition).HasColumnType("nvarchar(max)");
             builder.Property(x => x.ArchiveMethod).IsRequired();
             builder.Property(x => x.DeleteSourceDataAfterArchive).IsRequired().HasDefaultValue(true);
             builder.Property(x => x.BatchSize).IsRequired().HasDefaultValue(5000);

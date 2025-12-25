@@ -37,6 +37,9 @@ public sealed class ScheduledArchiveJob : AggregateRoot
     /// <summary>归档过滤条件(如 &lt; DATEADD(minute, -10, GETDATE()))</summary>
     public string ArchiveFilterCondition { get; private set; } = string.Empty;
 
+    /// <summary>归档过滤条件定义(JSON格式,用于编辑时还原表单)</summary>
+    public string? ArchiveFilterDefinition { get; private set; }
+
     /// <summary>归档方法</summary>
     public ArchiveMethod ArchiveMethod { get; private set; }
 
@@ -99,6 +102,7 @@ public sealed class ScheduledArchiveJob : AggregateRoot
         string targetTableName,
         string archiveFilterColumn,
         string archiveFilterCondition,
+        string? archiveFilterDefinition,
         ArchiveMethod archiveMethod,
         bool deleteSourceDataAfterArchive,
         int batchSize,
@@ -142,6 +146,7 @@ public sealed class ScheduledArchiveJob : AggregateRoot
         TargetTableName = targetTableName;
         ArchiveFilterColumn = archiveFilterColumn;
         ArchiveFilterCondition = archiveFilterCondition;
+        ArchiveFilterDefinition = archiveFilterDefinition;
         ArchiveMethod = archiveMethod;
         DeleteSourceDataAfterArchive = deleteSourceDataAfterArchive;
         BatchSize = batchSize;
@@ -170,6 +175,7 @@ public sealed class ScheduledArchiveJob : AggregateRoot
         string targetTableName,
         string archiveFilterColumn,
         string archiveFilterCondition,
+        string? archiveFilterDefinition,
         ArchiveMethod archiveMethod,
         bool deleteSourceDataAfterArchive,
         int batchSize,
@@ -210,6 +216,7 @@ public sealed class ScheduledArchiveJob : AggregateRoot
         TargetTableName = targetTableName;
         ArchiveFilterColumn = archiveFilterColumn;
         ArchiveFilterCondition = archiveFilterCondition;
+        ArchiveFilterDefinition = archiveFilterDefinition;
         ArchiveMethod = archiveMethod;
         DeleteSourceDataAfterArchive = deleteSourceDataAfterArchive;
         BatchSize = batchSize;

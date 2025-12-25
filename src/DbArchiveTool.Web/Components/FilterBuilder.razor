@@ -1,5 +1,6 @@
 ﻿@using AntDesign
 @inject MessageService Message
+@inject PartitionInfoApiClient PartitionApi
 
 <div class="filter-builder">
     <div style="display: flex; flex-direction: column; gap: 16px; width: 100%;">
@@ -182,16 +183,30 @@
 
     protected override void OnInitialized()
     {
-        // 初始化一个空条件
-        _filters.Add(new FilterCondition());
+        // 不在这里初始化空条件，等待 LoadFromDefinition 或用户添加
     }
 
     protected override async Task OnParametersSetAsync()
     {
+        // 处理传入的 WHERE 子句初始值
+        // 注意：不尝试解析 WHERE 子句来重建筛选条件列表，因为解析复杂
+        // 直接显示传入的 WHERE 子句在预览区域
+        if (!string.IsNullOrWhiteSpace(WhereClause) && string.IsNullOrWhiteSpace(_whereClause))
+        {
+            _whereClause = WhereClause;
+            StateHasChanged();
+        }
+        
         // 当表名变化时,重新加载字段列表
         if (!string.IsNullOrWhiteSpace(SourceSchema) && !string.IsNullOrWhiteSpace(SourceTable))
         {
             await LoadColumnsAsync();
+        }
+        
+        // 如果还没有任何条件，添加一个空条件
+        if (_filters.Count == 0)
+        {
+            _filters.Add(new FilterCondition());
         }
     }
 
@@ -200,19 +215,30 @@
     /// </summary>
     private async Task LoadColumnsAsync()
     {
-        // TODO: 调用后端 API 获取表字段列表
-        // 临时模拟数据
-        _availableColumns = new List<TableColumnInfo>
+        try
         {
-            new() { ColumnName = "Id", DataType = "bigint", HasIndex = true, DisplayName = "Id (主键)" },
-            new() { ColumnName = "CreateTime", DataType = "datetime", HasIndex = true, DisplayName = "CreateTime (推荐归档字段)" },
-            new() { ColumnName = "UpdateTime", DataType = "datetime", HasIndex = false, DisplayName = "UpdateTime" },
-            new() { ColumnName = "Status", DataType = "int", HasIndex = false, DisplayName = "Status" },
-            new() { ColumnName = "UserName", DataType = "nvarchar", HasIndex = false, DisplayName = "UserName" },
-            new() { ColumnName = "Amount", DataType = "decimal", HasIndex = false, DisplayName = "Amount" }
-        };
+            Console.WriteLine($"开始加载表列信息: {SourceSchema}.{SourceTable}");
+            
+            // 调用后端 API 获取表字段列表
+            var columns = await PartitionApi.GetTableColumnsAsync(DataSourceId, SourceSchema!, SourceTable!);
+            
+            _availableColumns = columns.Select(c => new TableColumnInfo
+            {
+                ColumnName = c.ColumnName,
+                DataType = c.DataType,
+                HasIndex = false, // API 暂不返回索引信息
+                DisplayName = c.ColumnName
+            }).ToList();
 
-        StateHasChanged();
+            Console.WriteLine($"列信息加载完成，共 {_availableColumns.Count} 列");
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"加载列信息失败: {ex.Message}");
+            Message.Error($"加载表字段失败: {ex.Message}");
+            _availableColumns = new List<TableColumnInfo>();
+        }
     }
 
     /// <summary>
@@ -240,6 +266,8 @@
     /// </summary>
     private async Task OnColumnChanged(FilterCondition filter)
     {
+        Console.WriteLine($"OnColumnSelected 被调用: ColumnName={filter.ColumnName}, 当前 Operator={filter.Operator}");
+        
         if (string.IsNullOrWhiteSpace(filter.ColumnName))
         {
             filter.ColumnType = null;
@@ -251,8 +279,16 @@
             if (column != null)
             {
                 filter.ColumnType = column.DataType;
-                // 根据字段类型预设默认操作符
-                filter.Operator = GetDefaultOperator(column.DataType);
+                // 只有当 Operator 为空时才设置默认值，避免覆盖从 JSON 加载的值
+                if (string.IsNullOrWhiteSpace(filter.Operator))
+                {
+                    filter.Operator = GetDefaultOperator(column.DataType);
+                    Console.WriteLine($"  设置默认 Operator: {filter.Operator}");
+                }
+                else
+                {
+                    Console.WriteLine($"  保留现有 Operator: {filter.Operator}");
+                }
             }
         }
         await UpdateWhereClause();
@@ -629,5 +665,237 @@
     public string? GetPrimaryFilterColumn()
     {
         return _filters.FirstOrDefault(f => !string.IsNullOrWhiteSpace(f.ColumnName))?.ColumnName;
+    }
+
+    /// <summary>
+    /// 导出筛选条件定义为 JSON 字符串(用于保存到数据库)
+    /// </summary>
+    public string? ExportFilterDefinition()
+    {
+        try
+        {
+            var definition = new DbArchiveTool.Web.Models.FilterDefinition
+            {
+                Version = "1.0",
+                Filters = _filters.Select(f => new DbArchiveTool.Web.Models.FilterConditionDto
+                {
+                    FieldName = f.ColumnName ?? string.Empty,
+                    Operator = f.Operator ?? string.Empty,
+                    Value = GetConditionValue(f),
+                    ValueEnd = GetConditionValueEnd(f),
+                    LogicalOperator = "AND" // 当前版本仅支持 AND
+                }).ToList()
+            };
+
+            return System.Text.Json.JsonSerializer.Serialize(definition);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"导出筛选条件定义失败: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 从 JSON 字符串加载筛选条件定义(用于编辑时还原表单)
+    /// </summary>
+    public async Task LoadFromDefinition(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            Console.WriteLine("筛选条件 JSON 为空，跳过加载");
+            return;
+        }
+
+        try
+        {
+            Console.WriteLine($"=== 开始加载筛选条件 ===");
+            Console.WriteLine($"JSON: {json}");
+            Console.WriteLine($"列数据状态: {(_availableColumns?.Count ?? 0)} 列");
+            
+            // 如果列数据还未加载，等待一下
+            if (_availableColumns == null || _availableColumns.Count == 0)
+            {
+                Console.WriteLine("列数据未加载，等待 500ms...");
+                await Task.Delay(500);
+                Console.WriteLine($"等待后列数据状态: {(_availableColumns?.Count ?? 0)} 列");
+            }
+            
+            var definition = System.Text.Json.JsonSerializer.Deserialize<DbArchiveTool.Web.Models.FilterDefinition>(json);
+            if (definition == null || definition.Filters.Count == 0)
+            {
+                Console.WriteLine("反序列化失败或没有条件");
+                return;
+            }
+
+            Console.WriteLine($"解析到 {definition.Filters.Count} 个筛选条件");
+            _filters.Clear();
+            
+            foreach (var dto in definition.Filters)
+            {
+                Console.WriteLine($"\n处理条件: FieldName={dto.FieldName}, Operator={dto.Operator}, Value={dto.Value}, ValueEnd={dto.ValueEnd}");
+                
+                var filter = new FilterCondition
+                {
+                    ColumnName = dto.FieldName,
+                    Operator = dto.Operator
+                };
+                Console.WriteLine($"  创建 FilterCondition，Operator 已设置为: {filter.Operator}");
+
+                // 根据字段名推断类型
+                var column = _availableColumns?.FirstOrDefault(c => c.ColumnName == dto.FieldName);
+                if (column != null)
+                {
+                    filter.ColumnType = column.DataType;
+                    Console.WriteLine($"  找到列信息: {column.ColumnName} ({column.DataType})");
+                    Console.WriteLine($"  设置 ColumnType 后，Operator 仍为: {filter.Operator}");
+                }
+                else
+                {
+                    Console.WriteLine($"  警告: 未找到列 '{dto.FieldName}', 可用列: {string.Join(", ", _availableColumns?.Select(c => c.ColumnName) ?? new List<string>())}");
+                }
+
+                // 恢复值
+                RestoreConditionValue(filter, dto.Value, dto.ValueEnd);
+                Console.WriteLine($"  恢复值后: RelativeDays={filter.RelativeDays}, DateValue={filter.DateValue}, NumericValue={filter.NumericValue}, StringValue={filter.StringValue}");
+                Console.WriteLine($"  恢复值后 Operator 仍为: {filter.Operator}");
+                
+                _filters.Add(filter);
+                Console.WriteLine($"  已添加到 _filters，当前 Operator: {filter.Operator}");
+            }
+
+            Console.WriteLine($"\n筛选条件加载完成，当前 {_filters.Count} 个条件");
+            UpdateWhereClause();
+            await InvokeAsync(StateHasChanged);
+            Console.WriteLine("=== 筛选条件加载结束 ===");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"\u274c 加载筛选条件定义失败: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    /// <summary>
+    /// 获取条件的值(用于序列化)
+    /// </summary>
+    private string? GetConditionValue(FilterCondition filter)
+    {
+        if (filter.Operator is "IS NULL" or "IS NOT NULL")
+            return null;
+
+        if (filter.ColumnType?.Contains("date", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (filter.RelativeDays.HasValue)
+                return $"RELATIVE:{filter.RelativeDays}";
+            if (filter.DateValue.HasValue)
+                return filter.DateValue.Value.ToString("yyyy-MM-dd HH:mm:ss");
+            if (filter.DateRange?.Length == 2 && filter.DateRange[0].HasValue)
+                return filter.DateRange[0].Value.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+        else if (filter.ColumnType?.Contains("int", StringComparison.OrdinalIgnoreCase) == true || 
+                 filter.ColumnType?.Contains("decimal", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("numeric", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("float", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (filter.NumericValue.HasValue)
+                return filter.NumericValue.Value.ToString();
+            if (filter.NumericMin.HasValue)
+                return filter.NumericMin.Value.ToString();
+        }
+        else
+        {
+            return filter.StringValue;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 获取条件的结束值(用于 BETWEEN/DateRange 序列化)
+    /// </summary>
+    private string? GetConditionValueEnd(FilterCondition filter)
+    {
+        if (filter.Operator?.Equals("Between", StringComparison.OrdinalIgnoreCase) != true && 
+            filter.Operator?.Equals("DateRange", StringComparison.OrdinalIgnoreCase) != true)
+            return null;
+
+        if (filter.ColumnType?.Contains("date", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (filter.DateRange?.Length == 2 && filter.DateRange[1].HasValue)
+                return filter.DateRange[1].Value.ToString("yyyy-MM-dd HH:mm:ss");
+        }
+        else if (filter.ColumnType?.Contains("int", StringComparison.OrdinalIgnoreCase) == true || 
+                 filter.ColumnType?.Contains("decimal", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("numeric", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("float", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            if (filter.NumericMax.HasValue)
+                return filter.NumericMax.Value.ToString();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 恢复条件的值(从序列化的字符串)
+    /// </summary>
+    private void RestoreConditionValue(FilterCondition filter, string? value, string? valueEnd)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        if (filter.ColumnType?.Contains("date", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            // 相对日期
+            if (value.StartsWith("RELATIVE:") && int.TryParse(value.Substring(9), out var days))
+            {
+                filter.RelativeDays = days;
+            }
+            // 日期范围 (DateRange 操作符)
+            else if (filter.Operator?.Equals("DateRange", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                if (DateTime.TryParse(value, out var start))
+                {
+                    DateTime? end = null;
+                    if (!string.IsNullOrWhiteSpace(valueEnd) && DateTime.TryParse(valueEnd, out var endDate))
+                    {
+                        end = endDate;
+                    }
+                    filter.DateRange = new DateTime?[] { start, end };
+                }
+            }
+            // 单个日期 (LessThan, GreaterThan)
+            else if (DateTime.TryParse(value, out var date))
+            {
+                filter.DateValue = date;
+            }
+        }
+        else if (filter.ColumnType?.Contains("int", StringComparison.OrdinalIgnoreCase) == true || 
+                 filter.ColumnType?.Contains("decimal", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("numeric", StringComparison.OrdinalIgnoreCase) == true ||
+                 filter.ColumnType?.Contains("float", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            // 数值范围 (Between 操作符)
+            if (filter.Operator?.Equals("Between", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                if (decimal.TryParse(value, out var min))
+                {
+                    filter.NumericMin = min;
+                    if (!string.IsNullOrWhiteSpace(valueEnd) && decimal.TryParse(valueEnd, out var max))
+                    {
+                        filter.NumericMax = max;
+                    }
+                }
+            }
+            // 单个数值
+            else if (decimal.TryParse(value, out var num))
+            {
+                filter.NumericValue = num;
+            }
+        }
+        else
+        {
+            filter.StringValue = value;
+        }
     }
 }
