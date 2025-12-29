@@ -1,7 +1,9 @@
-﻿@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs/create"
+@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs/create"
 @using AntDesign
+@using Cronos
 @using DbArchiveTool.Web.Services
 @using DbArchiveTool.Web.Models
+@using System.Text.RegularExpressions
 @attribute [ReuseTabsPage(Title = "新建定时归档任务", Closable = true)]
 
 <PageHeader Title="新建定时归档任务" SubTitle="配置基于 BulkCopy 的定时归档任务（仅支持普通表）" OnBack="NavigateBack">
@@ -54,7 +56,9 @@
                         <span class="ant-form-text">目标表将在同一服务器上创建</span>
                     </FormItem>
                     <FormItem Label="目标表架构">
-                        <Input @bind-Value="_formModel.TargetSchemaName" Placeholder="默认: dbo" />
+                        <Input @bind-Value="_formModel.TargetSchemaName"
+                               @bind-Value:after="OnTargetSchemaChanged"
+                               Placeholder="默认: dbo" />
                     </FormItem>
                     <FormItem Label="目标表名称" Required>
                         <Input @bind-Value="_formModel.TargetTableName" 
@@ -115,12 +119,18 @@
                         </div>
                     </FormItem>
                     <FormItem Label="批次大小" Required>
-                        <RadioGroup @bind-Value="_formModel.BatchSize">
+                        <RadioGroup @bind-Value="_batchSizeSelection" @bind-Value:after="OnBatchSizeSelectionChanged">
                             <Radio Value="1000">1,000 行</Radio>
                             <Radio Value="5000">5,000 行（推荐）</Radio>
                             <Radio Value="10000">10,000 行</Radio>
+                            <Radio Value="@CustomBatchSizeValue">自定义</Radio>
                         </RadioGroup>
-                        <AntDesign.InputNumber @bind-Value="_formModel.BatchSize" Min="1" Max="100000" Style="width: 200px; margin-left: 16px;" />
+                        <AntDesign.InputNumber @bind-Value="_customBatchSize"
+                                               @bind-Value:after="OnCustomBatchSizeChanged"
+                                               Min="1"
+                                               Max="100000"
+                                               Disabled="@(_batchSizeSelection != CustomBatchSizeValue)"
+                                               Style="width: 200px; margin-left: 16px;" />
                     </FormItem>
                     <FormItem Label="单次最大行数">
                         <AntDesign.InputNumber @bind-Value="_formModel.MaxRowsPerExecution" Min="1000" Max="10000000" Step="1000" Style="width: 200px;" />
@@ -242,12 +252,16 @@
     private string? _validationMessage;
     private bool _submitting;
     private string _scheduleMode = "interval";
+    private const int CustomBatchSizeValue = -1;
+    private int _batchSizeSelection = 5000;
+    private int _customBatchSize = 5000;
     private TableSelector? _tableSelector;
     private FilterBuilder? _filterBuilder;
     private TableWithStatisticsDto? _selectedTableStats;
     private bool _checkingTargetTable;
     private bool? _targetTableExists;
     private string? _targetTableCheckMessage;
+    private int _targetTableCheckVersion;
 
     protected override async Task OnInitializedAsync()
     {
@@ -274,6 +288,8 @@
         _formModel.SourceSchemaName = "dbo";
         _formModel.TargetSchemaName = "dbo";
         _formModel.BatchSize = 5000;
+        _batchSizeSelection = _formModel.BatchSize;
+        _customBatchSize = _formModel.BatchSize;
         _formModel.MaxRowsPerExecution = 50000;
         _formModel.MaxConsecutiveFailures = 5;
         _formModel.IsEnabled = true;
@@ -284,6 +300,7 @@
     {
         _formModel.SourceSchemaName = schema ?? "dbo";
         _formModel.TargetSchemaName = schema ?? "dbo";
+        ResetTargetTableCheckState();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -297,8 +314,7 @@
             _formModel.TargetTableName = $"{_formModel.SourceTableName}_Archive";
             
             // 清除之前的检查结果
-            _targetTableExists = null;
-            _targetTableCheckMessage = null;
+            ResetTargetTableCheckState();
         }
         
         await InvokeAsync(StateHasChanged);
@@ -320,7 +336,8 @@
                 _formModel.MaxRowsPerExecution = 50000;
             }
         }
-        
+
+        SyncBatchSizeSelection();
         await InvokeAsync(StateHasChanged);
     }
 
@@ -363,6 +380,10 @@
         {
             errors.Add("任务名称长度需在 2-100 字符之间");
         }
+        else if (Regex.IsMatch(_formModel.Name, @"^\d+$"))
+        {
+            errors.Add("任务名称不允许仅数字");
+        }
 
         // 使用 TableSelector 的验证
         if (_tableSelector != null)
@@ -382,6 +403,27 @@
         {
             errors.Add("请填写目标表名称");
         }
+        else if (!IsValidSqlIdentifier(_formModel.TargetTableName))
+        {
+            errors.Add("目标表名称仅支持字母、数字、下划线，且需以字母或下划线开头");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_formModel.SourceSchemaName) &&
+            !IsValidSqlIdentifier(_formModel.SourceSchemaName))
+        {
+            errors.Add("源表架构仅支持字母、数字、下划线，且需以字母或下划线开头");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_formModel.TargetSchemaName) &&
+            !IsValidSqlIdentifier(_formModel.TargetSchemaName))
+        {
+            errors.Add("目标表架构仅支持字母、数字、下划线，且需以字母或下划线开头");
+        }
+
+        if (_formModel.BatchSize < 1 || _formModel.BatchSize > 100000)
+        {
+            errors.Add("批次大小需在 1 - 100,000 之间");
+        }
 
         if (string.IsNullOrWhiteSpace(_formModel.ArchiveFilterCondition))
         {
@@ -396,6 +438,21 @@
         if (_scheduleMode == "cron" && string.IsNullOrWhiteSpace(_formModel.CronExpression))
         {
             errors.Add("请填写 Cron 表达式");
+        }
+        else if (_scheduleMode == "cron")
+        {
+            var cronExpression = _formModel.CronExpression?.Trim();
+            if (!string.IsNullOrWhiteSpace(cronExpression))
+            {
+                try
+                {
+                    CronExpression.Parse(cronExpression, CronFormat.Standard);
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"Cron 表达式无效: {ex.Message}");
+                }
+            }
         }
 
         if (errors.Any())
@@ -450,34 +507,27 @@
                 MaxConsecutiveFailures = _formModel.MaxConsecutiveFailures
             };
 
-            Console.WriteLine("开始调用 CreateAsync...");
             var result = await JobApi.CreateAsync(request);
-            Console.WriteLine($"CreateAsync 完成: IsSuccess={result.IsSuccess}");
             
             if (result.IsSuccess)
             {
                 var targetUrl = $"/archive-data-sources/{DataSourceId}/scheduled-jobs";
-                Console.WriteLine($"准备跳转到: {targetUrl}");
                 
                 // 显示成功消息
                 Message.Success("任务创建成功");
                 
                 // 跳转到列表页面
                 Navigation.NavigateTo(targetUrl, forceLoad: true);
-                
-                Console.WriteLine("NavigateTo 已调用");
                 return; // 立即返回，避免后续代码执行
             }
             else
             {
-                Console.WriteLine($"创建失败: {result.Error}");
                 Message.Error(result.Error ?? "创建任务失败");
                 _submitting = false;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"异常: {ex.Message}\n{ex.StackTrace}");
             Message.Error($"保存失败: {ex.Message}");
             _submitting = false;
         }
@@ -490,6 +540,7 @@
         _scheduleMode = "interval";
         _validationMessage = null;
         _selectedTableStats = null;
+        ResetTargetTableCheckState();
     }
 
     private async Task OnWhereClauseChanged(string? whereClause)
@@ -512,8 +563,13 @@
     private async Task OnTargetTableNameChanged()
     {
         // 目标表名变化时，清除之前的检查结果
-        _targetTableExists = null;
-        _targetTableCheckMessage = null;
+        ResetTargetTableCheckState();
+        await Task.CompletedTask;
+    }
+
+    private async Task OnTargetSchemaChanged()
+    {
+        ResetTargetTableCheckState();
         await Task.CompletedTask;
     }
 
@@ -528,6 +584,8 @@
         _checkingTargetTable = true;
         _targetTableExists = null;
         _targetTableCheckMessage = null;
+        var requestVersion = ++_targetTableCheckVersion;
+        var requestSnapshot = BuildTargetTableSnapshot();
         try
         {
             var result = await JobApi.ValidateTargetTableAsync(
@@ -536,6 +594,11 @@
                 _formModel.SourceTableName,
                 _formModel.TargetSchemaName ?? "dbo",
                 _formModel.TargetTableName);
+
+            if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+            {
+                return;
+            }
 
             if (result.IsSuccess && result.Value != null)
             {
@@ -547,12 +610,12 @@
                     if (result.Value.IsCompatible)
                     {
                         // 目标表存在且结构一致
-                        Message.Success($"✅ 目标表结构验证通过：{result.Value.Message}");
+                        Message.Success($"? 目标表结构验证通过：{result.Value.Message}");
                     }
                     else
                     {
                         // 目标表存在但结构不一致
-                        Message.Warning($"⚠️ {result.Value.Message}");
+                        Message.Warning($"?? {result.Value.Message}");
                         
                         // 显示详细差异信息
                         if (result.Value.MissingColumns.Any())
@@ -576,21 +639,34 @@
                 else
                 {
                     // 目标表不存在
-                    Message.Warning($"目标表不存在，请先创建目标表");
+                    Message.Warning("目标表不存在，请先创建目标表");
                 }
             }
             else
             {
+                if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+                {
+                    return;
+                }
+
                 Message.Error(result.Error ?? "验证目标表失败");
             }
         }
         catch (Exception ex)
         {
+            if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+            {
+                return;
+            }
+
             Message.Error($"验证目标表失败: {ex.Message}");
         }
         finally
         {
-            _checkingTargetTable = false;
+            if (!IsTargetTableCheckStale(requestVersion, requestSnapshot))
+            {
+                _checkingTargetTable = false;
+            }
         }
     }
 
@@ -602,6 +678,8 @@
             return;
         }
 
+        var requestVersion = ++_targetTableCheckVersion;
+        var requestSnapshot = BuildTargetTableSnapshot();
         try
         {
             var result = await JobApi.CreateTargetTableAsync(
@@ -611,26 +689,103 @@
                 _formModel.TargetSchemaName ?? "dbo",
                 _formModel.TargetTableName);
 
+            if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+            {
+                return;
+            }
+
             if (result.IsSuccess && result.Value != null)
             {
                 _targetTableExists = true;
                 _targetTableCheckMessage = result.Value.Message;
-                Message.Success($"✅ 目标表创建成功，共 {result.Value.ColumnCount} 列");
+                Message.Success($"? 目标表创建成功，共 {result.Value.ColumnCount} 列");
                 
                 // 创建成功后自动验证表结构
                 await CheckTargetTable();
             }
             else
             {
+                if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+                {
+                    return;
+                }
+
                 Message.Error(result.Error ?? "创建目标表失败");
             }
         }
         catch (Exception ex)
         {
+            if (IsTargetTableCheckStale(requestVersion, requestSnapshot))
+            {
+                return;
+            }
+
             Message.Error($"创建目标表失败: {ex.Message}");
         }
     }
 
+    private static bool IsValidSqlIdentifier(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(name, "^[A-Za-z_][A-Za-z0-9_]*$");
+    }
+
+    private void ResetTargetTableCheckState()
+    {
+        _targetTableCheckVersion++;
+        _checkingTargetTable = false;
+        _targetTableExists = null;
+        _targetTableCheckMessage = null;
+    }
+
+    private string BuildTargetTableSnapshot()
+    {
+        var sourceSchema = _formModel.SourceSchemaName ?? "dbo";
+        var targetSchema = _formModel.TargetSchemaName ?? "dbo";
+        return $"{DataSourceId}|{sourceSchema}|{_formModel.SourceTableName}|{targetSchema}|{_formModel.TargetTableName}";
+    }
+
+    private bool IsTargetTableCheckStale(int version, string snapshot)
+    {
+        return version != _targetTableCheckVersion || snapshot != BuildTargetTableSnapshot();
+    }
+
+    private void SyncBatchSizeSelection()
+    {
+        _batchSizeSelection = _formModel.BatchSize switch
+        {
+            1000 => 1000,
+            5000 => 5000,
+            10000 => 10000,
+            _ => CustomBatchSizeValue
+        };
+        _customBatchSize = _formModel.BatchSize;
+    }
+
+    private void OnBatchSizeSelectionChanged()
+    {
+        if (_batchSizeSelection == CustomBatchSizeValue)
+        {
+            _formModel.BatchSize = _customBatchSize;
+        }
+        else
+        {
+            _formModel.BatchSize = _batchSizeSelection;
+            _customBatchSize = _batchSizeSelection;
+        }
+    }
+
+    private void OnCustomBatchSizeChanged()
+    {
+        if (_batchSizeSelection == CustomBatchSizeValue)
+        {
+            _formModel.BatchSize = _customBatchSize;
+        }
+    }
     private sealed class CreateJobFormModel
     {
         public string? Name { get; set; }
@@ -668,3 +823,25 @@
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
