@@ -1,4 +1,4 @@
-@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs/create"
+﻿@page "/archive-data-sources/{DataSourceId:guid}/scheduled-jobs/create"
 @using AntDesign
 @using Cronos
 @using DbArchiveTool.Web.Services
@@ -501,7 +501,8 @@
                 ArchiveFilterDefinition = filterDefinition,
                 BatchSize = _formModel.BatchSize,
                 MaxRowsPerExecution = _formModel.MaxRowsPerExecution,
-                IntervalMinutes = _scheduleMode == "interval" ? _formModel.IntervalMinutes : null,
+                // 后端 DTO 的 IntervalMinutes 为非空 int，Cron 模式也需携带一个合法值（会被 CronExpression 语义覆盖）
+                IntervalMinutes = _formModel.IntervalMinutes ?? 5,
                 CronExpression = _scheduleMode == "cron" ? _formModel.CronExpression?.Trim() : null,
                 IsEnabled = _formModel.IsEnabled,
                 MaxConsecutiveFailures = _formModel.MaxConsecutiveFailures

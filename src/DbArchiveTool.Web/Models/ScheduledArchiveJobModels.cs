@@ -166,7 +166,7 @@ public record CreateScheduledArchiveJobRequest
     public int MaxRowsPerExecution { get; init; } = 50000;
 
     /// <summary>间隔分钟（简单模式），与 CronExpression 二选一</summary>
-    public int? IntervalMinutes { get; init; }
+    public int IntervalMinutes { get; init; } = 5;
 
     /// <summary>Cron表达式（高级模式），与 IntervalMinutes 二选一</summary>
     public string? CronExpression { get; init; }
@@ -217,7 +217,7 @@ public record UpdateScheduledArchiveJobRequest
     public int MaxRowsPerExecution { get; init; }
 
     /// <summary>间隔分钟</summary>
-    public int? IntervalMinutes { get; init; }
+    public int IntervalMinutes { get; init; } = 5;
 
     /// <summary>Cron表达式</summary>
     public string? CronExpression { get; init; }

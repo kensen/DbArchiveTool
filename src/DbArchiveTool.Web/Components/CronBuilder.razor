@@ -7,7 +7,7 @@
         @* 频率类型选择 *@
         <Card Title="选择调度频率" Size="@CardSize.Small">
             <ChildContent>
-                <RadioGroup @bind-Value="_frequencyType" ButtonStyle="@RadioButtonStyle.Solid">
+                <RadioGroup @bind-Value="_frequencyType" @bind-Value:after="OnConfigChanged" ButtonStyle="@RadioButtonStyle.Solid">
                     <Radio RadioButton Value="@("minute")">每分钟</Radio>
                     <Radio RadioButton Value="@("hourly")">每小时</Radio>
                     <Radio RadioButton Value="@("daily")">每天</Radio>
@@ -220,10 +220,19 @@
     private string? _validationError;
     private DateTime? _nextExecution;
 
-    protected override void OnInitialized()
+    private bool _restoredFromExternal;
+
+    protected override async Task OnInitializedAsync()
     {
         // 初始化时生成表达式
         GenerateCronExpression();
+
+        // 如果父组件未传入 CronExpression，则将默认生成的表达式回填到父表单
+        // 否则用户“切到 Cron 直接保存”会因为父表单仍为空而校验失败。
+        if (string.IsNullOrWhiteSpace(CronExpression) && !string.IsNullOrWhiteSpace(_cronExpression))
+        {
+            await CronExpressionChanged.InvokeAsync(_cronExpression);
+        }
     }
 
     protected override void OnParametersSet()
@@ -232,8 +241,165 @@
         if (!string.IsNullOrWhiteSpace(CronExpression) && CronExpression != _cronExpression)
         {
             _cronExpression = CronExpression;
+            RestoreConfigFromCronExpression(_cronExpression);
             ValidateAndPreview();
         }
+    }
+
+    private void RestoreConfigFromCronExpression(string? cronExpression)
+    {
+        if (string.IsNullOrWhiteSpace(cronExpression))
+        {
+            return;
+        }
+
+        // 只反解析由本组件生成的标准 5 段 Cron：min hour dom month dow
+        // 目标：编辑页回显时，UI 频率/配置与 Cron 一致。
+        var parts = cronExpression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 5)
+        {
+            return;
+        }
+
+        var minutePart = parts[0];
+        var hourPart = parts[1];
+        var dayOfMonthPart = parts[2];
+        var monthPart = parts[3];
+        var dayOfWeekPart = parts[4];
+
+        // 每分钟：*/n * * * *
+        if (TryParseStepValue(minutePart, out var minuteStep)
+            && hourPart == "*" && dayOfMonthPart == "*" && monthPart == "*" && dayOfWeekPart == "*")
+        {
+            _frequencyType = "minute";
+            _minuteInterval = Clamp(minuteStep, 1, 59);
+            _restoredFromExternal = true;
+            return;
+        }
+
+        // 每小时：m */h * * *
+        if (TryParseNumber(minutePart, out var atMinute)
+            && TryParseStepValue(hourPart, out var hourStep)
+            && dayOfMonthPart == "*" && monthPart == "*" && dayOfWeekPart == "*")
+        {
+            _frequencyType = "hourly";
+            _atMinute = Clamp(atMinute, 0, 59);
+            _hourInterval = Clamp(hourStep, 1, 23);
+            _restoredFromExternal = true;
+            return;
+        }
+
+        // 每天：m H * * *
+        if (TryParseNumber(minutePart, out var dailyMinute)
+            && TryParseNumber(hourPart, out var dailyHour)
+            && dayOfMonthPart == "*" && monthPart == "*" && dayOfWeekPart == "*")
+        {
+            _frequencyType = "daily";
+            _dailyTime = DateTime.Today.AddHours(Clamp(dailyHour, 0, 23)).AddMinutes(Clamp(dailyMinute, 0, 59));
+            _restoredFromExternal = true;
+            return;
+        }
+
+        // 每周：m H * * dow1,dow2
+        if (TryParseNumber(minutePart, out var weeklyMinute)
+            && TryParseNumber(hourPart, out var weeklyHour)
+            && dayOfMonthPart == "*" && monthPart == "*" && dayOfWeekPart != "*")
+        {
+            var weekdays = ParseCsvNumbers(dayOfWeekPart, 0, 6);
+            if (weekdays.Count > 0)
+            {
+                _frequencyType = "weekly";
+                _weeklyTime = DateTime.Today.AddHours(Clamp(weeklyHour, 0, 23)).AddMinutes(Clamp(weeklyMinute, 0, 59));
+                _selectedWeekdays = weekdays.Select(d => d.ToString()).ToArray();
+                _restoredFromExternal = true;
+            }
+            return;
+        }
+
+        // 每月：m H dom1,dom2 * *
+        if (TryParseNumber(minutePart, out var monthlyMinute)
+            && TryParseNumber(hourPart, out var monthlyHour)
+            && dayOfMonthPart != "*" && monthPart == "*" && dayOfWeekPart == "*")
+        {
+            var monthdays = ParseCsvNumbers(dayOfMonthPart, 1, 31);
+            if (monthdays.Count > 0)
+            {
+                _frequencyType = "monthly";
+                _monthlyTime = DateTime.Today.AddHours(Clamp(monthlyHour, 0, 23)).AddMinutes(Clamp(monthlyMinute, 0, 59));
+                _selectedMonthdays = monthdays.Select(d => d.ToString()).ToArray();
+                _restoredFromExternal = true;
+            }
+            return;
+        }
+    }
+
+    private static bool TryParseStepValue(string value, out int step)
+    {
+        step = 0;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        // */n
+        if (!value.StartsWith("*/", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return int.TryParse(value[2..], out step);
+    }
+
+    private static bool TryParseNumber(string value, out int number)
+    {
+        number = 0;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return int.TryParse(value, out number);
+    }
+
+    private static List<int> ParseCsvNumbers(string value, int min, int max)
+    {
+        var results = new List<int>();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return results;
+        }
+
+        foreach (var token in value.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!int.TryParse(token.Trim(), out var number))
+            {
+                continue;
+            }
+
+            if (number < min || number > max)
+            {
+                continue;
+            }
+
+            results.Add(number);
+        }
+
+        return results.Distinct().OrderBy(x => x).ToList();
+    }
+
+    private static int Clamp(int value, int min, int max)
+    {
+        if (value < min)
+        {
+            return min;
+        }
+
+        if (value > max)
+        {
+            return max;
+        }
+
+        return value;
     }
 
     /// <summary>
@@ -252,6 +418,8 @@
     {
         try
         {
+            // Cron 表达式直接使用本地时间，不做时区转换
+            // 后端调度器（Quartz、Hangfire等）会按服务器本地时间执行
             _cronExpression = _frequencyType switch
             {
                 "minute" => $"*/{_minuteInterval} * * * *",
@@ -303,7 +471,19 @@
             _description = GenerateDescription();
 
             // 计算下次执行时间
-            _nextExecution = expression.GetNextOccurrence(DateTime.Now, TimeZoneInfo.Local);
+            // 重要：Cron 表达式是按服务器/本机“本地时间”语义生成的，预览也必须按本地时区计算。
+            // Cronos 的 GetNextOccurrence(fromUtc, timeZone) 输入必须是 UTC，并按 timeZone 的本地时间规则求下次触发点。
+            // 注意：该方法返回的是“UTC 时间点”（而不是本地时间），因此需要显式转换成本地时间用于显示与差值计算。
+            var nextUtc = expression.GetNextOccurrence(DateTime.UtcNow, TimeZoneInfo.Local);
+            if (nextUtc.HasValue)
+            {
+                var nextLocal = TimeZoneInfo.ConvertTimeFromUtc(nextUtc.Value, TimeZoneInfo.Local);
+                _nextExecution = DateTime.SpecifyKind(nextLocal, DateTimeKind.Local);
+            }
+            else
+            {
+                _nextExecution = null;
+            }
         }
         catch (Exception ex)
         {
@@ -362,14 +542,20 @@
         if (!_nextExecution.HasValue)
             return "N/A";
 
+        // _nextExecution 已经是本地时间，直接与 DateTime.Now 比较
         var span = _nextExecution.Value - DateTime.Now;
+        
+        // 如果时间已过（可能因为计算误差），显示为即将执行
+        if (span.TotalSeconds < 0)
+            return "即将执行";
+            
         if (span.TotalDays >= 1)
             return $"{(int)span.TotalDays} 天 {span.Hours} 小时";
         if (span.TotalHours >= 1)
             return $"{(int)span.TotalHours} 小时 {span.Minutes} 分钟";
         if (span.TotalMinutes >= 1)
-            return $"{(int)span.TotalMinutes} 分钟";
-        return "少于 1 分钟";
+            return $"{(int)span.TotalMinutes} 分钟 {span.Seconds} 秒";
+        return $"{(int)span.TotalSeconds} 秒";
     }
 
     /// <summary>
