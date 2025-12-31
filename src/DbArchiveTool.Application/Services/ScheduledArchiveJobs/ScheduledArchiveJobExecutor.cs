@@ -1,5 +1,7 @@
 ﻿using DbArchiveTool.Domain.Entities;
 using DbArchiveTool.Domain.ScheduledArchiveJobs;
+using DbArchiveTool.Shared.Archive;
+using Cronos;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 
@@ -69,6 +71,9 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
                 errorMessage: null,
                 executionTimeUtc: executionTimeUtc,
                 updatedBy: "SYSTEM");
+
+            // 定时归档任务专用于普通表归档：若历史数据写入了 PartitionSwitch/BCP，则在执行时自动纠正为 BulkCopy
+            job.EnsureBulkCopyArchiveMethod(updatedBy: "SYSTEM");
             await _jobRepository.UpdateAsync(job, cancellationToken);
 
             _logger.LogInformation(
@@ -159,7 +164,8 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
 
                 await _jobRepository.UpdateAsync(job, cancellationToken);
 
-                return ArchiveExecutionResult.CreateFailure(lastErrorMessage, stopwatch.Elapsed);
+                // 关键：必须抛异常，才能让 Hangfire 将本次执行标记为 Failed（否则只返回失败结果会被当作 Succeeded）
+                throw new InvalidOperationException($"定时归档任务失败: {lastErrorMessage}");
             }
             else if (totalArchivedRows == 0)
             {
@@ -191,9 +197,8 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
                     executionTimeUtc: executionTimeUtc,
                     updatedBy: "SYSTEM");
 
-                // 计算下次执行时间(当前时间 + IntervalMinutes)
-                var nextExecutionTime = DateTime.UtcNow.AddMinutes(job.IntervalMinutes);
-                job.SetNextExecutionTime(nextExecutionTime, updatedBy: "SYSTEM");
+                // 计算并更新下次执行时间（用于界面展示，需与 Hangfire 调度语义一致）
+                UpdateNextExecutionTimeForDisplay(job);
 
                 _logger.LogInformation(
                     "定时归档任务成功: JobId={JobId}, Name={Name}, 批次数={Batches}, 归档行数={Rows}, 耗时={Duration}ms, 下次执行={NextTime}",
@@ -202,7 +207,7 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
                     batchCount,
                     totalArchivedRows,
                     stopwatch.ElapsedMilliseconds,
-                    nextExecutionTime);
+                    job.NextExecutionAtUtc);
 
                 await _jobRepository.UpdateAsync(job, cancellationToken);
 
@@ -236,7 +241,8 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
                 _logger.LogError(updateEx, "更新任务失败状态时发生异常: JobId={JobId}", jobId);
             }
 
-            return ArchiveExecutionResult.CreateFailure(ex.Message, stopwatch.Elapsed);
+            // 关键：向上抛出，让 Hangfire 标记为 Failed，并在监控页/仪表盘展示异常原因
+            throw;
         }
     }
 
@@ -257,12 +263,72 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
             TargetTableName = job.TargetTableName,
             ArchiveFilterColumn = job.ArchiveFilterColumn,
             ArchiveFilterCondition = job.ArchiveFilterCondition,
-            ArchiveMethod = job.ArchiveMethod,
+            ArchiveMethod = ArchiveMethod.BulkCopy,
             DeleteSourceDataAfterArchive = job.DeleteSourceDataAfterArchive,
             BatchSize = job.BatchSize
         };
 
         // 调用 ArchiveOrchestrationService 的参数重载方法
         return await _orchestrationService.ExecuteArchiveAsync(archiveParams, null, cancellationToken);
+    }
+
+    private void UpdateNextExecutionTimeForDisplay(ScheduledArchiveJob job)
+    {
+        // 若任务在执行结果更新后被自动禁用（达到最大连续失败次数），则不再显示下次执行
+        if (!job.IsEnabled)
+        {
+            job.SetNextExecutionTime(null, updatedBy: "SYSTEM");
+            return;
+        }
+
+        var cronExpression = !string.IsNullOrWhiteSpace(job.CronExpression)
+            ? job.CronExpression
+            : GenerateCronFromInterval(job.IntervalMinutes);
+
+        try
+        {
+            var parts = cronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var format = parts.Length >= 6 ? CronFormat.IncludeSeconds : CronFormat.Standard;
+
+            var expr = CronExpression.Parse(cronExpression, format);
+            var next = expr.GetNextOccurrence(DateTime.UtcNow, TimeZoneInfo.Local, inclusive: false);
+
+            job.SetNextExecutionTime(next, updatedBy: "SYSTEM");
+        }
+        catch (Exception ex)
+        {
+            // 不阻断执行结果入库，但记录错误
+            _logger.LogError(ex, "计算下次执行时间失败: JobId={JobId}, Cron={Cron}", job.Id, cronExpression);
+        }
+    }
+
+    private static string GenerateCronFromInterval(int intervalMinutes)
+    {
+        if (intervalMinutes <= 0)
+        {
+            return "* * * * *";
+        }
+
+        if (intervalMinutes == 1)
+        {
+            return "* * * * *";
+        }
+        else if (intervalMinutes < 60)
+        {
+            return $"*/{intervalMinutes} * * * *";
+        }
+        else if (intervalMinutes == 60)
+        {
+            return "0 * * * *";
+        }
+        else if (intervalMinutes < 1440)
+        {
+            var intervalHours = Math.Max(1, intervalMinutes / 60);
+            return $"0 */{intervalHours} * * *";
+        }
+        else
+        {
+            return "0 0 * * *";
+        }
     }
 }

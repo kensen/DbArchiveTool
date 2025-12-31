@@ -13,6 +13,7 @@ namespace DbArchiveTool.Web.Services;
 public class HangfireMonitorService : IHangfireMonitorService
 {
     private readonly ILogger<HangfireMonitorService> _logger;
+    private static readonly string[] SupportedQueues = new[] { "default", "archive" };
 
     public HangfireMonitorService(ILogger<HangfireMonitorService> logger)
     {
@@ -38,6 +39,9 @@ public class HangfireMonitorService : IHangfireMonitorService
                 PageSize = pageSize
             };
 
+            // 用于处理“入队任务按多个队列聚合”的额外列表
+            var extraItems = new List<HangfireJobModel>();
+
             JobList<EnqueuedJobDto>? enqueuedJobs = null;
             JobList<ScheduledJobDto>? scheduledJobs = null;
             JobList<ProcessingJobDto>? processingJobs = null;
@@ -52,8 +56,29 @@ public class HangfireMonitorService : IHangfireMonitorService
             switch (status?.ToLower())
             {
                 case "enqueued":
-                    enqueuedJobs = api.EnqueuedJobs("archive", from, count);
-                    result.TotalCount = api.EnqueuedCount("archive");
+                    // 归档任务可能在 default 或 archive 队列，为了监控一致性这里同时聚合两者
+                    long total = 0;
+                    foreach (var q in SupportedQueues)
+                    {
+                        var list = api.EnqueuedJobs(q, from, count);
+                        if (list != null)
+                        {
+                            extraItems.AddRange(list.Select(j => new HangfireJobModel
+                            {
+                                JobId = j.Key,
+                                Status = "Enqueued",
+                                CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
+                                MethodName = GetMethodName(j.Value.Job),
+                                Arguments = SerializeJobArguments(j.Value.Job),
+                                QueueName = q
+                            }));
+                        }
+
+                        total += api.EnqueuedCount(q);
+                    }
+
+                    enqueuedJobs = null;
+                    result.TotalCount = total;
                     break;
                 case "scheduled":
                     scheduledJobs = api.ScheduledJobs(from, count);
@@ -77,14 +102,36 @@ public class HangfireMonitorService : IHangfireMonitorService
                     break;
                 default:
                     // 获取所有状态的任务
-                    enqueuedJobs = api.EnqueuedJobs("archive", 0, 10);
+                    // 默认也聚合 default+archive，避免监控页统计与列表不一致
+                    foreach (var q in SupportedQueues)
+                    {
+                        var list = api.EnqueuedJobs(q, 0, 10);
+                        if (list != null)
+                        {
+                            extraItems.AddRange(list.Select(j => new HangfireJobModel
+                            {
+                                JobId = j.Key,
+                                Status = "Enqueued",
+                                CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
+                                MethodName = GetMethodName(j.Value.Job),
+                                Arguments = SerializeJobArguments(j.Value.Job),
+                                QueueName = q
+                            }));
+                        }
+                    }
+                    enqueuedJobs = null;
                     scheduledJobs = api.ScheduledJobs(0, 10);
                     processingJobs = api.ProcessingJobs(0, 10);
                     succeededJobs = api.SucceededJobs(0, 10);
                     failedJobs = api.FailedJobs(0, 10);
-                    result.TotalCount = api.EnqueuedCount("archive") + api.ScheduledCount() + 
+                    result.TotalCount = SupportedQueues.Sum(q => api.EnqueuedCount(q)) + api.ScheduledCount() + 
                                        api.ProcessingCount() + api.SucceededListCount() + api.FailedCount();
                     break;
+            }
+
+            if (extraItems.Count > 0)
+            {
+                result.Items.AddRange(extraItems);
             }
 
             // 转换为统一的模型
@@ -96,7 +143,8 @@ public class HangfireMonitorService : IHangfireMonitorService
                     Status = "Enqueued",
                     CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
                     MethodName = GetMethodName(j.Value.Job),
-                    QueueName = j.Value.InEnqueuedState ? "archive" : null
+                    Arguments = SerializeJobArguments(j.Value.Job),
+                    QueueName = null
                 }));
             }
 
@@ -106,10 +154,12 @@ public class HangfireMonitorService : IHangfireMonitorService
                 {
                     JobId = j.Key,
                     Status = "Scheduled",
-                    CreatedAtUtc = DateTime.UtcNow,
+                    // Hangfire 的 ScheduledJobDto 不一定有 CreatedAt，这里用 ScheduledAt 作为列表排序/显示基准
+                    CreatedAtUtc = j.Value.ScheduledAt ?? DateTime.UtcNow,
                     ScheduledAtUtc = j.Value.ScheduledAt,
                     MethodName = GetMethodName(j.Value.Job),
-                    QueueName = j.Value.InScheduledState ? "archive" : null
+                    Arguments = SerializeJobArguments(j.Value.Job),
+                    QueueName = null
                 }));
             }
 
@@ -119,10 +169,15 @@ public class HangfireMonitorService : IHangfireMonitorService
                 {
                     JobId = j.Key,
                     Status = "Processing",
-                    CreatedAtUtc = DateTime.UtcNow,
+                    // Processing 列表同样缺少 CreatedAt，优先使用 StartedAt
+                    CreatedAtUtc = j.Value.StartedAt ?? DateTime.UtcNow,
                     StartedAtUtc = j.Value.StartedAt,
+                    DurationSeconds = j.Value.StartedAt.HasValue
+                        ? Math.Max(0, (DateTime.UtcNow - DateTime.SpecifyKind(j.Value.StartedAt.Value, DateTimeKind.Utc)).TotalSeconds)
+                        : null,
                     MethodName = GetMethodName(j.Value.Job),
-                    QueueName = j.Value.InProcessingState ? "archive" : null
+                    Arguments = SerializeJobArguments(j.Value.Job),
+                    QueueName = null
                 }));
             }
 
@@ -132,10 +187,13 @@ public class HangfireMonitorService : IHangfireMonitorService
                 {
                     JobId = j.Key,
                     Status = "Succeeded",
-                    CreatedAtUtc = DateTime.UtcNow,
+                    // Succeeded 列表同样缺少 CreatedAt，优先使用完成时间
+                    CreatedAtUtc = j.Value.SucceededAt ?? DateTime.UtcNow,
                     FinishedAtUtc = j.Value.SucceededAt,
-                    DurationSeconds = j.Value.TotalDuration,
-                    MethodName = GetMethodName(j.Value.Job)
+                    // Hangfire 的 TotalDuration 单位为毫秒，这里换算为秒用于展示
+                    DurationSeconds = j.Value.TotalDuration.HasValue ? j.Value.TotalDuration.Value / 1000d : null,
+                    MethodName = GetMethodName(j.Value.Job),
+                    Arguments = SerializeJobArguments(j.Value.Job)
                 }));
             }
 
@@ -145,10 +203,12 @@ public class HangfireMonitorService : IHangfireMonitorService
                 {
                     JobId = j.Key,
                     Status = "Failed",
-                    CreatedAtUtc = DateTime.UtcNow,
+                    // Failed 列表同样缺少 CreatedAt，优先使用失败时间
+                    CreatedAtUtc = j.Value.FailedAt ?? DateTime.UtcNow,
                     FinishedAtUtc = j.Value.FailedAt,
                     FailureReason = j.Value.ExceptionMessage,
-                    MethodName = GetMethodName(j.Value.Job)
+                    MethodName = GetMethodName(j.Value.Job),
+                    Arguments = SerializeJobArguments(j.Value.Job)
                 }));
             }
 
@@ -158,9 +218,10 @@ public class HangfireMonitorService : IHangfireMonitorService
                 {
                     JobId = j.Key,
                     Status = "Deleted",
-                    CreatedAtUtc = DateTime.UtcNow,
+                    CreatedAtUtc = j.Value.DeletedAt ?? DateTime.UtcNow,
                     FinishedAtUtc = j.Value.DeletedAt,
-                    MethodName = GetMethodName(j.Value.Job)
+                    MethodName = GetMethodName(j.Value.Job),
+                    Arguments = SerializeJobArguments(j.Value.Job)
                 }));
             }
 
@@ -169,6 +230,24 @@ public class HangfireMonitorService : IHangfireMonitorService
 
             return result;
         });
+    }
+
+    private string? SerializeJobArguments(Hangfire.Common.Job? job)
+    {
+        try
+        {
+            if (job?.Args == null || job.Args.Count == 0)
+            {
+                return null;
+            }
+
+            var args = job.Args.Select(a => a?.ToString() ?? "null").ToList();
+            return JsonSerializer.Serialize(args);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public async Task<HangfireJobDetailModel?> GetJobDetailAsync(string jobId)
@@ -185,7 +264,8 @@ public class HangfireMonitorService : IHangfireMonitorService
             {
                 JobId = jobId,
                 CreatedAtUtc = jobDetails.CreatedAt ?? DateTime.UtcNow,
-                MethodName = GetMethodName(jobDetails.Job)
+                MethodName = GetMethodName(jobDetails.Job),
+                Arguments = SerializeJobArguments(jobDetails.Job)
             };
 
             // 获取状态历史
@@ -206,17 +286,41 @@ public class HangfireMonitorService : IHangfireMonitorService
                     model.Status = latestState.StateName;
                     
                     // 提取特定状态的信息
-                    if (latestState.Data.TryGetValue("FailedAt", out var failedAt))
-                        model.FinishedAtUtc = DateTime.Parse(failedAt);
-                    if (latestState.Data.TryGetValue("SucceededAt", out var succeededAt))
-                        model.FinishedAtUtc = DateTime.Parse(succeededAt);
-                    if (latestState.Data.TryGetValue("StartedAt", out var startedAt))
-                        model.StartedAtUtc = DateTime.Parse(startedAt);
-                    if (latestState.Data.TryGetValue("ScheduledAt", out var scheduledAt))
-                        model.ScheduledAtUtc = DateTime.Parse(scheduledAt);
+                    if (latestState.Data.TryGetValue("FailedAt", out var failedAt) && DateTime.TryParse(failedAt, out var failedAtUtc))
+                        model.FinishedAtUtc = failedAtUtc;
+                    if (latestState.Data.TryGetValue("SucceededAt", out var succeededAt) && DateTime.TryParse(succeededAt, out var succeededAtUtc))
+                        model.FinishedAtUtc = succeededAtUtc;
+                    if (latestState.Data.TryGetValue("StartedAt", out var startedAt) && DateTime.TryParse(startedAt, out var startedAtUtc))
+                        model.StartedAtUtc = startedAtUtc;
+                    if (latestState.Data.TryGetValue("ScheduledAt", out var scheduledAt) && DateTime.TryParse(scheduledAt, out var scheduledAtUtc))
+                        model.ScheduledAtUtc = scheduledAtUtc;
                     if (latestState.Data.TryGetValue("ExceptionMessage", out var exception))
                         model.FailureReason = exception;
+
+                    // 尝试从状态数据解析队列
+                    if (latestState.Data.TryGetValue("Queue", out var queue))
+                        model.QueueName = queue;
                 }
+
+                // 解析重试次数：取状态历史中 RetryCount 的最大值
+                var retryCounts = model.StateHistory
+                    .SelectMany(h => h.Data)
+                    .Where(kv => string.Equals(kv.Key, "RetryCount", StringComparison.OrdinalIgnoreCase))
+                    .Select(kv => int.TryParse(kv.Value, out var v) ? v : (int?)null)
+                    .Where(v => v.HasValue)
+                    .Select(v => v!.Value)
+                    .ToList();
+
+                if (retryCounts.Count > 0)
+                {
+                    model.RetryCount = retryCounts.Max();
+                }
+            }
+
+            // 若缺少耗时但有开始/结束时间，则用时间差补齐
+            if (!model.DurationSeconds.HasValue && model.StartedAtUtc.HasValue && model.FinishedAtUtc.HasValue)
+            {
+                model.DurationSeconds = Math.Max(0, (model.FinishedAtUtc.Value - model.StartedAtUtc.Value).TotalSeconds);
             }
 
             // 解析参数

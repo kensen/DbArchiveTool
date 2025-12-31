@@ -3,6 +3,7 @@
 @using DbArchiveTool.Web.Services
 @using DbArchiveTool.Web.Models
 @inject IHangfireMonitorService HangfireMonitor
+@inject ScheduledArchiveJobApiClient ScheduledJobApi
 
 <PageContainer Title="归档任务监控">
     <Extra>
@@ -100,6 +101,11 @@
                                 </Tag>
                             </Template>
                         </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.MethodName)" Title="业务任务" Width="260px">
+                            <Template>
+                                @GetBusinessJobTitle(context)
+                            </Template>
+                        </PropertyColumn>
                         <PropertyColumn Property="@(j => j.MethodName)" Title="方法名称" />
                         <PropertyColumn Property="@(j => j.QueueName)" Title="队列" Width="100px">
                             <Template>
@@ -163,6 +169,21 @@
                            Size="@TableSize.Small"
                            Bordered>
                         <PropertyColumn Property="@(j => j.Id)" Title="任务ID" />
+                        <PropertyColumn Property="@(j => j.Id)" Title="任务名称" Width="220px">
+                            <Template>
+                                @GetRecurringBusinessName(context)
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.Id)" Title="源表" Width="180px">
+                            <Template>
+                                @GetRecurringBusinessSourceTable(context)
+                            </Template>
+                        </PropertyColumn>
+                        <PropertyColumn Property="@(j => j.Id)" Title="目标表" Width="180px">
+                            <Template>
+                                @GetRecurringBusinessTargetTable(context)
+                            </Template>
+                        </PropertyColumn>
                         <PropertyColumn Property="@(j => j.MethodName)" Title="方法名称" />
                         <PropertyColumn Property="@(j => j.Cron)" Title="Cron表达式">
                             <Template>
@@ -273,6 +294,20 @@
                         {
                             <div>@state.Reason</div>
                         }
+
+                        @if (state.Data != null && state.Data.Any())
+                        {
+                            <div style="margin-top: 8px;">
+                                @foreach (var kv in state.Data.OrderBy(kv => kv.Key))
+                                {
+                                    <div>
+                                        <Text Type="@TextElementType.Secondary">@kv.Key</Text>
+                                        <Text Type="@TextElementType.Secondary">: </Text>
+                                        <Text Type="@TextElementType.Secondary">@kv.Value</Text>
+                                    </div>
+                                }
+                            </div>
+                        }
                     </TimelineItem>
                 }
             </Timeline>
@@ -302,6 +337,9 @@
 
     // 定时任务列表
     private List<HangfireRecurringJobModel> _recurringJobs = new();
+
+    // 定时归档任务缓存（用于把 Hangfire Job 映射成业务任务信息）
+    private readonly Dictionary<Guid, ScheduledArchiveJobDto> _scheduledJobCache = new();
 
     // 统计信息
     private HangfireStatisticsModel _statistics = new();
@@ -344,11 +382,181 @@
     {
         _jobs = await HangfireMonitor.GetJobsAsync(_selectedStatus, _pageIndex - 1, _pageSize);
         _totalJobs = (int)_jobs.TotalCount;
+
+        await EnrichBusinessInfoAsync(_jobs.Items);
     }
 
     private async Task LoadRecurringJobsAsync()
     {
         _recurringJobs = await HangfireMonitor.GetRecurringJobsAsync();
+
+        // 预加载定时归档任务详情，便于表格直接展示任务名称/源表/目标表
+        var scheduledIds = _recurringJobs
+            .Select(j => TryGetScheduledArchiveJobId(j.Id, out var id) ? id : Guid.Empty)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToList();
+
+        foreach (var id in scheduledIds)
+        {
+            await EnsureScheduledJobCachedAsync(id);
+        }
+    }
+
+    private async Task EnrichBusinessInfoAsync(IEnumerable<HangfireJobModel> jobs)
+    {
+        var ids = new HashSet<Guid>();
+
+        foreach (var job in jobs)
+        {
+            if (TryGetScheduledArchiveJobIdFromJob(job, out var scheduledId))
+            {
+                ids.Add(scheduledId);
+            }
+        }
+
+        foreach (var id in ids)
+        {
+            await EnsureScheduledJobCachedAsync(id);
+        }
+    }
+
+    private async Task EnsureScheduledJobCachedAsync(Guid scheduledJobId)
+    {
+        if (_scheduledJobCache.ContainsKey(scheduledJobId))
+        {
+            return;
+        }
+
+        var result = await ScheduledJobApi.GetByIdAsync(scheduledJobId);
+        if (result.IsSuccess && result.Value != null)
+        {
+            _scheduledJobCache[scheduledJobId] = result.Value;
+        }
+    }
+
+    private static bool TryGetScheduledArchiveJobId(string recurringJobId, out Guid jobId)
+    {
+        jobId = Guid.Empty;
+        if (string.IsNullOrWhiteSpace(recurringJobId))
+        {
+            return false;
+        }
+
+        const string prefix = "scheduled-archive-job-";
+        if (!recurringJobId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var idPart = recurringJobId.Substring(prefix.Length);
+        return Guid.TryParse(idPart, out jobId);
+    }
+
+    private static bool TryGetScheduledArchiveJobIdFromJob(HangfireJobModel job, out Guid jobId)
+    {
+        jobId = Guid.Empty;
+
+        // 目前定时归档执行器签名为 ExecuteAsync(Guid jobId, CancellationToken)
+        // Hangfire 参数在 Arguments 中序列化为 JSON 数组字符串，优先解析第一个 GUID
+        if (string.IsNullOrWhiteSpace(job.Arguments))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(job.Arguments);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var s = el.GetString();
+                    if (Guid.TryParse(s, out jobId))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string GetRecurringBusinessName(HangfireRecurringJobModel recurring)
+    {
+        if (!TryGetScheduledArchiveJobId(recurring.Id, out var id))
+        {
+            return "-";
+        }
+
+        return _scheduledJobCache.TryGetValue(id, out var job)
+            ? job.Name
+            : id.ToString();
+    }
+
+    private string GetRecurringBusinessSourceTable(HangfireRecurringJobModel recurring)
+    {
+        if (!TryGetScheduledArchiveJobId(recurring.Id, out var id))
+        {
+            return "-";
+        }
+
+        if (!_scheduledJobCache.TryGetValue(id, out var job))
+        {
+            return "-";
+        }
+
+        return !string.IsNullOrWhiteSpace(job.FullSourceTable)
+            ? job.FullSourceTable
+            : $"{job.SourceSchemaName}.{job.SourceTableName}";
+    }
+
+    private string GetRecurringBusinessTargetTable(HangfireRecurringJobModel recurring)
+    {
+        if (!TryGetScheduledArchiveJobId(recurring.Id, out var id))
+        {
+            return "-";
+        }
+
+        if (!_scheduledJobCache.TryGetValue(id, out var job))
+        {
+            return "-";
+        }
+
+        return !string.IsNullOrWhiteSpace(job.FullTargetTable)
+            ? job.FullTargetTable
+            : $"{job.TargetSchemaName}.{job.TargetTableName}";
+    }
+
+    private string GetBusinessJobTitle(HangfireJobModel job)
+    {
+        if (!TryGetScheduledArchiveJobIdFromJob(job, out var id))
+        {
+            return "-";
+        }
+
+        if (_scheduledJobCache.TryGetValue(id, out var scheduled))
+        {
+            var source = !string.IsNullOrWhiteSpace(scheduled.FullSourceTable)
+                ? scheduled.FullSourceTable
+                : $"{scheduled.SourceSchemaName}.{scheduled.SourceTableName}";
+            var target = !string.IsNullOrWhiteSpace(scheduled.FullTargetTable)
+                ? scheduled.FullTargetTable
+                : $"{scheduled.TargetSchemaName}.{scheduled.TargetTableName}";
+            return $"{scheduled.Name} ({source} → {target})";
+        }
+
+        return id.ToString();
     }
 
     private async Task ApplyFilterAsync()

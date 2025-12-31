@@ -251,6 +251,35 @@ public class ScheduledArchiveJobApiClient
     }
 
     /// <summary>
+    /// 同步任务调度（重新注册/重算下次执行时间）
+    /// </summary>
+    /// <param name="jobId">任务ID</param>
+    /// <returns>同步结果</returns>
+    public async Task<Result> RescheduleAsync(Guid jobId)
+    {
+        try
+        {
+            var url = $"{BaseUrl}/{jobId}/reschedule";
+            var response = await _httpClient.PostAsync(url, null);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("同步定时归档任务调度失败: {JobId}, {StatusCode}, {Error}", jobId, response.StatusCode, error);
+                return Result.Failure($"同步调度失败: {error}");
+            }
+
+            _logger.LogInformation("已同步定时归档任务调度: {JobId}", jobId);
+            return Result.Success();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "同步定时归档任务调度时发生异常: {JobId}", jobId);
+            return Result.Failure($"同步调度失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 立即执行定时归档任务（手动触发一次）
     /// </summary>
     /// <param name="jobId">任务ID</param>

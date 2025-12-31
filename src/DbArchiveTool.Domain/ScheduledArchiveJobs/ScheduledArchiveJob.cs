@@ -229,6 +229,22 @@ public sealed class ScheduledArchiveJob : AggregateRoot
         UpdatedBy = updatedBy;
     }
 
+    /// <summary>
+    /// 将归档方法纠正为 BulkCopy
+    /// 定时归档任务仅用于普通表小批量归档，历史数据或外部调用可能写入 PartitionSwitch/BCP，这里做兼容性自愈。
+    /// </summary>
+    public void EnsureBulkCopyArchiveMethod(string updatedBy)
+    {
+        if (ArchiveMethod == ArchiveMethod.BulkCopy)
+        {
+            return;
+        }
+
+        ArchiveMethod = ArchiveMethod.BulkCopy;
+        UpdatedAtUtc = DateTime.UtcNow;
+        UpdatedBy = updatedBy;
+    }
+
     /// <summary>启用任务</summary>
     public void Enable(string updatedBy)
     {

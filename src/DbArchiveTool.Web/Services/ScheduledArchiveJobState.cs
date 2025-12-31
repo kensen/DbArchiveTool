@@ -65,13 +65,32 @@ public class ScheduledArchiveJobState
 
         if (result.IsSuccess && result.Value != null)
         {
-            _cachedJobsByDataSource[dataSourceId] = result.Value.Items.ToList();
+            var items = result.Value.Items
+                .Select(j =>
+                {
+                    var fullSource = !string.IsNullOrWhiteSpace(j.FullSourceTable)
+                        ? j.FullSourceTable
+                        : $"{j.SourceSchemaName}.{j.SourceTableName}";
+
+                    var fullTarget = !string.IsNullOrWhiteSpace(j.FullTargetTable)
+                        ? j.FullTargetTable
+                        : $"{j.TargetSchemaName}.{j.TargetTableName}";
+
+                    return j with
+                    {
+                        FullSourceTable = fullSource,
+                        FullTargetTable = fullTarget
+                    };
+                })
+                .ToList();
+
+            _cachedJobsByDataSource[dataSourceId] = items;
             _cacheTimestamps[dataSourceId] = DateTime.UtcNow;
             NotifyStateChanged();
         }
 
         return result.IsSuccess
-            ? Result<List<ScheduledArchiveJobDto>>.Success(result.Value!.Items.ToList())
+            ? Result<List<ScheduledArchiveJobDto>>.Success(_cachedJobsByDataSource.GetValueOrDefault(dataSourceId, new List<ScheduledArchiveJobDto>()))
             : Result<List<ScheduledArchiveJobDto>>.Failure(result.Error!);
     }
 

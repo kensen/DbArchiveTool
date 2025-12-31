@@ -19,10 +19,10 @@
                 <Text>@_dataSourceName</Text>
             </div>
             <div class="header-stats">
-                <Statistic Title="任务总数" Value="@_statistics?.TotalJobCount" Suffix="个" />
-                <Statistic Title="启用任务" Value="@_statistics?.EnabledJobCount" Suffix="个" />
-                <Statistic Title="今日执行" Value="@_statistics?.TodayExecutionCount" Suffix="次" />
-                <Statistic Title="今日成功率" Value="@(_statistics?.TodaySuccessRate.ToString("F1"))" Suffix="%" />
+                <Statistic Title="任务总数" Value="@((object?)_statistics?.TotalJobCount ?? "-")" Suffix="个" />
+                <Statistic Title="启用任务" Value="@((object?)_statistics?.EnabledJobCount ?? "-")" Suffix="个" />
+                <Statistic Title="今日有执行" Value="@((object?)_statistics?.TodayExecutionCount ?? "-")" Suffix="个" />
+                <Statistic Title="今日成功率" Value="@((object?)_statistics?.TodaySuccessRate.ToString("F1") ?? "-")" Suffix="%" />
             </div>
         </div>
     </PageHeaderContent>
@@ -58,27 +58,16 @@
         <PropertyColumn Property="c => c.FullSourceTable" Title="源表" Width="180" />
         <PropertyColumn Property="c => c.FullTargetTable" Title="目标表" Width="180" />
         <PropertyColumn Property="c => c.CronDescription" Title="执行频率" Width="150">
-            @if (!string.IsNullOrEmpty(context.CronDescription))
-            {
-                <span>@context.CronDescription</span>
-            }
-            else if (context.IntervalMinutes.HasValue)
-            {
-                <span>每 @context.IntervalMinutes 分钟</span>
-            }
-            else
-            {
-                <span style="color: rgba(0,0,0,.45);">未配置</span>
-            }
+            <span>@GetScheduleDisplay(context)</span>
         </PropertyColumn>
         <PropertyColumn Property="c => c.NextExecutionDisplay" Title="下次执行" Width="140">
-            @if (context.IsEnabled && !string.IsNullOrEmpty(context.NextExecutionDisplay))
-            {
-                <span>@context.NextExecutionDisplay</span>
-            }
-            else if (!context.IsEnabled)
+            @if (!context.IsEnabled)
             {
                 <span style="color: rgba(0,0,0,.45);">已禁用</span>
+            }
+            else if (context.NextExecutionAtUtc.HasValue)
+            {
+                <span>@context.NextExecutionAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
             }
             else
             {
@@ -89,19 +78,21 @@
             @switch (context.LastExecutionStatus)
             {
                 case JobExecutionStatus.Success:
-                    <Tag Color="@("green")">@context.LastExecutionStatusDisplay</Tag>
+                    <Tag Color="@("green")">@GetLastExecutionStatusText(context)</Tag>
                     break;
                 case JobExecutionStatus.Running:
-                    <Tag Color="@("blue")">@context.LastExecutionStatusDisplay</Tag>
+                    <Tag Color="@("blue")">@GetLastExecutionStatusText(context)</Tag>
                     break;
                 case JobExecutionStatus.Failed:
-                    <Tag Color="@("red")">@context.LastExecutionStatusDisplay</Tag>
+                    <Tooltip Title="@GetFailureTooltip(context)">
+                        <Tag Color="@("red")">@GetLastExecutionStatusText(context)</Tag>
+                    </Tooltip>
                     break;
                 case JobExecutionStatus.Skipped:
-                    <Tag Color="@("default")">@context.LastExecutionStatusDisplay</Tag>
+                    <Tag Color="@("default")">@GetLastExecutionStatusText(context)</Tag>
                     break;
                 default:
-                    <span style="color: rgba(0,0,0,.45);">@context.LastExecutionStatusDisplay</span>
+                    <span style="color: rgba(0,0,0,.45);">@GetLastExecutionStatusText(context)</span>
                     break;
             }
         </PropertyColumn>
@@ -127,6 +118,10 @@
         </PropertyColumn>
         <ActionColumn Title="操作" Width="220">
             <Space Size="@("small")">
+                @if (context.IsEnabled && !context.NextExecutionAtUtc.HasValue)
+                {
+                    <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => RescheduleJobAsync(context.Id)">同步调度</Button></SpaceItem>
+                }
                 @if (context.IsEnabled)
                 {
                     <SpaceItem><Button Type="ButtonType.Link" Size="@ButtonSize.Small" OnClick="() => DisableJobAsync(context.Id)">禁用</Button></SpaceItem>
@@ -182,11 +177,119 @@
     }
     private bool? _filterEnabledValue;
 
+    private string GetScheduleDisplay(ScheduledArchiveJobDto job)
+    {
+        // CronExpression 优先：列表展示应与 CronBuilder 预览/后端调度一致
+        if (!string.IsNullOrWhiteSpace(job.CronExpression))
+        {
+            return DescribeCron(job.CronExpression);
+        }
+
+        if (job.IntervalMinutes.HasValue)
+        {
+            return $"每 {job.IntervalMinutes} 分钟";
+        }
+
+        return "未配置";
+    }
+
+    private static string DescribeCron(string cronExpression)
+    {
+        // 仅处理本项目 CronBuilder 生成的标准 5 段 Cron：min hour dom month dow
+        // 其他格式直接回显表达式，避免误导。
+        var parts = cronExpression.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 5)
+        {
+            return cronExpression;
+        }
+
+        var minute = parts[0];
+        var hour = parts[1];
+        var dayOfMonth = parts[2];
+        var month = parts[3];
+        var dayOfWeek = parts[4];
+
+        if (hour == "*" && dayOfMonth == "*" && month == "*" && dayOfWeek == "*")
+        {
+            // */N * * * *
+            if (minute == "*")
+            {
+                return "每 1 分钟执行一次";
+            }
+
+            if (minute.StartsWith("*/", StringComparison.Ordinal) && int.TryParse(minute[2..], out var n) && n > 0)
+            {
+                return $"每 {n} 分钟执行一次";
+            }
+        }
+
+        if (dayOfMonth == "*" && month == "*" && dayOfWeek == "*")
+        {
+            // M */H * * *
+            if (hour.StartsWith("*/", StringComparison.Ordinal) && int.TryParse(hour[2..], out var h) && h > 0 && int.TryParse(minute, out var m1))
+            {
+                return $"每 {h} 小时的第 {m1} 分钟执行";
+            }
+
+            // M H * * *
+            if (int.TryParse(hour, out var h1) && int.TryParse(minute, out var m2))
+            {
+                return $"每天 {h1:D2}:{m2:D2} 执行";
+            }
+        }
+
+        // M H * * DOW
+        if (dayOfMonth == "*" && month == "*" && dayOfWeek != "*" && int.TryParse(hour, out var wh) && int.TryParse(minute, out var wm))
+        {
+            var days = dayOfWeek.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(GetWeekdayName)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToArray();
+
+            if (days.Length > 0)
+            {
+                return $"每周 {string.Join("、", days)} {wh:D2}:{wm:D2} 执行";
+            }
+        }
+
+        // M H DOM * *
+        if (month == "*" && dayOfWeek == "*" && dayOfMonth != "*" && int.TryParse(hour, out var mh) && int.TryParse(minute, out var mm))
+        {
+            var doms = dayOfMonth.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => int.TryParse(s, out var d) ? d : (int?)null)
+                .Where(d => d.HasValue)
+                .Select(d => $"{d}日")
+                .ToArray();
+
+            if (doms.Length > 0)
+            {
+                return $"每月 {string.Join("、", doms)} {mh:D2}:{mm:D2} 执行";
+            }
+        }
+
+        return cronExpression;
+    }
+
+    private static string GetWeekdayName(string dayValue)
+    {
+        return dayValue switch
+        {
+            "0" => "周日",
+            "1" => "周一",
+            "2" => "周二",
+            "3" => "周三",
+            "4" => "周四",
+            "5" => "周五",
+            "6" => "周六",
+            _ => string.Empty
+        };
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LoadDataSourceInfoAsync();
         await LoadJobsAsync();
-        await LoadStatisticsAsync();
+        ComputeStatisticsFromJobs();
 
         // 订阅状态变更事件（仅在其他地方主动触发缓存更新时刷新UI）
         JobState.OnStateChanged += OnStateChanged;
@@ -217,6 +320,7 @@
             {
                 _jobs = result.Value;
                 ApplyFilters();
+                ComputeStatisticsFromJobs();
             }
             else
             {
@@ -226,17 +330,6 @@
         finally
         {
             _loading = false;
-            StateHasChanged();
-        }
-    }
-
-    private async Task LoadStatisticsAsync()
-    {
-        // 使用缓存优先策略
-        var result = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: false);
-        if (result.IsSuccess && result.Value != null)
-        {
-            _statistics = result.Value;
             StateHasChanged();
         }
     }
@@ -252,12 +345,7 @@
             {
                 _jobs = jobsResult.Value;
                 ApplyFilters();
-            }
-
-            var statsResult = await JobState.GetStatisticsAsync(DataSourceId, forceRefresh: true);
-            if (statsResult.IsSuccess && statsResult.Value != null)
-            {
-                _statistics = statsResult.Value;
+                ComputeStatisticsFromJobs();
             }
         }
         finally
@@ -265,6 +353,48 @@
             _loading = false;
             StateHasChanged();
         }
+    }
+
+    private void ComputeStatisticsFromJobs()
+    {
+        var nowLocal = DateTime.Now.Date;
+        var executedToday = _jobs.Where(j => j.LastExecutionAtUtc.HasValue && j.LastExecutionAtUtc.Value.ToLocalTime().Date == nowLocal).ToList();
+
+        var todaySuccess = executedToday.Count(j => j.LastExecutionStatus == JobExecutionStatus.Success);
+        var todayFailure = executedToday.Count(j => j.LastExecutionStatus == JobExecutionStatus.Failed);
+        var todayTotal = executedToday.Count;
+
+        _statistics = new ScheduledArchiveJobStatisticsDto
+        {
+            TotalJobCount = _jobs.Count,
+            EnabledJobCount = _jobs.Count(j => j.IsEnabled),
+            RunningJobCount = _jobs.Count(j => j.LastExecutionStatus == JobExecutionStatus.Running),
+            TodayExecutionCount = todayTotal,
+            TodaySuccessCount = todaySuccess,
+            TodayFailureCount = todayFailure,
+            TodaySuccessRate = todayTotal > 0 ? (double)todaySuccess / todayTotal * 100 : 0,
+            TotalArchivedRowCount = _jobs.Sum(j => j.TotalArchivedRowCount),
+            AverageArchivedRowCount = _jobs.Count > 0 ? (long)_jobs.Average(j => (double)j.TotalArchivedRowCount) : 0
+        };
+    }
+
+    private string GetFailureTooltip(ScheduledArchiveJobDto job)
+    {
+        var error = string.IsNullOrWhiteSpace(job.LastExecutionError) ? "(无错误详情)" : job.LastExecutionError.Trim();
+        var max = job.MaxConsecutiveFailures > 0 ? job.MaxConsecutiveFailures : 0;
+        return $"连续失败次数: {job.ConsecutiveFailureCount}/{max}\n错误: {error}";
+    }
+
+    private string GetLastExecutionStatusText(ScheduledArchiveJobDto job)
+    {
+        return job.LastExecutionStatus switch
+        {
+            JobExecutionStatus.Success => "成功",
+            JobExecutionStatus.Running => "运行中",
+            JobExecutionStatus.Failed => "失败",
+            JobExecutionStatus.Skipped => "跳过",
+            _ => "未开始"
+        };
     }
 
     private void OnFilterChanged()
@@ -353,6 +483,20 @@
         else
         {
             Message.Error(result.Error ?? "删除任务失败");
+        }
+    }
+
+    private async Task RescheduleJobAsync(Guid jobId)
+    {
+        var result = await JobApi.RescheduleAsync(jobId);
+        if (result.IsSuccess)
+        {
+            Message.Success("已同步调度");
+            await RefreshAsync();
+        }
+        else
+        {
+            Message.Error(result.Error ?? "同步调度失败");
         }
     }
 

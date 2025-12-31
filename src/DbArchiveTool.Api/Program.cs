@@ -70,8 +70,11 @@ using (var tempScope = builder.Services.BuildServiceProvider().CreateScope())
 }
 
 // 配置 Hangfire
-var hangfireConnectionString = builder.Configuration.GetConnectionString("ArchiveDatabase") ??
-                                "Server=localhost;Database=DbArchiveTool;Trusted_Connection=True;TrustServerCertificate=True";
+// 说明：Hangfire 存储建议与业务库共用同一连接串（通过 SchemaName 区分），
+// 但为了便于 Web 端监控与环境配置统一，这里优先读取 HangfireDatabase，回退到 ArchiveDatabase。
+var hangfireConnectionString = builder.Configuration.GetConnectionString("HangfireDatabase")
+    ?? builder.Configuration.GetConnectionString("ArchiveDatabase")
+    ?? "Server=localhost;Database=DbArchiveTool;Trusted_Connection=True;TrustServerCertificate=True";
 
 builder.Services.AddHangfire(configuration => configuration
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)

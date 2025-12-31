@@ -5,6 +5,7 @@ using DbArchiveTool.Application.Services.ScheduledArchiveJobs;
 using DbArchiveTool.Domain.DataSources;
 using DbArchiveTool.Domain.Entities;
 using DbArchiveTool.Domain.ScheduledArchiveJobs;
+using DbArchiveTool.Shared.Archive;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DbArchiveTool.Api.Controllers.V1;
@@ -87,14 +88,17 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
                 BatchSize = j.BatchSize,
                 MaxRowsPerExecution = j.MaxRowsPerExecution,
                 IntervalMinutes = j.IntervalMinutes,
+                CronExpression = j.CronExpression,
                 IsEnabled = j.IsEnabled,
                 NextExecutionAtUtc = j.NextExecutionAtUtc,
                 LastExecutionAtUtc = j.LastExecutionAtUtc,
                 LastExecutionStatus = j.LastExecutionStatus,
+                LastExecutionError = j.LastExecutionError,
                 LastArchivedRowCount = j.LastArchivedRowCount,
                 TotalExecutionCount = j.TotalExecutionCount,
                 TotalArchivedRowCount = j.TotalArchivedRowCount,
                 ConsecutiveFailureCount = j.ConsecutiveFailureCount,
+                MaxConsecutiveFailures = j.MaxConsecutiveFailures,
                 CreatedAtUtc = j.CreatedAtUtc,
                 UpdatedAtUtc = j.UpdatedAtUtc
             });
@@ -186,6 +190,12 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
     {
         try
         {
+            // 定时归档任务专用于“普通表小批量归档”，不允许使用分区切换/BCP 等方式，避免与分区管理功能混淆
+            if (request.ArchiveMethod != ArchiveMethod.BulkCopy)
+            {
+                return BadRequest(new { message = "定时归档任务仅支持普通表归档，归档方法必须为 BulkCopy(不支持 PartitionSwitch/BCP)。" });
+            }
+
             // 验证名称唯一性
             if (await _repository.ExistsByNameAsync(request.Name, null, cancellationToken))
             {
@@ -204,7 +214,7 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
                 archiveFilterColumn: request.ArchiveFilterColumn,
                 archiveFilterCondition: request.ArchiveFilterCondition,
                 archiveFilterDefinition: request.ArchiveFilterDefinition,
-                archiveMethod: request.ArchiveMethod,
+                archiveMethod: ArchiveMethod.BulkCopy,
                 deleteSourceDataAfterArchive: request.DeleteSourceDataAfterArchive,
                 batchSize: request.BatchSize,
                 maxRowsPerExecution: request.MaxRowsPerExecution,
@@ -215,6 +225,24 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
             );
 
             await _repository.AddAsync(job, cancellationToken);
+
+            // 创建后若任务处于启用状态，需要立即注册到 Hangfire
+            // 否则会出现“列表显示启用，但 Hangfire 未产生 RecurringJob，需要手工点一次启用才生效”的体验问题
+            if (job.IsEnabled)
+            {
+                try
+                {
+                    await _scheduler.RegisterJobAsync(job.Id, cancellationToken);
+
+                    // RegisterJobAsync 内部会更新 NextExecutionAtUtc，需要重新加载以返回最新值
+                    job = await _repository.GetByIdAsync(job.Id, cancellationToken) ?? job;
+                }
+                catch (Exception ex)
+                {
+                    // 不阻断创建接口返回，但记录错误，方便排查“创建成功但未调度”
+                    _logger.LogError(ex, "创建后注册 Hangfire 调度失败: {Id}", job.Id);
+                }
+            }
 
             _logger.LogInformation("成功创建定时归档任务: {Id} - {Name}", job.Id, job.Name);
 
@@ -269,6 +297,37 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
     }
 
     /// <summary>
+    /// 同步任务调度（重新注册/重算下次执行时间）
+    /// </summary>
+    /// <param name="id">任务ID</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns>无内容</returns>
+    [HttpPost("{id}/reschedule")]
+    [ProducesResponseType(204)]
+    [ProducesResponseType(404)]
+    public async Task<IActionResult> Reschedule(Guid id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var job = await _repository.GetByIdAsync(id, cancellationToken);
+            if (job == null)
+            {
+                return NotFound(new { message = $"定时归档任务不存在: {id}" });
+            }
+
+            await _scheduler.UpdateJobScheduleAsync(id, cancellationToken);
+
+            _logger.LogInformation("已同步定时归档任务调度: {Id} - {Name}", id, job.Name);
+            return NoContent();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "同步定时归档任务调度失败: {Id}", id);
+            return StatusCode(500, new { message = "同步定时归档任务调度失败", error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// 更新定时归档任务
     /// </summary>
     /// <param name="id">任务ID</param>
@@ -292,6 +351,12 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
                 return NotFound(new { message = $"定时归档任务不存在: {id}" });
             }
 
+            // 定时归档任务专用于“普通表小批量归档”，不允许使用分区切换/BCP 等方式，避免与分区管理功能混淆
+            if (request.ArchiveMethod != ArchiveMethod.BulkCopy)
+            {
+                return BadRequest(new { message = "定时归档任务仅支持普通表归档，归档方法必须为 BulkCopy(不支持 PartitionSwitch/BCP)。" });
+            }
+
             // 验证名称唯一性(排除当前任务)
             if (await _repository.ExistsByNameAsync(request.Name, id, cancellationToken))
             {
@@ -309,7 +374,7 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
                 archiveFilterColumn: request.ArchiveFilterColumn,
                 archiveFilterCondition: request.ArchiveFilterCondition,
                 archiveFilterDefinition: request.ArchiveFilterDefinition,
-                archiveMethod: request.ArchiveMethod,
+                archiveMethod: ArchiveMethod.BulkCopy,
                 deleteSourceDataAfterArchive: request.DeleteSourceDataAfterArchive,
                 batchSize: request.BatchSize,
                 maxRowsPerExecution: request.MaxRowsPerExecution,
@@ -320,6 +385,20 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
             );
 
             await _repository.UpdateAsync(job, cancellationToken);
+
+            // 若任务处于启用状态，更新后同步调度配置到 Hangfire
+            if (job.IsEnabled)
+            {
+                try
+                {
+                    await _scheduler.UpdateJobScheduleAsync(id, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    // 不阻断更新接口返回，但记录错误，避免“配置已保存但调度未更新”不可见
+                    _logger.LogError(ex, "同步更新 Hangfire 调度配置失败: {Id}", id);
+                }
+            }
 
             _logger.LogInformation("成功更新定时归档任务: {Id} - {Name}", job.Id, job.Name);
 
@@ -393,6 +472,16 @@ public sealed class ScheduledArchiveJobsController : ControllerBase
             }
 
             await _repository.DeleteAsync(id, cancellationToken);
+
+            // 删除后从 Hangfire 调度器中移除，避免留下孤儿 RecurringJob
+            try
+            {
+                await _scheduler.UnregisterJobAsync(id, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "删除后移除 Hangfire 调度失败: {Id}", id);
+            }
 
             _logger.LogInformation("成功删除定时归档任务: {Id} - {Name}", id, job.Name);
 

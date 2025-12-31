@@ -83,6 +83,9 @@ public record ScheduledArchiveJobDto
     /// <summary>最后一次归档行数</summary>
     public long? LastArchivedRowCount { get; init; }
 
+    /// <summary>最后执行错误信息（失败时展示）</summary>
+    public string? LastExecutionError { get; init; }
+
     /// <summary>总执行次数</summary>
     public long TotalExecutionCount { get; init; }
 

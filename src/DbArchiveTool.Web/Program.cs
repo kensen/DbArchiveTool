@@ -38,7 +38,9 @@ builder.Services.AddScoped<DbArchiveTool.Web.Services.ArchiveDataSourceApiClient
 builder.Services.AddScoped<DbArchiveTool.Web.Services.ScheduledArchiveJobState>();
 
 // 配置 Hangfire 存储(只读模式,用于监控)
-var hangfireConnectionString = builder.Configuration.GetConnectionString("HangfireDatabase");
+// 说明：优先使用 HangfireDatabase，回退到 ArchiveDatabase（与 API 侧策略一致），避免环境配置不一致导致监控不可用。
+var hangfireConnectionString = builder.Configuration.GetConnectionString("HangfireDatabase")
+    ?? builder.Configuration.GetConnectionString("ArchiveDatabase");
 if (string.IsNullOrWhiteSpace(hangfireConnectionString))
 {
     throw new InvalidOperationException("未在配置中找到 ConnectionStrings:HangfireDatabase。");

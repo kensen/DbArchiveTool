@@ -1,4 +1,5 @@
 ﻿using DbArchiveTool.Domain.ScheduledArchiveJobs;
+using Cronos;
 using Hangfire;
 using Microsoft.Extensions.Logging;
 
@@ -99,7 +100,8 @@ public sealed class ScheduledArchiveJobScheduler : Application.Services.Schedule
             cronExpression: cronExpression,
             options: new RecurringJobOptions
             {
-                TimeZone = TimeZoneInfo.Utc
+                // Cron 表达式按“本地时间语义”解释，与 UI 侧预览一致
+                TimeZone = TimeZoneInfo.Local
             });
 
         // 计算并更新下次执行时间
@@ -225,23 +227,20 @@ public sealed class ScheduledArchiveJobScheduler : Application.Services.Schedule
     {
         try
         {
-            // 简化实现: 根据当前时间估算下次执行时间
-            // Hangfire 会自动计算精确的执行时间,这里只是用于显示
-            var now = DateTime.UtcNow;
-            
-            // 根据不同的 Cron 表达式类型估算
-            if (cronExpression.StartsWith("*/"))
+            if (string.IsNullOrWhiteSpace(cronExpression))
             {
-                // 间隔类型: */5 * * * * (每5分钟)
-                var intervalPart = cronExpression.Split(' ')[0];
-                if (int.TryParse(intervalPart.Substring(2), out var intervalMinutes))
-                {
-                    return now.AddMinutes(intervalMinutes);
-                }
+                return null;
             }
-            
-            // 默认: 返回当前时间 + 1分钟
-            return now.AddMinutes(1);
+
+            // Cron 表达式按“本地时间语义”解释，但 Cronos 要求 fromUtc 必须为 UTC
+            var nowUtc = DateTime.UtcNow;
+
+            var parts = cronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var format = parts.Length >= 6 ? CronFormat.IncludeSeconds : CronFormat.Standard;
+
+            var expr = CronExpression.Parse(cronExpression, format);
+            var next = expr.GetNextOccurrence(nowUtc, TimeZoneInfo.Local, inclusive: false);
+            return next;
         }
         catch (Exception ex)
         {

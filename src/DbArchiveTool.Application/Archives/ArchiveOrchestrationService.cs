@@ -1,5 +1,6 @@
 ﻿using DbArchiveTool.Domain.ArchiveConfigurations;
 using DbArchiveTool.Domain.DataSources;
+using DbArchiveTool.Application.Abstractions;
 using Microsoft.Extensions.Logging;
 
 namespace DbArchiveTool.Application.Archives;
@@ -13,6 +14,7 @@ public sealed class ArchiveOrchestrationService
     private readonly IArchiveConfigurationRepository _configRepository;
     private readonly IDataSourceRepository _dataSourceRepository;
     private readonly IArchiveExecutor _archiveExecutor;
+    private readonly IPasswordEncryptionService _passwordEncryptionService;
     private readonly ILogger<ArchiveOrchestrationService> _logger;
 
     /// <summary>
@@ -22,11 +24,13 @@ public sealed class ArchiveOrchestrationService
         IArchiveConfigurationRepository configRepository,
         IDataSourceRepository dataSourceRepository,
         IArchiveExecutor archiveExecutor,
+        IPasswordEncryptionService passwordEncryptionService,
         ILogger<ArchiveOrchestrationService> logger)
     {
         _configRepository = configRepository;
         _dataSourceRepository = dataSourceRepository;
         _archiveExecutor = archiveExecutor;
+        _passwordEncryptionService = passwordEncryptionService;
         _logger = logger;
     }
 
@@ -339,7 +343,8 @@ public sealed class ArchiveOrchestrationService
             {
                 builder.IntegratedSecurity = false;
                 builder.UserID = dataSource.UserName;
-                builder.Password = dataSource.Password;
+                // 兼容旧数据：未加密则原样返回；已加密则解密，避免密文写入连接字符串导致长度/校验异常
+                builder.Password = _passwordEncryptionService.Decrypt(dataSource.Password);
             }
         }
         else
@@ -356,7 +361,8 @@ public sealed class ArchiveOrchestrationService
             {
                 builder.IntegratedSecurity = false;
                 builder.UserID = dataSource.TargetUserName;
-                builder.Password = dataSource.TargetPassword;
+                // 兼容旧数据：未加密则原样返回；已加密则解密，避免密文写入连接字符串导致长度/校验异常
+                builder.Password = _passwordEncryptionService.Decrypt(dataSource.TargetPassword);
             }
         }
 

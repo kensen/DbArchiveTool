@@ -44,6 +44,9 @@ public sealed class ScheduledArchiveJobListItemDto
     /// <summary>执行间隔(分钟)</summary>
     public int IntervalMinutes { get; set; }
 
+    /// <summary>Cron 表达式(可选,与 IntervalMinutes 二选一)</summary>
+    public string? CronExpression { get; set; }
+
     /// <summary>是否启用</summary>
     public bool IsEnabled { get; set; }
 
@@ -56,6 +59,9 @@ public sealed class ScheduledArchiveJobListItemDto
     /// <summary>最后执行状态</summary>
     public JobExecutionStatus LastExecutionStatus { get; set; }
 
+    /// <summary>最后执行错误信息</summary>
+    public string? LastExecutionError { get; set; }
+
     /// <summary>最后归档行数</summary>
     public long? LastArchivedRowCount { get; set; }
 
@@ -67,6 +73,9 @@ public sealed class ScheduledArchiveJobListItemDto
 
     /// <summary>连续失败次数</summary>
     public int ConsecutiveFailureCount { get; set; }
+
+    /// <summary>最大连续失败次数(达到后自动禁用任务)</summary>
+    public int MaxConsecutiveFailures { get; set; }
 
     /// <summary>创建时间</summary>
     public DateTime CreatedAtUtc { get; set; }
@@ -210,7 +219,7 @@ public sealed class CreateScheduledArchiveJobRequest
     public string? ArchiveFilterDefinition { get; set; }
 
     /// <summary>归档方法</summary>
-    public ArchiveMethod ArchiveMethod { get; set; }
+    public ArchiveMethod ArchiveMethod { get; set; } = ArchiveMethod.BulkCopy;
 
     /// <summary>是否在归档后删除源数据</summary>
     public bool DeleteSourceDataAfterArchive { get; set; } = true;
@@ -264,7 +273,7 @@ public sealed class UpdateScheduledArchiveJobRequest
     public string? ArchiveFilterDefinition { get; set; }
 
     /// <summary>归档方法</summary>
-    public ArchiveMethod ArchiveMethod { get; set; }
+    public ArchiveMethod ArchiveMethod { get; set; } = ArchiveMethod.BulkCopy;
 
     /// <summary>是否在归档后删除源数据</summary>
     public bool DeleteSourceDataAfterArchive { get; set; } = true;
