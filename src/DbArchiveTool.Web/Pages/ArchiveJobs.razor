@@ -2,6 +2,7 @@
 @attribute [ReuseTabsPage(Title = "归档任务监控", Closable = true)]
 @using DbArchiveTool.Web.Services
 @using DbArchiveTool.Web.Models
+@using DbArchiveTool.Web.Components
 @inject IHangfireMonitorService HangfireMonitor
 @inject ScheduledArchiveJobApiClient ScheduledJobApi
 
@@ -265,12 +266,6 @@
                     }
                 </DescriptionsItem>
             }
-            @if (!string.IsNullOrWhiteSpace(_jobDetail.FailureReason))
-            {
-                <DescriptionsItem Title="失败原因" Span="2">
-                    <Alert Type="@AlertType.Error" Message="@_jobDetail.FailureReason" ShowIcon="true" />
-                </DescriptionsItem>
-            }
         </Descriptions>
 
         @if (_jobDetail.StateHistory.Any())
@@ -295,10 +290,31 @@
                             <div>@state.Reason</div>
                         }
 
+                        @* 失败信息：优先展示 ExceptionMessage（已被我们构造成 Markdown，包含必要 SQL 代码块） *@
+                        @if (state.Data != null && state.Data.TryGetValue("ExceptionMessage", out var exceptionMessage) && !string.IsNullOrWhiteSpace(exceptionMessage))
+                        {
+                            <div style="margin-top: 8px;" class="markdown-body">
+                                <MarkdownViewer Content="@exceptionMessage" />
+                            </div>
+                        }
+
+                        @* 成功/跳过信息：从 Result JSON 中提取 AuditMarkdown，放在状态历史里展示 *@
+                        @{
+                            var auditMarkdown = TryGetAuditMarkdownFromState(state);
+                        }
+                        @if (!string.IsNullOrWhiteSpace(auditMarkdown))
+                        {
+                            <div style="margin-top: 8px;" class="markdown-body">
+                                <MarkdownViewer Content="@auditMarkdown" />
+                            </div>
+                        }
+
                         @if (state.Data != null && state.Data.Any())
                         {
                             <div style="margin-top: 8px;">
-                                @foreach (var kv in state.Data.OrderBy(kv => kv.Key))
+                                @foreach (var kv in state.Data
+                                    .Where(kv => !IsLargeStateDataKey(kv.Key))
+                                    .OrderBy(kv => kv.Key))
                                 {
                                     <div>
                                         <Text Type="@TextElementType.Secondary">@kv.Key</Text>
@@ -347,6 +363,81 @@
     // 任务详情
     private bool _detailDrawerVisible = false;
     private HangfireJobDetailModel? _jobDetail;
+
+    private static bool IsLargeStateDataKey(string key)
+    {
+        // 这些字段通常很长（Markdown/堆栈/JSON），直接逐行展示会导致排版错乱。
+        return string.Equals(key, "Result", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "ExceptionMessage", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, "ExceptionDetails", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? TryGetAuditMarkdownFromState(HangfireJobStateHistoryModel state)
+    {
+        if (state?.Data == null)
+        {
+            return null;
+        }
+
+        if (!state.Data.TryGetValue("Result", out var rawResult) || string.IsNullOrWhiteSpace(rawResult))
+        {
+            return null;
+        }
+
+        var jsonText = rawResult.Trim();
+        if (string.Equals(jsonText, "null", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // 1) 直接当 JSON 解析
+        if (TryParseAuditMarkdownFromJson(jsonText, out var auditMarkdown))
+        {
+            return auditMarkdown;
+        }
+
+        // 2) 可能是被序列化成字符串："{ ... }"，先反序列化为 string 再解析
+        try
+        {
+            var inner = System.Text.Json.JsonSerializer.Deserialize<string>(jsonText);
+            if (!string.IsNullOrWhiteSpace(inner) && TryParseAuditMarkdownFromJson(inner, out auditMarkdown))
+            {
+                return auditMarkdown;
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        return null;
+    }
+
+    private static bool TryParseAuditMarkdownFromJson(string jsonText, out string? auditMarkdown)
+    {
+        auditMarkdown = null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(jsonText);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (doc.RootElement.TryGetProperty("AuditMarkdown", out var prop)
+                && prop.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                auditMarkdown = prop.GetString();
+                return !string.IsNullOrWhiteSpace(auditMarkdown);
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {

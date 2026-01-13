@@ -85,6 +85,13 @@ public sealed class ArchiveExecutionResult
 
     /// <summary>错误详情</summary>
     public string? ErrorDetails { get; init; }
+
+    /// <summary>
+    /// 审计信息（Markdown 格式）。
+    /// 典型内容：执行的 SQL（```sql``` 代码块）、关键参数与摘要。
+    /// 用于在任务监控详情中快速定位问题（成功/失败/跳过均可记录）。
+    /// </summary>
+    public string? AuditMarkdown { get; init; }
 }
 
 /// <summary>

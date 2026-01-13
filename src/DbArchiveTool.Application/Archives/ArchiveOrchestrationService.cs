@@ -344,7 +344,7 @@ public sealed class ArchiveOrchestrationService
                 builder.IntegratedSecurity = false;
                 builder.UserID = dataSource.UserName;
                 // 兼容旧数据：未加密则原样返回；已加密则解密，避免密文写入连接字符串导致长度/校验异常
-                builder.Password = _passwordEncryptionService.Decrypt(dataSource.Password);
+                builder.Password = _passwordEncryptionService.Decrypt(dataSource.Password ?? string.Empty);
             }
         }
         else
@@ -362,7 +362,7 @@ public sealed class ArchiveOrchestrationService
                 builder.IntegratedSecurity = false;
                 builder.UserID = dataSource.TargetUserName;
                 // 兼容旧数据：未加密则原样返回；已加密则解密，避免密文写入连接字符串导致长度/校验异常
-                builder.Password = _passwordEncryptionService.Decrypt(dataSource.TargetPassword);
+                builder.Password = _passwordEncryptionService.Decrypt(dataSource.TargetPassword ?? string.Empty);
             }
         }
 

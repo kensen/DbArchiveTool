@@ -72,6 +72,12 @@ public class HangfireJobModel
 public class HangfireJobDetailModel : HangfireJobModel
 {
     /// <summary>
+    /// 执行SQL审计信息（Markdown）
+    /// 用于在任务成功/跳过时也能展示具体执行SQL。
+    /// </summary>
+    public string? AuditMarkdown { get; set; }
+
+    /// <summary>
     /// 状态历史记录
     /// </summary>
     public List<HangfireJobStateHistoryModel> StateHistory { get; set; } = new();

@@ -80,6 +80,13 @@ builder.Services.AddHangfire(configuration => configuration
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
+    // 归档属于数据类操作，错误不应自动重试以免造成重复写入/删除与监控误判
+    //（Hangfire 默认重试 10 次，可能出现一次失败后又重试，最终因“跳过”而显示成功）
+    .UseFilter(new AutomaticRetryAttribute
+    {
+        Attempts = 0,
+        OnAttemptsExceeded = AttemptsExceededAction.Fail
+    })
     .UseSqlServerStorage(hangfireConnectionString, new SqlServerStorageOptions
     {
         CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),

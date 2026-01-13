@@ -203,6 +203,12 @@ public sealed class ArchiveExecutorAdapter : IArchiveExecutor
         var targetTable = string.IsNullOrWhiteSpace(config.TargetTableName) ? sourceTable : config.TargetTableName;
         var filterColumn = config.ArchiveFilterColumn!;
         var batchSize = Math.Max(1, config.BatchSize);
+        var wherePredicate = BuildWherePredicate(filterColumn, filterCondition);
+
+        string? selectSqlForLog = null;
+        string? deleteSqlForLog = null;
+        string? createTableSqlForLog = null;
+        string? tempKeySqlForLog = null;
 
         try
         {
@@ -231,6 +237,7 @@ public sealed class ArchiveExecutorAdapter : IArchiveExecutor
             }
 
             progressCallback?.Invoke(new ArchiveProgressInfo { Message = "检查并创建目标表结构", ProgressPercentage = 5, RowsProcessed = 0 });
+            createTableSqlForLog = BuildCreateTableSql(targetSchema, targetTable, columns);
             await EnsureSchemaAndTableExistsAsync(
                 targetConnection,
                 targetSchema,
@@ -239,56 +246,217 @@ public sealed class ArchiveExecutorAdapter : IArchiveExecutor
                 _logger,
                 cancellationToken);
 
-            using var tx = sourceConnection.BeginTransaction(IsolationLevel.Serializable);
+            // READPAST 锁提示在 READ COMMITTED / REPEATABLE READ 隔离级别下才允许。
+            // 这里显式使用 RepeatableRead，以保留“跳过锁行”的并发语义并避免 SQL Server 报错。
+            using var tx = sourceConnection.BeginTransaction(IsolationLevel.RepeatableRead);
 
             var columnList = string.Join(", ", columns.Select(c => $"[{c.ColumnName}]"));
             var sourceTableFull = $"[{sourceSchema}].[{sourceTable}]";
             var targetTableFull = $"[{targetSchema}].[{targetTable}]";
 
-            var selectSql = $@"
-SELECT TOP (@BatchSize)
-    {columnList}
-FROM {sourceTableFull} WITH (READPAST, UPDLOCK, HOLDLOCK, ROWLOCK)
-WHERE ([{filterColumn}] {filterCondition})
-ORDER BY [{filterColumn}]";
-
-            _logger.LogInformation(
-                "普通表归档-查询SQL: Source={Source}, Sql={Sql}",
-                $"{sourceSchema}.{sourceTable}",
-                selectSql);
-
-            progressCallback?.Invoke(new ArchiveProgressInfo { Message = "读取源数据并写入目标表", ProgressPercentage = 20, RowsProcessed = 0 });
+            // 读取与删除的一致性：
+            // - 当开启“归档后删除源数据”时，必须确保删除的行与本次归档写入的行完全一致。
+            // - 去掉 ORDER BY 后，不能再用“再次 TOP(N) 查询”来删除，否则可能删到不同的行。
+            // - 这里采用源库临时表保存本批次主键 -> 依据临时表读取 -> 依据临时表删除。
 
             long rowsCopied;
-            using (var selectCommand = new SqlCommand(selectSql, sourceConnection, tx))
+
+            if (!config.DeleteSourceDataAfterArchive)
             {
-                selectCommand.CommandTimeout = 300;
-                selectCommand.Parameters.AddWithValue("@BatchSize", batchSize);
+                var lockHint = "WITH (READPAST, ROWLOCK)";
+                var selectSql = $@"
+SELECT TOP (@BatchSize)
+    {columnList}
+FROM {sourceTableFull} {lockHint}
+WHERE ({wherePredicate})";
 
-                using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-                using var bulkCopy = new SqlBulkCopy(
-                    targetConnection,
-                    SqlBulkCopyOptions.TableLock | SqlBulkCopyOptions.UseInternalTransaction,
-                    null)
-                {
-                    DestinationTableName = targetTableFull,
-                    BatchSize = batchSize,
-                    BulkCopyTimeout = 300,
-                    EnableStreaming = true
-                };
+                selectSqlForLog = selectSql;
+                _logger.LogInformation(
+                    "普通表归档-查询SQL: Source={Source}, Sql={Sql}",
+                    $"{sourceSchema}.{sourceTable}",
+                    selectSql);
 
-                foreach (var col in columns)
+                progressCallback?.Invoke(new ArchiveProgressInfo { Message = "读取源数据并写入目标表", ProgressPercentage = 20, RowsProcessed = 0 });
+
+                using (var selectCommand = new SqlCommand(selectSql, sourceConnection, tx))
                 {
-                    bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+                    selectCommand.CommandTimeout = 300;
+                    selectCommand.Parameters.AddWithValue("@BatchSize", batchSize);
+
+                    using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+                    using var bulkCopy = new SqlBulkCopy(
+                        targetConnection,
+                        SqlBulkCopyOptions.TableLock | SqlBulkCopyOptions.UseInternalTransaction,
+                        null)
+                    {
+                        DestinationTableName = targetTableFull,
+                        BatchSize = batchSize,
+                        BulkCopyTimeout = 300,
+                        EnableStreaming = true
+                    };
+
+                    foreach (var col in columns)
+                    {
+                        bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+                    }
+
+                    await bulkCopy.WriteToServerAsync(reader, cancellationToken);
+                    rowsCopied = bulkCopy.RowsCopied;
+                }
+            }
+            else
+            {
+                var pkColumns = await GetPrimaryKeyColumnsAsync(sourceConnection, tx, sourceSchema, sourceTable, cancellationToken);
+                if (pkColumns.Count == 0)
+                {
+                    return new ArchiveExecutionResult
+                    {
+                        Success = false,
+                        ConfigurationId = config.Id,
+                        ConfigurationName = config.Name,
+                        SourceSchemaName = sourceSchema,
+                        SourceTableName = sourceTable,
+                        ArchiveMethod = config.ArchiveMethod,
+                        Message = "开启‘归档后删除源数据’需要源表存在主键(Primary Key)，否则无法确保删除与归档一致。请为源表添加主键或关闭删除选项。",
+                        StartTimeUtc = startTimeUtc,
+                        EndTimeUtc = DateTime.UtcNow
+                    };
                 }
 
-                await bulkCopy.WriteToServerAsync(reader, cancellationToken);
-                rowsCopied = bulkCopy.RowsCopied;
+                var tempTableName = "#ArchiveBatchKeys";
+                var pkColumnList = string.Join(", ", pkColumns.Select(c => $"[{c.ColumnName}]"));
+                var pkColumnDefs = string.Join(", ", pkColumns.Select(c => $"[{c.ColumnName}] {FormatDataType(c.DataType, c.MaxLength, c.Precision, c.Scale)} NOT NULL"));
+                var joinPredicate = string.Join(" AND ", pkColumns.Select(c => $"s.[{c.ColumnName}] = k.[{c.ColumnName}]"));
+
+                // 1) 创建临时表并写入本批次主键
+                var tempKeySql = $@"
+CREATE TABLE {tempTableName} (
+    {pkColumnDefs}
+);
+
+INSERT INTO {tempTableName} ({pkColumnList})
+SELECT TOP (@BatchSize)
+    {pkColumnList}
+FROM {sourceTableFull} WITH (READPAST, UPDLOCK, ROWLOCK)
+WHERE ({wherePredicate});";
+
+                tempKeySqlForLog = tempKeySql;
+
+                using (var tempCmd = new SqlCommand(tempKeySql, sourceConnection, tx))
+                {
+                    tempCmd.CommandTimeout = 300;
+                    tempCmd.Parameters.AddWithValue("@BatchSize", batchSize);
+                    await tempCmd.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                int keyCount;
+                using (var countCmd = new SqlCommand($"SELECT COUNT(1) FROM {tempTableName};", sourceConnection, tx))
+                {
+                    countCmd.CommandTimeout = 300;
+                    keyCount = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken));
+                }
+
+                if (keyCount <= 0)
+                {
+                    tx.Commit();
+                    var auditMarkdown = BuildAuditMarkdown(selectSqlForLog, deleteSqlForLog, createTableSqlForLog, null, tempKeySqlForLog);
+                    return new ArchiveExecutionResult
+                    {
+                        Success = true,
+                        ConfigurationId = config.Id,
+                        ConfigurationName = config.Name,
+                        SourceSchemaName = sourceSchema,
+                        SourceTableName = sourceTable,
+                        ArchiveMethod = config.ArchiveMethod,
+                        RowsArchived = 0,
+                        Message = "无可归档数据",
+                        AuditMarkdown = auditMarkdown,
+                        StartTimeUtc = startTimeUtc,
+                        EndTimeUtc = DateTime.UtcNow
+                    };
+                }
+
+                // 2) 基于临时表读取本批次数据并写入目标表
+                var selectSql = $@"
+SELECT
+    {columnList}
+FROM {sourceTableFull} s WITH (READPAST, UPDLOCK, ROWLOCK)
+INNER JOIN {tempTableName} k ON {joinPredicate};";
+
+                selectSqlForLog = $"-- 通过临时表锁定本批次主键\n{tempKeySqlForLog}\n\n-- 通过临时表读取本批次数据\n{selectSql}";
+
+                _logger.LogInformation(
+                    "普通表归档-查询SQL(基于临时表): Source={Source}, Sql={Sql}",
+                    $"{sourceSchema}.{sourceTable}",
+                    selectSql);
+
+                progressCallback?.Invoke(new ArchiveProgressInfo { Message = "读取源数据并写入目标表", ProgressPercentage = 20, RowsProcessed = 0 });
+
+                using (var selectCommand = new SqlCommand(selectSql, sourceConnection, tx))
+                {
+                    selectCommand.CommandTimeout = 300;
+
+                    using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+                    using var bulkCopy = new SqlBulkCopy(
+                        targetConnection,
+                        SqlBulkCopyOptions.TableLock | SqlBulkCopyOptions.UseInternalTransaction,
+                        null)
+                    {
+                        DestinationTableName = targetTableFull,
+                        BatchSize = batchSize,
+                        BulkCopyTimeout = 300,
+                        EnableStreaming = true
+                    };
+
+                    foreach (var col in columns)
+                    {
+                        bulkCopy.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+                    }
+
+                    await bulkCopy.WriteToServerAsync(reader, cancellationToken);
+                    rowsCopied = bulkCopy.RowsCopied;
+                }
+
+                // 3) 基于临时表精确删除源表同一批行
+                var deleteSql = $@"
+DELETE s
+FROM {sourceTableFull} s WITH (ROWLOCK)
+INNER JOIN {tempTableName} k ON {joinPredicate};";
+
+                deleteSqlForLog = deleteSql;
+
+                _logger.LogInformation(
+                    "普通表归档-删除SQL(基于临时表): Source={Source}, Sql={Sql}",
+                    $"{sourceSchema}.{sourceTable}",
+                    deleteSql);
+
+                using var deleteCommand = new SqlCommand(deleteSql, sourceConnection, tx);
+                deleteCommand.CommandTimeout = 300;
+                var deleted = await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
+
+                if (deleted != keyCount)
+                {
+                    tx.Rollback();
+                    return new ArchiveExecutionResult
+                    {
+                        Success = false,
+                        ConfigurationId = config.Id,
+                        ConfigurationName = config.Name,
+                        SourceSchemaName = sourceSchema,
+                        SourceTableName = sourceTable,
+                        ArchiveMethod = config.ArchiveMethod,
+                        RowsArchived = rowsCopied,
+                        Message = $"已复制 {rowsCopied} 行，但删除源数据行数不一致（期望删除 {keyCount} 行，实际删除 {deleted} 行），为避免数据异常已回滚删除。请人工核对目标表是否存在重复。",
+                        StartTimeUtc = startTimeUtc,
+                        EndTimeUtc = DateTime.UtcNow
+                    };
+                }
             }
 
             if (rowsCopied <= 0)
             {
                 tx.Commit();
+                var auditMarkdown = BuildAuditMarkdown(selectSqlForLog, deleteSqlForLog, createTableSqlForLog, null, tempKeySqlForLog);
                 return new ArchiveExecutionResult
                 {
                     Success = true,
@@ -299,6 +467,7 @@ ORDER BY [{filterColumn}]";
                     ArchiveMethod = config.ArchiveMethod,
                     RowsArchived = 0,
                     Message = "无可归档数据",
+                    AuditMarkdown = auditMarkdown,
                     StartTimeUtc = startTimeUtc,
                     EndTimeUtc = DateTime.UtcNow
                 };
@@ -311,50 +480,13 @@ ORDER BY [{filterColumn}]";
                 RowsProcessed = rowsCopied
             });
 
-            if (config.DeleteSourceDataAfterArchive)
-            {
-                var deleteSql = $@"
-;WITH cte AS (
-    SELECT TOP (@DeleteRows) *
-    FROM {sourceTableFull} WITH (READPAST, UPDLOCK, HOLDLOCK, ROWLOCK)
-    WHERE ([{filterColumn}] {filterCondition})
-    ORDER BY [{filterColumn}]
-)
-DELETE FROM cte;";
-
-                _logger.LogInformation(
-                    "普通表归档-删除SQL: Source={Source}, Sql={Sql}",
-                    $"{sourceSchema}.{sourceTable}",
-                    deleteSql);
-
-                using var deleteCommand = new SqlCommand(deleteSql, sourceConnection, tx);
-                deleteCommand.CommandTimeout = 300;
-                deleteCommand.Parameters.AddWithValue("@DeleteRows", rowsCopied);
-                var deleted = await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
-
-                if (deleted != rowsCopied)
-                {
-                    tx.Rollback();
-                    return new ArchiveExecutionResult
-                    {
-                        Success = false,
-                        ConfigurationId = config.Id,
-                        ConfigurationName = config.Name,
-                        SourceSchemaName = sourceSchema,
-                        SourceTableName = sourceTable,
-                        ArchiveMethod = config.ArchiveMethod,
-                        RowsArchived = rowsCopied,
-                        Message = $"已复制 {rowsCopied} 行，但删除源数据行数不一致（删除 {deleted} 行），为避免数据异常已回滚删除。请人工核对目标表是否存在重复。",
-                        StartTimeUtc = startTimeUtc,
-                        EndTimeUtc = DateTime.UtcNow
-                    };
-                }
-            }
+            // 删除逻辑已在“临时表锁定主键”分支中完成，这里无需重复执行。
 
             tx.Commit();
 
             progressCallback?.Invoke(new ArchiveProgressInfo { Message = "普通表归档完成", ProgressPercentage = 100, RowsProcessed = rowsCopied });
 
+            var successAuditMarkdown = BuildAuditMarkdown(selectSqlForLog, deleteSqlForLog, createTableSqlForLog, null, tempKeySqlForLog);
             return new ArchiveExecutionResult
             {
                 Success = true,
@@ -365,13 +497,40 @@ DELETE FROM cte;";
                 ArchiveMethod = config.ArchiveMethod,
                 RowsArchived = rowsCopied,
                 Message = $"普通表归档成功: 已处理 {rowsCopied} 行",
+                AuditMarkdown = successAuditMarkdown,
                 StartTimeUtc = startTimeUtc,
                 EndTimeUtc = DateTime.UtcNow
             };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "普通表归档失败: Source={SourceSchema}.{SourceTable}", config.SourceSchemaName, config.SourceTableName);
+            _logger.LogError(
+                ex,
+                "普通表归档失败: Source={SourceSchema}.{SourceTable}, 查询SQL={SelectSql}, 删除SQL={DeleteSql}",
+                config.SourceSchemaName,
+                config.SourceTableName,
+                selectSqlForLog ?? "(未生成)",
+                deleteSqlForLog ?? "(未生成)");
+
+            var errorDetailsMarkdown = $@"### 执行SQL（查询）
+
+```sql
+{selectSqlForLog ?? "(未生成)"}
+```
+
+### 执行SQL（删除）
+
+```sql
+{deleteSqlForLog ?? "(未生成)"}
+```
+
+### 异常
+
+```text
+{ex}
+```";
+
+            var failureAuditMarkdown = BuildAuditMarkdown(selectSqlForLog, deleteSqlForLog, createTableSqlForLog, ex, tempKeySqlForLog);
 
             return new ArchiveExecutionResult
             {
@@ -382,11 +541,156 @@ DELETE FROM cte;";
                 SourceTableName = config.SourceTableName,
                 ArchiveMethod = config.ArchiveMethod,
                 Message = $"普通表归档失败: {ex.Message}",
-                ErrorDetails = ex.ToString(),
+                ErrorDetails = errorDetailsMarkdown,
+                AuditMarkdown = failureAuditMarkdown,
                 StartTimeUtc = startTimeUtc,
                 EndTimeUtc = DateTime.UtcNow
             };
         }
+    }
+
+    private static string BuildCreateTableSql(string targetSchema, string targetTable, List<UserColumnDefinition> columns)
+    {
+        var columnDefs = columns
+            .Select(c => $"[{c.ColumnName}] {FormatDataType(c.DataType, c.MaxLength, c.Precision, c.Scale)}{(c.IsNullable ? string.Empty : " NOT NULL")}")
+            .ToList();
+
+        return $@"CREATE TABLE [{targetSchema}].[{targetTable}] (
+    {string.Join(",\n    ", columnDefs)}
+);";
+    }
+
+    private static string BuildAuditMarkdown(string? selectSql, string? deleteSql, string? createTableSql, Exception? ex, string? tempKeySql)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(createTableSql))
+        {
+            sb.AppendLine("### 执行SQL（建表，若目标表不存在才会执行）");
+            sb.AppendLine();
+            sb.AppendLine("```sql");
+            sb.AppendLine(createTableSql);
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+
+        if (!string.IsNullOrWhiteSpace(tempKeySql))
+        {
+            sb.AppendLine("### 执行SQL（临时表锁定本批次主键，仅开启‘归档后删除源数据’才会执行）");
+            sb.AppendLine();
+            sb.AppendLine("```sql");
+            sb.AppendLine(tempKeySql);
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("### 执行SQL（查询）");
+        sb.AppendLine();
+        sb.AppendLine("```sql");
+        sb.AppendLine(selectSql ?? "(未生成)");
+        sb.AppendLine("```");
+        sb.AppendLine();
+
+        sb.AppendLine("### 执行SQL（删除，仅开启‘归档后删除源数据’才会执行）");
+        sb.AppendLine();
+        sb.AppendLine("```sql");
+        sb.AppendLine(deleteSql ?? "(未生成)");
+        sb.AppendLine("```");
+
+        if (ex != null)
+        {
+            sb.AppendLine();
+            sb.AppendLine("### 异常");
+            sb.AppendLine();
+            sb.AppendLine("```text");
+            sb.AppendLine(ex.ToString());
+            sb.AppendLine("```");
+        }
+
+        return sb.ToString();
+    }
+
+    private static async Task<List<UserColumnDefinition>> GetPrimaryKeyColumnsAsync(
+        SqlConnection connection,
+        SqlTransaction? transaction,
+        string schemaName,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        const string sql = @"
+SELECT
+    c.name AS ColumnName,
+    t.name AS DataType,
+    c.max_length AS MaxLength,
+    c.precision AS Precision,
+    c.scale AS Scale,
+    c.is_nullable AS IsNullable
+FROM sys.tables tbl
+INNER JOIN sys.schemas s ON tbl.schema_id = s.schema_id
+INNER JOIN sys.indexes i ON tbl.object_id = i.object_id AND i.is_primary_key = 1
+INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.key_ordinal > 0
+INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
+WHERE s.name = @SchemaName
+  AND tbl.name = @TableName
+ORDER BY ic.key_ordinal";
+
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Transaction = transaction;
+        cmd.Parameters.AddWithValue("@SchemaName", schemaName);
+        cmd.Parameters.AddWithValue("@TableName", tableName);
+
+        var columns = new List<UserColumnDefinition>();
+        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            columns.Add(new UserColumnDefinition(
+                ColumnName: reader.GetString(0),
+                DataType: reader.GetString(1),
+                MaxLength: reader.GetInt16(2),
+                Precision: reader.GetByte(3),
+                Scale: reader.GetByte(4),
+                IsNullable: reader.GetBoolean(5)));
+        }
+
+        return columns;
+    }
+
+    private static string BuildWherePredicate(string filterColumn, string filterCondition)
+    {
+        // 兼容两种输入：
+        // 1) 条件片段（推荐）："< DATEADD(day, -7, GETDATE())"，会拼成 "[CreateDate] < ..."
+        // 2) 完整谓词："CreateDate < DATEADD(...)" 或 "[CreateDate] < ..."，则直接使用，避免重复列名导致语法错误
+        var trimmed = filterCondition.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            throw new ArgumentException("归档过滤条件不能为空", nameof(filterCondition));
+        }
+
+        if (ContainsColumnReference(trimmed, filterColumn))
+        {
+            return trimmed;
+        }
+
+        return $"[{filterColumn}] {trimmed}";
+    }
+
+    private static bool ContainsColumnReference(string predicate, string filterColumn)
+    {
+        // 简单判定是否已包含列名：支持 "CreateDate" / "[CreateDate]" / "dbo.CreateDate" 等常见写法
+        // 目的仅为避免重复拼接，不做完整 SQL 解析。
+        var p = predicate;
+        if (p.IndexOf($"[{filterColumn}]", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        // 词边界匹配，避免命中 "CreateDate2" 之类
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            p,
+            $@"\b{System.Text.RegularExpressions.Regex.Escape(filterColumn)}\b",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     private static string BuildSourceConnectionString(ArchiveDataSource dataSource)

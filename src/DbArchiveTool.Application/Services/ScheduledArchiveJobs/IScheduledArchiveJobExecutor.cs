@@ -31,37 +31,45 @@ public class ArchiveExecutionResult
     public bool Skipped { get; set; }
 
     /// <summary>
+    /// 审计信息（Markdown 格式）。
+    /// 用于在 Hangfire 任务详情中展示本次执行的 SQL 语句（成功/失败/跳过均可记录）。
+    /// </summary>
+    public string? AuditMarkdown { get; set; }
+
+    /// <summary>
     /// 创建成功结果
     /// </summary>
-    public static ArchiveExecutionResult CreateSuccess(long archivedRowCount, TimeSpan duration)
+    public static ArchiveExecutionResult CreateSuccess(long archivedRowCount, TimeSpan duration, string? auditMarkdown = null)
     {
         return new ArchiveExecutionResult
         {
             Success = true,
             ArchivedRowCount = archivedRowCount,
             Duration = duration,
-            Skipped = false
+            Skipped = false,
+            AuditMarkdown = auditMarkdown
         };
     }
 
     /// <summary>
     /// 创建跳过结果(无数据可归档)
     /// </summary>
-    public static ArchiveExecutionResult CreateSkipped(TimeSpan duration)
+    public static ArchiveExecutionResult CreateSkipped(TimeSpan duration, string? auditMarkdown = null)
     {
         return new ArchiveExecutionResult
         {
             Success = true,
             ArchivedRowCount = 0,
             Duration = duration,
-            Skipped = true
+            Skipped = true,
+            AuditMarkdown = auditMarkdown
         };
     }
 
     /// <summary>
     /// 创建失败结果
     /// </summary>
-    public static ArchiveExecutionResult CreateFailure(string errorMessage, TimeSpan duration)
+    public static ArchiveExecutionResult CreateFailure(string errorMessage, TimeSpan duration, string? auditMarkdown = null)
     {
         return new ArchiveExecutionResult
         {
@@ -69,7 +77,8 @@ public class ArchiveExecutionResult
             ArchivedRowCount = 0,
             ErrorMessage = errorMessage,
             Duration = duration,
-            Skipped = false
+            Skipped = false,
+            AuditMarkdown = auditMarkdown
         };
     }
 }

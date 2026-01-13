@@ -279,6 +279,9 @@ public class HangfireMonitorService : IHangfireMonitorService
                     Data = new Dictionary<string, string>(h.Data ?? new Dictionary<string, string>())
                 }).OrderByDescending(h => h.CreatedAtUtc).ToList();
 
+                // 解析成功/跳过返回值中的审计信息（Result -> JSON -> AuditMarkdown）
+                model.AuditMarkdown = TryExtractAuditMarkdown(model.StateHistory);
+
                 // 从最新状态获取任务状态
                 var latestState = model.StateHistory.FirstOrDefault();
                 if (latestState != null)
@@ -344,6 +347,83 @@ public class HangfireMonitorService : IHangfireMonitorService
 
             return model;
         });
+    }
+
+    private static string? TryExtractAuditMarkdown(List<HangfireJobStateHistoryModel> stateHistory)
+    {
+        if (stateHistory == null || stateHistory.Count == 0)
+        {
+            return null;
+        }
+
+        // 优先从最新的 Succeeded/Deleted 等状态中取 Result
+        var candidates = stateHistory
+            .OrderByDescending(s => s.CreatedAtUtc)
+            .Select(s => s.Data)
+            .Where(d => d != null)
+            .ToList();
+
+        foreach (var data in candidates)
+        {
+            if (!data.TryGetValue("Result", out var rawResult) || string.IsNullOrWhiteSpace(rawResult))
+            {
+                continue;
+            }
+
+            // Hangfire 的 Result 可能是 JSON，也可能是被 JSON 字符串再次包裹（带引号的字符串）
+            var jsonText = rawResult.Trim();
+            if (string.Equals(jsonText, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // 1) 直接当 JSON 解析
+            if (TryParseAuditMarkdownFromJson(jsonText, out var auditMarkdown))
+            {
+                return auditMarkdown;
+            }
+
+            // 2) 可能是被序列化成字符串："{ ... }"，先反序列化为 string 再解析
+            try
+            {
+                var inner = JsonSerializer.Deserialize<string>(jsonText);
+                if (!string.IsNullOrWhiteSpace(inner) && TryParseAuditMarkdownFromJson(inner, out auditMarkdown))
+                {
+                    return auditMarkdown;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseAuditMarkdownFromJson(string jsonText, out string? auditMarkdown)
+    {
+        auditMarkdown = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonText);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (doc.RootElement.TryGetProperty("AuditMarkdown", out var prop) && prop.ValueKind == JsonValueKind.String)
+            {
+                auditMarkdown = prop.GetString();
+                return !string.IsNullOrWhiteSpace(auditMarkdown);
+            }
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task<List<HangfireRecurringJobModel>> GetRecurringJobsAsync()

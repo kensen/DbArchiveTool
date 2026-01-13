@@ -1,6 +1,7 @@
 ﻿using DbArchiveTool.Domain.ScheduledArchiveJobs;
 using Cronos;
 using Hangfire;
+using Hangfire.Common;
 using Microsoft.Extensions.Logging;
 
 namespace DbArchiveTool.Infrastructure.Scheduling;
@@ -11,14 +12,20 @@ namespace DbArchiveTool.Infrastructure.Scheduling;
 public sealed class ScheduledArchiveJobScheduler : Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobScheduler
 {
     private readonly IScheduledArchiveJobRepository _jobRepository;
+    private readonly IRecurringJobManager _recurringJobManager;
+    private readonly IBackgroundJobClient _backgroundJobClient;
     private readonly ILogger<ScheduledArchiveJobScheduler> _logger;
     private const string RecurringJobIdPrefix = "scheduled-archive-job-";
 
     public ScheduledArchiveJobScheduler(
         IScheduledArchiveJobRepository jobRepository,
+        IRecurringJobManager recurringJobManager,
+        IBackgroundJobClient backgroundJobClient,
         ILogger<ScheduledArchiveJobScheduler> logger)
     {
         _jobRepository = jobRepository;
+        _recurringJobManager = recurringJobManager;
+        _backgroundJobClient = backgroundJobClient;
         _logger = logger;
     }
 
@@ -94,11 +101,16 @@ public sealed class ScheduledArchiveJobScheduler : Application.Services.Schedule
         }
 
         // 注册到 Hangfire RecurringJob
-        RecurringJob.AddOrUpdate<Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobExecutor>(
-            recurringJobId: recurringJobId,
-            methodCall: executor => executor.ExecuteAsync(jobId, CancellationToken.None),
-            cronExpression: cronExpression,
-            options: new RecurringJobOptions
+        // 说明：不要使用静态 RecurringJob 或其扩展方法（可能内部仍依赖 JobStorage.Current）。
+        // 这里直接构造 Job 并调用 IRecurringJobManager.AddOrUpdate，确保可在应用启动早期安全执行。
+        var hangfireJob = Job.FromExpression<Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobExecutor>(
+            executor => executor.ExecuteAsync(jobId, CancellationToken.None));
+
+        _recurringJobManager.AddOrUpdate(
+            recurringJobId,
+            hangfireJob,
+            cronExpression,
+            new RecurringJobOptions
             {
                 // Cron 表达式按“本地时间语义”解释，与 UI 侧预览一致
                 TimeZone = TimeZoneInfo.Local
@@ -128,7 +140,7 @@ public sealed class ScheduledArchiveJobScheduler : Application.Services.Schedule
         
         _logger.LogInformation("从 Hangfire 移除定时归档任务: JobId={JobId}, RecurringJobId={RecurringJobId}", jobId, recurringJobId);
         
-        RecurringJob.RemoveIfExists(recurringJobId);
+        _recurringJobManager.RemoveIfExists(recurringJobId);
         
         return Task.CompletedTask;
     }
@@ -166,7 +178,8 @@ public sealed class ScheduledArchiveJobScheduler : Application.Services.Schedule
         _logger.LogInformation("立即触发定时归档任务: JobId={JobId}, Name={Name}", jobId, job.Name);
 
         // 使用 Hangfire BackgroundJob 立即执行
-        var backgroundJobId = BackgroundJob.Enqueue<Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobExecutor>(
+        // 说明：避免使用静态 BackgroundJob（依赖 JobStorage.Current），以免在某些启动阶段或测试环境下异常。
+        var backgroundJobId = _backgroundJobClient.Enqueue<Application.Services.ScheduledArchiveJobs.IScheduledArchiveJobExecutor>(
             executor => executor.ExecuteAsync(jobId, CancellationToken.None));
 
         _logger.LogInformation(

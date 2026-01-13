@@ -89,6 +89,8 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
             // 步骤 3: 循环执行归档,直到达到 MaxRowsPerExecution 或无更多数据
             long totalArchivedRows = 0;
             string? lastErrorMessage = null;
+            string? lastErrorDetails = null;
+            var auditChunks = new List<string>();
             var batchCount = 0;
             var maxBatches = (int)Math.Ceiling((double)job.MaxRowsPerExecution / job.BatchSize);
 
@@ -106,15 +108,27 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
 
                 var archiveResult = await ExecuteSingleBatchAsync(job, cancellationToken);
 
+                if (!string.IsNullOrWhiteSpace(archiveResult.AuditMarkdown))
+                {
+                    auditChunks.Add($"### 批次 {batchCount}\n\n{archiveResult.AuditMarkdown}");
+                    // 避免详情过大：仅保留最后 3 个批次的审计内容
+                    if (auditChunks.Count > 3)
+                    {
+                        auditChunks.RemoveAt(0);
+                    }
+                }
+
                 if (!archiveResult.Success)
                 {
                     // 批次失败 - 记录错误并退出循环
                     lastErrorMessage = archiveResult.Message;
+                    lastErrorDetails = archiveResult.ErrorDetails;
                     _logger.LogError(
-                        "批次归档失败: Batch={Batch}, JobId={JobId}, Error={Error}",
+                        "批次归档失败: Batch={Batch}, JobId={JobId}, Error={Error}, Details={Details}",
                         batchCount,
                         jobId,
-                        archiveResult.Message);
+                        archiveResult.Message,
+                        archiveResult.ErrorDetails ?? "(无)");
                     break;
                 }
 
@@ -141,6 +155,10 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
 
             stopwatch.Stop();
 
+            var combinedAuditMarkdown = auditChunks.Count == 0
+                ? null
+                : string.Join("\n\n---\n\n", auditChunks);
+
             // 步骤 4: 根据归档结果更新任务状态
             if (!string.IsNullOrEmpty(lastErrorMessage))
             {
@@ -165,7 +183,9 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
                 await _jobRepository.UpdateAsync(job, cancellationToken);
 
                 // 关键：必须抛异常，才能让 Hangfire 将本次执行标记为 Failed（否则只返回失败结果会被当作 Succeeded）
-                throw new InvalidOperationException($"定时归档任务失败: {lastErrorMessage}");
+                // 同时把 SQL 审计信息以 Markdown 形式写入异常消息，便于在任务监控详情中直接展示与复制。
+                var failureMarkdown = BuildFailureMarkdown(lastErrorMessage, lastErrorDetails, combinedAuditMarkdown);
+                throw new InvalidOperationException(failureMarkdown);
             }
             else if (totalArchivedRows == 0)
             {
@@ -185,7 +205,7 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
 
                 await _jobRepository.UpdateAsync(job, cancellationToken);
 
-                return ArchiveExecutionResult.CreateSkipped(stopwatch.Elapsed);
+                return ArchiveExecutionResult.CreateSkipped(stopwatch.Elapsed, combinedAuditMarkdown);
             }
             else
             {
@@ -211,7 +231,7 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
 
                 await _jobRepository.UpdateAsync(job, cancellationToken);
 
-                return ArchiveExecutionResult.CreateSuccess(totalArchivedRows, stopwatch.Elapsed);
+                return ArchiveExecutionResult.CreateSuccess(totalArchivedRows, stopwatch.Elapsed, combinedAuditMarkdown);
             }
         }
         catch (Exception ex)
@@ -330,5 +350,37 @@ public sealed class ScheduledArchiveJobExecutor : IScheduledArchiveJobExecutor
         {
             return "0 0 * * *";
         }
+    }
+
+    private static string BuildFailureMarkdown(string message, string? detailsMarkdown, string? auditMarkdown)
+    {
+        // 首行保持简短，便于 Hangfire 列表/摘要展示；详情用 Markdown（包含 SQL 代码块）。
+        if (string.IsNullOrWhiteSpace(detailsMarkdown) && string.IsNullOrWhiteSpace(auditMarkdown))
+        {
+            return $"定时归档任务失败: {message}";
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"定时归档任务失败: {message}");
+
+        if (!string.IsNullOrWhiteSpace(detailsMarkdown))
+        {
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine();
+            sb.AppendLine(detailsMarkdown);
+        }
+
+        if (!string.IsNullOrWhiteSpace(auditMarkdown))
+        {
+            sb.AppendLine();
+            sb.AppendLine("---");
+            sb.AppendLine();
+            sb.AppendLine("## 本次执行SQL（审计）");
+            sb.AppendLine();
+            sb.AppendLine(auditMarkdown);
+        }
+
+        return sb.ToString();
     }
 }
