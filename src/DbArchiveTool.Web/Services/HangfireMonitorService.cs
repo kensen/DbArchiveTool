@@ -49,36 +49,60 @@ public class HangfireMonitorService : IHangfireMonitorService
             JobList<FailedJobDto>? failedJobs = null;
             JobList<DeletedJobDto>? deletedJobs = null;
 
-            var from = pageIndex * pageSize;
-            var count = pageSize;
+            var from = Math.Max(0, pageIndex) * Math.Max(1, pageSize);
+            var count = Math.Max(1, pageSize);
+            var required = (Math.Max(0, pageIndex) + 1) * Math.Max(1, pageSize);
+
+            static DateTime GetSortTimeUtc(HangfireJobModel job)
+            {
+                // 统一按“最有意义的时间点”倒序：完成时间/开始时间/调度时间/创建时间
+                if (job.FinishedAtUtc.HasValue) return job.FinishedAtUtc.Value;
+                if (job.StartedAtUtc.HasValue) return job.StartedAtUtc.Value;
+                if (job.ScheduledAtUtc.HasValue) return job.ScheduledAtUtc.Value;
+                return job.CreatedAtUtc;
+            }
+
+            void ApplyGlobalPagingAndSort(List<HangfireJobModel> items)
+            {
+                var pageItems = items
+                    .OrderByDescending(GetSortTimeUtc)
+                    .Skip(from)
+                    .Take(count)
+                    .ToList();
+
+                result.Items.Clear();
+                result.Items.AddRange(pageItems);
+            }
 
             // 根据状态筛选获取任务
             switch (status?.ToLower())
             {
                 case "enqueued":
-                    // 归档任务可能在 default 或 archive 队列，为了监控一致性这里同时聚合两者
-                    long total = 0;
+                    // 归档任务可能在 default 或 archive 队列：这里先按“每队列最近 required 条”拉取，再全局排序分页。
+                    long enqueuedTotal = 0;
+                    var enqueuedMerged = new List<HangfireJobModel>();
                     foreach (var q in SupportedQueues)
                     {
-                        var list = api.EnqueuedJobs(q, from, count);
-                        if (list != null)
+                        enqueuedTotal += api.EnqueuedCount(q);
+                        var list = api.EnqueuedJobs(q, 0, required);
+                        if (list == null)
                         {
-                            extraItems.AddRange(list.Select(j => new HangfireJobModel
-                            {
-                                JobId = j.Key,
-                                Status = "Enqueued",
-                                CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
-                                MethodName = GetMethodName(j.Value.Job),
-                                Arguments = SerializeJobArguments(j.Value.Job),
-                                QueueName = q
-                            }));
+                            continue;
                         }
 
-                        total += api.EnqueuedCount(q);
+                        enqueuedMerged.AddRange(list.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Enqueued",
+                            CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job),
+                            QueueName = q
+                        }));
                     }
 
-                    enqueuedJobs = null;
-                    result.TotalCount = total;
+                    result.TotalCount = enqueuedTotal;
+                    ApplyGlobalPagingAndSort(enqueuedMerged);
                     break;
                 case "scheduled":
                     scheduledJobs = api.ScheduledJobs(from, count);
@@ -101,37 +125,116 @@ public class HangfireMonitorService : IHangfireMonitorService
                     result.TotalCount = api.DeletedListCount();
                     break;
                 default:
-                    // 获取所有状态的任务
-                    // 默认也聚合 default+archive，避免监控页统计与列表不一致
+                    // “全部状态”：为了分页可用，按需要量拉取各状态最近 required 条后合并排序分页。
+                    // 备注：Hangfire 监控 API 不提供跨状态的原生分页，这里以“最近任务”语义实现可分页列表。
+                    var merged = new List<HangfireJobModel>();
+
+                    // Enqueued 跨队列聚合
                     foreach (var q in SupportedQueues)
                     {
-                        var list = api.EnqueuedJobs(q, 0, 10);
-                        if (list != null)
+                        var list = api.EnqueuedJobs(q, 0, required);
+                        if (list == null)
                         {
-                            extraItems.AddRange(list.Select(j => new HangfireJobModel
-                            {
-                                JobId = j.Key,
-                                Status = "Enqueued",
-                                CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
-                                MethodName = GetMethodName(j.Value.Job),
-                                Arguments = SerializeJobArguments(j.Value.Job),
-                                QueueName = q
-                            }));
+                            continue;
                         }
+
+                        merged.AddRange(list.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Enqueued",
+                            CreatedAtUtc = j.Value.EnqueuedAt ?? DateTime.UtcNow,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job),
+                            QueueName = q
+                        }));
                     }
+
+                    // 其余状态
+                    scheduledJobs = api.ScheduledJobs(0, required);
+                    processingJobs = api.ProcessingJobs(0, required);
+                    succeededJobs = api.SucceededJobs(0, required);
+                    failedJobs = api.FailedJobs(0, required);
+
+                    result.TotalCount = SupportedQueues.Sum(q => api.EnqueuedCount(q))
+                                       + api.ScheduledCount()
+                                       + api.ProcessingCount()
+                                       + api.SucceededListCount()
+                                       + api.FailedCount();
+
+                    // 先把 Hangfire 的 JobList 走统一转换后合并，再排序分页
+                    // enqueuedJobs 保持 null，避免后续重复追加
                     enqueuedJobs = null;
-                    scheduledJobs = api.ScheduledJobs(0, 10);
-                    processingJobs = api.ProcessingJobs(0, 10);
-                    succeededJobs = api.SucceededJobs(0, 10);
-                    failedJobs = api.FailedJobs(0, 10);
-                    result.TotalCount = SupportedQueues.Sum(q => api.EnqueuedCount(q)) + api.ScheduledCount() + 
-                                       api.ProcessingCount() + api.SucceededListCount() + api.FailedCount();
+                    if (scheduledJobs != null)
+                    {
+                        merged.AddRange(scheduledJobs.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Scheduled",
+                            CreatedAtUtc = j.Value.ScheduledAt ?? DateTime.UtcNow,
+                            ScheduledAtUtc = j.Value.ScheduledAt,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job),
+                            QueueName = null
+                        }));
+                        scheduledJobs = null;
+                    }
+
+                    if (processingJobs != null)
+                    {
+                        merged.AddRange(processingJobs.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Processing",
+                            CreatedAtUtc = j.Value.StartedAt ?? DateTime.UtcNow,
+                            StartedAtUtc = j.Value.StartedAt,
+                            DurationSeconds = j.Value.StartedAt.HasValue
+                                ? Math.Max(0, (DateTime.UtcNow - DateTime.SpecifyKind(j.Value.StartedAt.Value, DateTimeKind.Utc)).TotalSeconds)
+                                : null,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job),
+                            QueueName = null
+                        }));
+                        processingJobs = null;
+                    }
+
+                    if (succeededJobs != null)
+                    {
+                        merged.AddRange(succeededJobs.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Succeeded",
+                            CreatedAtUtc = j.Value.SucceededAt ?? DateTime.UtcNow,
+                            FinishedAtUtc = j.Value.SucceededAt,
+                            DurationSeconds = j.Value.TotalDuration.HasValue ? j.Value.TotalDuration.Value / 1000d : null,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job)
+                        }));
+                        succeededJobs = null;
+                    }
+
+                    if (failedJobs != null)
+                    {
+                        merged.AddRange(failedJobs.Select(j => new HangfireJobModel
+                        {
+                            JobId = j.Key,
+                            Status = "Failed",
+                            CreatedAtUtc = j.Value.FailedAt ?? DateTime.UtcNow,
+                            FinishedAtUtc = j.Value.FailedAt,
+                            FailureReason = j.Value.ExceptionMessage,
+                            MethodName = GetMethodName(j.Value.Job),
+                            Arguments = SerializeJobArguments(j.Value.Job)
+                        }));
+                        failedJobs = null;
+                    }
+
+                    ApplyGlobalPagingAndSort(merged);
                     break;
             }
 
-            if (extraItems.Count > 0)
+            // 若已在上面做了全局分页（Items 已被填充），则无需继续走下方统一转换（避免重复追加）
+            if (result.Items.Count > 0 && (status?.ToLower() is "enqueued" || string.IsNullOrWhiteSpace(status)))
             {
-                result.Items.AddRange(extraItems);
+                return result;
             }
 
             // 转换为统一的模型
@@ -225,8 +328,10 @@ public class HangfireMonitorService : IHangfireMonitorService
                 }));
             }
 
-            // 按创建时间倒序排列
-            result.Items = result.Items.OrderByDescending(j => j.CreatedAtUtc).ToList();
+            // 单一状态列表：确保列表顺序稳定（按时间倒序）
+            result.Items = result.Items
+                .OrderByDescending(GetSortTimeUtc)
+                .ToList();
 
             return result;
         });

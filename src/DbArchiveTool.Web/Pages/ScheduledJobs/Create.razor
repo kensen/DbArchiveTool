@@ -133,7 +133,7 @@
                                                Style="width: 200px; margin-left: 16px;" />
                     </FormItem>
                     <FormItem Label="单次最大行数">
-                        <AntDesign.InputNumber @bind-Value="_formModel.MaxRowsPerExecution" Min="1000" Max="10000000" Step="1000" Style="width: 200px;" />
+                        <AntDesign.InputNumber @bind-Value="_formModel.MaxRowsPerExecution" Min="100" Max="10000000" Step="100" Style="width: 200px;" />
                         <span class="ant-form-text">推荐 50,000，避免单次执行时间过长</span>
                     </FormItem>
                 </Form>

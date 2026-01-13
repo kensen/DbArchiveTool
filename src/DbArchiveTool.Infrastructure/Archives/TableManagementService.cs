@@ -215,11 +215,18 @@ internal sealed class TableManagementService : ITableManagementService
             columnDef.Append(BuildDataTypeDefinition(column));
 
             // IDENTITY
+            // 说明：定时归档（BulkCopy）场景需要保留源表主键值用于对账/关联。
+            // 若目标表主键列保留 IDENTITY，会导致 BulkCopy 写入时由目标表重新生成主键值，造成 ID 变化。
+            // 因此：当列同时为主键且为 IDENTITY 时，目标表不复制 IDENTITY 属性。
             if (column.IsIdentity == 1)
             {
-                var seed = column.IdentitySeed ?? 1;
-                var increment = column.IdentityIncrement ?? 1;
-                columnDef.Append($" IDENTITY({seed},{increment})");
+                var shouldSkipIdentity = column.IsPrimaryKey == 1;
+                if (!shouldSkipIdentity)
+                {
+                    var seed = column.IdentitySeed ?? 1;
+                    var increment = column.IdentityIncrement ?? 1;
+                    columnDef.Append($" IDENTITY({seed},{increment})");
+                }
             }
 
             // NULL/NOT NULL

@@ -88,8 +88,8 @@
                            @bind-PageIndex="_pageIndex"
                            @bind-PageSize="_pageSize"
                            Total="@_totalJobs"
-                           OnPageIndexChange="OnPageChangeAsync"
-                           OnPageSizeChange="OnPageChangeAsync">
+                           OnPageIndexChange="OnPageIndexChangeAsync"
+                           OnPageSizeChange="OnPageSizeChangeAsync">
                         <PropertyColumn Property="@(j => j.JobId)" Title="任务ID" Width="200px">
                             <Template>
                                 <Text Code>@context.JobId[..Math.Min(16, context.JobId.Length)]...</Text>
@@ -656,8 +656,15 @@
         await LoadJobsAsync();
     }
 
-    private async Task OnPageChangeAsync()
+    private async Task OnPageIndexChangeAsync()
     {
+        await LoadJobsAsync();
+    }
+
+    private async Task OnPageSizeChangeAsync()
+    {
+        // 切换每页数量时，重置到第一页，避免页码越界导致“看起来没变化/空白页”
+        _pageIndex = 1;
         await LoadJobsAsync();
     }
 

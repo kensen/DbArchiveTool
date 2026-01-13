@@ -306,97 +306,35 @@ WHERE ({wherePredicate})";
             }
             else
             {
-                var pkColumns = await GetPrimaryKeyColumnsAsync(sourceConnection, tx, sourceSchema, sourceTable, cancellationToken);
-                if (pkColumns.Count == 0)
-                {
-                    return new ArchiveExecutionResult
-                    {
-                        Success = false,
-                        ConfigurationId = config.Id,
-                        ConfigurationName = config.Name,
-                        SourceSchemaName = sourceSchema,
-                        SourceTableName = sourceTable,
-                        ArchiveMethod = config.ArchiveMethod,
-                        Message = "开启‘归档后删除源数据’需要源表存在主键(Primary Key)，否则无法确保删除与归档一致。请为源表添加主键或关闭删除选项。",
-                        StartTimeUtc = startTimeUtc,
-                        EndTimeUtc = DateTime.UtcNow
-                    };
-                }
+                // 删除一致性（关键）：
+                // - 最稳健的方式是：在源库同一事务内执行 DELETE TOP(@BatchSize) ... OUTPUT DELETED.<columns>
+                // - 这样“读取用于写入目标表的数据”和“删除源表的数据”天然是一致的，不依赖临时表，也不要求主键。
+                // - BulkCopy 若失败，回滚源库事务即可恢复删除，避免数据丢失。
 
-                var tempTableName = "#ArchiveBatchKeys";
-                var pkColumnList = string.Join(", ", pkColumns.Select(c => $"[{c.ColumnName}]"));
-                var pkColumnDefs = string.Join(", ", pkColumns.Select(c => $"[{c.ColumnName}] {FormatDataType(c.DataType, c.MaxLength, c.Precision, c.Scale)} NOT NULL"));
-                var joinPredicate = string.Join(" AND ", pkColumns.Select(c => $"s.[{c.ColumnName}] = k.[{c.ColumnName}]"));
-
-                // 1) 创建临时表并写入本批次主键
-                var tempKeySql = $@"
-CREATE TABLE {tempTableName} (
-    {pkColumnDefs}
-);
-
-INSERT INTO {tempTableName} ({pkColumnList})
-SELECT TOP (@BatchSize)
-    {pkColumnList}
-FROM {sourceTableFull} WITH (READPAST, UPDLOCK, ROWLOCK)
+                var deleteWithOutputSql = $@"
+DELETE TOP (@BatchSize) s
+OUTPUT
+    DELETED.{string.Join(",\n    DELETED.", columns.Select(c => $"[{c.ColumnName}]"))}
+FROM {sourceTableFull} s WITH (READPAST, UPDLOCK, ROWLOCK)
 WHERE ({wherePredicate});";
 
-                tempKeySqlForLog = tempKeySql;
-
-                using (var tempCmd = new SqlCommand(tempKeySql, sourceConnection, tx))
-                {
-                    tempCmd.CommandTimeout = 300;
-                    tempCmd.Parameters.AddWithValue("@BatchSize", batchSize);
-                    await tempCmd.ExecuteNonQueryAsync(cancellationToken);
-                }
-
-                int keyCount;
-                using (var countCmd = new SqlCommand($"SELECT COUNT(1) FROM {tempTableName};", sourceConnection, tx))
-                {
-                    countCmd.CommandTimeout = 300;
-                    keyCount = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken));
-                }
-
-                if (keyCount <= 0)
-                {
-                    tx.Commit();
-                    var auditMarkdown = BuildAuditMarkdown(selectSqlForLog, deleteSqlForLog, createTableSqlForLog, null, tempKeySqlForLog);
-                    return new ArchiveExecutionResult
-                    {
-                        Success = true,
-                        ConfigurationId = config.Id,
-                        ConfigurationName = config.Name,
-                        SourceSchemaName = sourceSchema,
-                        SourceTableName = sourceTable,
-                        ArchiveMethod = config.ArchiveMethod,
-                        RowsArchived = 0,
-                        Message = "无可归档数据",
-                        AuditMarkdown = auditMarkdown,
-                        StartTimeUtc = startTimeUtc,
-                        EndTimeUtc = DateTime.UtcNow
-                    };
-                }
-
-                // 2) 基于临时表读取本批次数据并写入目标表
-                var selectSql = $@"
-SELECT
-    {columnList}
-FROM {sourceTableFull} s WITH (READPAST, UPDLOCK, ROWLOCK)
-INNER JOIN {tempTableName} k ON {joinPredicate};";
-
-                selectSqlForLog = $"-- 通过临时表锁定本批次主键\n{tempKeySqlForLog}\n\n-- 通过临时表读取本批次数据\n{selectSql}";
+                // 审计：该语句同时承担“选取本批次数据”和“删除本批次数据”
+                selectSqlForLog = deleteWithOutputSql;
+                deleteSqlForLog = "(本批次通过 DELETE...OUTPUT 在查询阶段已同时完成删除)";
 
                 _logger.LogInformation(
-                    "普通表归档-查询SQL(基于临时表): Source={Source}, Sql={Sql}",
+                    "普通表归档-删除并输出SQL: Source={Source}, Sql={Sql}",
                     $"{sourceSchema}.{sourceTable}",
-                    selectSql);
+                    deleteWithOutputSql);
 
                 progressCallback?.Invoke(new ArchiveProgressInfo { Message = "读取源数据并写入目标表", ProgressPercentage = 20, RowsProcessed = 0 });
 
-                using (var selectCommand = new SqlCommand(selectSql, sourceConnection, tx))
+                using (var deleteOutputCommand = new SqlCommand(deleteWithOutputSql, sourceConnection, tx))
                 {
-                    selectCommand.CommandTimeout = 300;
+                    deleteOutputCommand.CommandTimeout = 300;
+                    deleteOutputCommand.Parameters.AddWithValue("@BatchSize", batchSize);
 
-                    using var reader = await selectCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
+                    using var reader = await deleteOutputCommand.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
                     using var bulkCopy = new SqlBulkCopy(
                         targetConnection,
                         SqlBulkCopyOptions.TableLock | SqlBulkCopyOptions.UseInternalTransaction,
@@ -415,41 +353,6 @@ INNER JOIN {tempTableName} k ON {joinPredicate};";
 
                     await bulkCopy.WriteToServerAsync(reader, cancellationToken);
                     rowsCopied = bulkCopy.RowsCopied;
-                }
-
-                // 3) 基于临时表精确删除源表同一批行
-                var deleteSql = $@"
-DELETE s
-FROM {sourceTableFull} s WITH (ROWLOCK)
-INNER JOIN {tempTableName} k ON {joinPredicate};";
-
-                deleteSqlForLog = deleteSql;
-
-                _logger.LogInformation(
-                    "普通表归档-删除SQL(基于临时表): Source={Source}, Sql={Sql}",
-                    $"{sourceSchema}.{sourceTable}",
-                    deleteSql);
-
-                using var deleteCommand = new SqlCommand(deleteSql, sourceConnection, tx);
-                deleteCommand.CommandTimeout = 300;
-                var deleted = await deleteCommand.ExecuteNonQueryAsync(cancellationToken);
-
-                if (deleted != keyCount)
-                {
-                    tx.Rollback();
-                    return new ArchiveExecutionResult
-                    {
-                        Success = false,
-                        ConfigurationId = config.Id,
-                        ConfigurationName = config.Name,
-                        SourceSchemaName = sourceSchema,
-                        SourceTableName = sourceTable,
-                        ArchiveMethod = config.ArchiveMethod,
-                        RowsArchived = rowsCopied,
-                        Message = $"已复制 {rowsCopied} 行，但删除源数据行数不一致（期望删除 {keyCount} 行，实际删除 {deleted} 行），为避免数据异常已回滚删除。请人工核对目标表是否存在重复。",
-                        StartTimeUtc = startTimeUtc,
-                        EndTimeUtc = DateTime.UtcNow
-                    };
                 }
             }
 
@@ -608,53 +511,6 @@ INNER JOIN {tempTableName} k ON {joinPredicate};";
         }
 
         return sb.ToString();
-    }
-
-    private static async Task<List<UserColumnDefinition>> GetPrimaryKeyColumnsAsync(
-        SqlConnection connection,
-        SqlTransaction? transaction,
-        string schemaName,
-        string tableName,
-        CancellationToken cancellationToken)
-    {
-        const string sql = @"
-SELECT
-    c.name AS ColumnName,
-    t.name AS DataType,
-    c.max_length AS MaxLength,
-    c.precision AS Precision,
-    c.scale AS Scale,
-    c.is_nullable AS IsNullable
-FROM sys.tables tbl
-INNER JOIN sys.schemas s ON tbl.schema_id = s.schema_id
-INNER JOIN sys.indexes i ON tbl.object_id = i.object_id AND i.is_primary_key = 1
-INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id AND ic.key_ordinal > 0
-INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-WHERE s.name = @SchemaName
-  AND tbl.name = @TableName
-ORDER BY ic.key_ordinal";
-
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Transaction = transaction;
-        cmd.Parameters.AddWithValue("@SchemaName", schemaName);
-        cmd.Parameters.AddWithValue("@TableName", tableName);
-
-        var columns = new List<UserColumnDefinition>();
-        using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            columns.Add(new UserColumnDefinition(
-                ColumnName: reader.GetString(0),
-                DataType: reader.GetString(1),
-                MaxLength: reader.GetInt16(2),
-                Precision: reader.GetByte(3),
-                Scale: reader.GetByte(4),
-                IsNullable: reader.GetBoolean(5)));
-        }
-
-        return columns;
     }
 
     private static string BuildWherePredicate(string filterColumn, string filterCondition)
